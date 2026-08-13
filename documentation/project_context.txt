@@ -1,0 +1,1693 @@
+# TrustLens 2.0 — Forensic Engine Architecture
+
+## 1. System Definition
+
+TrustLens Forensic Engine 是一个面向企业文档的多层级数字取证（Digital Forensics）与真实性验证引擎。
+
+系统不试图通过单一AI模型直接判断：
+
+> “这份文件是真的还是假的？”
+
+而是将文档分析拆解为多个独立的 forensic layers，由不同类型的检测器、机器学习模型和确定性验证工具产生可解释的 **Evidence**，最后通过 Evidence Graph 与 Risk Engine 进行综合判断。
+
+核心处理链：
+
+```text
+Document
+   │
+   ▼
+Document Ingestion
+   │
+   ▼
+Document IR
+   │
+   ├───────────────┐
+   ▼               ▼
+L1 Metadata     L2 Visual
+   │               │
+   └───────┬───────┘
+           ▼
+      L3 Semantic
+      & Template
+           │
+           ▼
+      L4 Verification
+           │
+           ▼
+      Evidence Graph
+           │
+           ▼
+       Risk Engine
+           │
+           ▼
+      Forensic Report
+```
+
+系统最终输出的不是单一的模型概率，而是一组具有来源、位置、类型、置信度和验证状态的证据。
+
+---
+
+# 2. Design Principles
+
+## 2.1 Evidence First
+
+每一个检测器都必须产生 Evidence，而不是直接修改最终 Risk Score。
+
+例如：
+
+```json
+{
+  "type": "METADATA_SOFTWARE",
+  "finding": "Photoshop detected",
+  "confidence": 0.98,
+  "source": "ExifTool",
+  "severity": "medium"
+}
+```
+
+而不是：
+
+```python
+score += 40
+```
+
+这样可以避免每个 Layer 各自拥有一套不可控的评分逻辑。
+
+---
+
+## 2.2 Detection ≠ Verification ≠ Judgment
+
+三个概念必须严格分离。
+
+### Detection
+
+发现异常：
+
+> “这里可能被修改过。”
+
+### Verification
+
+验证事实：
+
+> “OCR识别出的Total与计算结果不一致。”
+
+### Judgment
+
+综合判断：
+
+> “综合现有证据，该文件具有高度篡改风险。”
+
+因此：
+
+```text
+Detector
+   ↓
+Evidence
+   ↓
+Verification
+   ↓
+Validated Evidence
+   ↓
+Risk Assessment
+```
+
+---
+
+## 2.3 Models Are Evidence Generators
+
+TruFor、LayoutLMv3、DINOv2、OCR等模型都不应该直接决定最终结果。
+
+例如 TruFor 输出：
+
+```text
+manipulation probability = 0.91
+```
+
+TrustLens 应将其解释为：
+
+```text
+VISUAL_MANIPULATION_SUSPECTED
+region = [x1,y1,x2,y2]
+confidence = 0.91
+detector = TruFor
+```
+
+然后交给后续 Layer 验证。
+
+---
+
+## 2.4 Deterministic Tools Are Ground Truth Verifiers
+
+LLM不负责：
+
+* 数学计算
+* 日期计算
+* QR解码
+* Barcode解码
+* checksum
+* regex validation
+* URL/domain verification
+* hash comparison
+
+这些由 deterministic tools 执行。
+
+LLM负责：
+
+> 判断“应该验证什么”。
+
+---
+
+# 3. High-Level Architecture
+
+```text
+                         ┌─────────────────────┐
+                         │      Document       │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Document Ingestion  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │    Document IR      │
+                         └──────────┬──────────┘
+                                    │
+          ┌─────────────────────────┼─────────────────────────┐
+          │                         │                         │
+          ▼                         ▼                         ▼
+ ┌────────────────┐       ┌────────────────┐       ┌────────────────┐
+ │ L1 Metadata    │       │ L2 Visual      │       │ L3 Semantic    │
+ │ Forensics      │       │ Forensics      │       │ & Template     │
+ └───────┬────────┘       └───────┬────────┘       └───────┬────────┘
+         │                        │                        │
+         └────────────────────────┼────────────────────────┘
+                                  ▼
+                       ┌─────────────────────┐
+                       │ Evidence Aggregator  │
+                       └──────────┬──────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │ L4 Verification     │
+                       │ Agent               │
+                       └──────────┬──────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │   Evidence Graph   │
+                       └──────────┬──────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │    Risk Engine     │
+                       └──────────┬──────────┘
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │ Forensic Report    │
+                       └─────────────────────┘
+```
+
+---
+
+# 4. Document Ingestion Layer
+
+所有输入首先统一进入 Document Ingestion。
+
+支持：
+
+* PDF
+* PNG
+* JPEG
+* TIFF
+* scanned documents
+* office documents（后续扩展）
+
+Ingestion负责：
+
+1. 文件hash计算
+2. MIME type detection
+3. 文件大小
+4. 页数
+5. 页面渲染
+6. OCR
+7. PDF object extraction
+8. image extraction
+9. document metadata extraction
+
+建议输出：
+
+```json
+{
+  "document_id": "...",
+  "sha256": "...",
+  "file_type": "application/pdf",
+  "page_count": 3,
+  "pages": [],
+  "assets": [],
+  "metadata": {}
+}
+```
+
+---
+
+# 5. Document IR
+
+Document IR 是整个 Forensic Engine 的核心数据协议。
+
+所有 Layer 不应该直接互相调用。
+
+而应该：
+
+```text
+Layer A
+   ↓
+Evidence
+   ↓
+Document IR / Evidence Graph
+   ↓
+Layer B
+```
+
+基本结构：
+
+```text
+Document
+ ├── Page
+ │    ├── TextElement
+ │    ├── ImageElement
+ │    ├── TableElement
+ │    ├── QRCode
+ │    ├── Barcode
+ │    └── GraphicElement
+ │
+ ├── Metadata
+ ├── Assets
+ └── Evidence
+```
+
+每一个 element 都应该拥有：
+
+```json
+{
+  "element_id": "E102",
+  "page": 1,
+  "type": "text",
+  "content": "Total Amount: RM 12,500",
+  "bbox": [100, 500, 400, 550],
+  "confidence": 0.97
+}
+```
+
+这一步非常重要，因为它为之后的：
+
+```text
+L2 visual region
+        ↕
+L3 semantic element
+        ↕
+L4 verification field
+```
+
+提供空间对齐基础。
+
+---
+
+# 6. Layer 1 — Metadata Forensics
+
+Layer 1负责分析文件的内部结构和生成历史。
+
+## 6.1 PDF Structure
+
+检测：
+
+* EOF anomalies
+* incremental updates
+* object revisions
+* xref structure
+* malformed objects
+* trailing data
+* embedded files
+* JavaScript
+* suspicious annotations
+* hidden layers
+* object duplication
+
+推荐工具：
+
+* qpdf
+* PyMuPDF
+* pikepdf
+* ExifTool
+
+---
+
+## 6.2 Metadata
+
+分析：
+
+* Producer
+* Creator
+* CreationDate
+* ModificationDate
+* XMP
+* UUID
+* document ID
+* author
+* software history
+
+例如：
+
+```text
+Creator:
+Microsoft Word
+
+Producer:
+Adobe PDF
+
+Creation:
+2026-08-01
+
+Modification:
+2026-08-13
+```
+
+这些信息本身不代表fraud。
+
+因此：
+
+```text
+Photoshop detected
+```
+
+只能成为：
+
+```text
+SOFTWARE_PROVENANCE_SIGNAL
+```
+
+而不能直接：
+
+```text
+FAKE = TRUE
+```
+
+---
+
+## 6.3 Metadata Provenance
+
+Layer 1最终产生：
+
+```text
+Metadata Evidence
+```
+
+例如：
+
+```json
+{
+  "type": "SOFTWARE_PROVENANCE",
+  "value": "Adobe Photoshop",
+  "confidence": 0.99,
+  "severity": "medium"
+}
+```
+
+---
+
+# 7. Layer 2 — Visual Forensics
+
+Layer 2是像素与视觉层面的篡改检测。
+
+目标不是判断整个文件真假，而是回答：
+
+> “文件的哪个区域表现出异常的视觉/像素级生成或编辑痕迹？”
+
+---
+
+## 7.1 Manipulation Detection
+
+优先集成成熟模型，而不是继续自己开发：
+
+* TruFor
+* ManTra-Net
+* Noiseprint / Noiseprint++
+* 其他经过benchmark验证的 image forgery detectors
+
+其中可以优先选择一个作为 primary detector。
+
+例如：
+
+```text
+Document page
+       ↓
+TruFor
+       ↓
+Manipulation Map
+       ↓
+Region extraction
+       ↓
+Evidence
+```
+
+输出：
+
+```json
+{
+  "type": "VISUAL_MANIPULATION",
+  "page": 1,
+  "bbox": [720, 820, 1100, 900],
+  "confidence": 0.91,
+  "detector": "TruFor"
+}
+```
+
+---
+
+## 7.2 Region-level Analysis
+
+不要只输出：
+
+```text
+page 1 suspicious
+```
+
+而应该输出：
+
+```text
+page 1
+ ├── header: normal
+ ├── invoice number: normal
+ ├── supplier information: normal
+ └── total amount: suspicious
+```
+
+这使得Layer 2能够与Layer 3连接。
+
+---
+
+## 7.3 Visual Asset Analysis
+
+对独立视觉元素进行：
+
+* logo similarity
+* QR detection
+* barcode detection
+* seal detection
+* signature detection
+* image duplication
+* copy-move detection
+
+输出统一Evidence。
+
+---
+
+# 8. Layer 3 — Semantic & Template Analysis
+
+Layer 3负责回答：
+
+> “这是什么文件？”
+
+以及：
+
+> “它是否符合该类官方/企业模板和语义结构？”
+
+---
+
+# 8.1 Document Classification
+
+利用：
+
+* OCR
+* LayoutLMv3
+* embeddings
+* document classifiers
+
+识别：
+
+```text
+Invoice
+Quotation
+Purchase Order
+Receipt
+Contract
+Certificate
+Tax Document
+Bank Statement
+...
+```
+
+---
+
+# 8.2 Semantic Extraction
+
+从文档中建立结构化字段：
+
+```json
+{
+  "document_type": "invoice",
+
+  "supplier": "ABC Sdn Bhd",
+
+  "invoice_number": "INV-2026-00123",
+
+  "date": "2026-08-10",
+
+  "subtotal": 10000,
+
+  "tax": 600,
+
+  "total": 10600
+}
+```
+
+这些字段必须保留：
+
+* OCR confidence
+* source page
+* bounding box
+* extraction model
+
+---
+
+# 8.3 Template Matching
+
+Template Analysis不是简单判断：
+
+> “这个文件长得像不像LHDN文件？”
+
+而是：
+
+```text
+Input Document
+      ↓
+Document Type Classification
+      ↓
+Template Retrieval
+      ↓
+Candidate Templates
+      ↓
+Layout / Field / Visual Comparison
+      ↓
+Template Compliance Evidence
+```
+
+Template Registry：
+
+```text
+Template
+ ├── authority
+ ├── document_type
+ ├── version
+ ├── required_fields
+ ├── optional_fields
+ ├── layout_profile
+ ├── visual_profile
+ └── source
+```
+
+例如：
+
+```text
+LHDN
+ └── E-Invoice
+      ├── 2025
+      └── 2026
+```
+
+---
+
+# 8.4 Template Acquisition
+
+后续3.0可以加入 Agent：
+
+```text
+Official Website
+      ↓
+Discovery
+      ↓
+Candidate Template
+      ↓
+Source Verification
+      ↓
+Template Parser
+      ↓
+Trusted Template Registry
+```
+
+关键原则：
+
+> Agent可以发现Template，但不能未经验证直接把互联网文档变成Trusted Ground Truth。
+
+---
+
+# 9. Layer 4 — Verification Agent
+
+Layer 4是整个系统从传统检测器走向Agentic Forensics的关键。
+
+它不应该成为一个巨大的hard-coded rule engine。
+
+它应该：
+
+> 根据前面Layers产生的Evidence和Extracted Facts，选择需要执行的确定性验证工具。
+
+---
+
+# 9.1 Agent职责
+
+输入：
+
+```text
+Document IR
++
+Semantic Fields
++
+Template
++
+Visual Evidence
++
+Metadata Evidence
+```
+
+Agent推理：
+
+```text
+What should be verified?
+Which tool should be called?
+What evidence is required?
+```
+
+---
+
+# 9.2 Tool Registry
+
+工具按照能力分类：
+
+```text
+Math Tools
+ ├── calculate_sum
+ ├── calculate_tax
+ ├── calculate_percentage
+ └── compare_amount
+
+Date Tools
+ ├── date_difference
+ ├── date_order_check
+ └── expiry_check
+
+Encoding Tools
+ ├── decode_qr
+ ├── decode_barcode
+ └── checksum_validate
+
+Document Tools
+ ├── compare_fields
+ ├── regex_validate
+ ├── hash_compare
+ └── template_validate
+
+External Verification
+ ├── verify_url
+ ├── verify_domain
+ ├── official_api_lookup
+ └── serial_number_lookup
+```
+
+---
+
+# 9.3 Example
+
+输入：
+
+```text
+Subtotal = RM10,000
+Tax = RM600
+Total = RM12,000
+```
+
+Agent识别：
+
+```text
+Invoice detected.
+
+Required verification:
+subtotal + tax = total
+```
+
+调用：
+
+```text
+calculate_total(
+  subtotal=10000,
+  tax=600
+)
+```
+
+Tool：
+
+```text
+Expected = 10600
+Actual = 12000
+```
+
+产生：
+
+```json
+{
+  "type": "CALCULATION_INCONSISTENCY",
+  "expected": 10600,
+  "actual": 12000,
+  "confidence": 1.0,
+  "verified_by": "calculate_total"
+}
+```
+
+这里的数学结论不是LLM生成的。
+
+---
+
+# 9.4 QR / Barcode Verification
+
+流程：
+
+```text
+Document
+   ↓
+QR Detector
+   ↓
+Decode
+   ↓
+Extract Content
+   ↓
+Compare With Document Fields
+   ↓
+Optional Official URL/API Verification
+```
+
+例如：
+
+```text
+Invoice Number:
+INV-00123
+
+QR:
+INV-00124
+```
+
+产生：
+
+```text
+QR_DOCUMENT_MISMATCH
+```
+
+这是强证据。
+
+---
+
+# 9.5 Cross-field Verification
+
+例如：
+
+```text
+Invoice Date
+Due Date
+Payment Date
+```
+
+Agent可以调用：
+
+```text
+validate_date_order()
+```
+
+检查：
+
+```text
+Invoice Date
+      <=
+Due Date
+      <=
+Payment Date
+```
+
+这样Rule不会全部硬编码在Layer4，而是变成可复用的verification tools。
+
+---
+
+# 10. Evidence Graph
+
+所有Layer最终必须汇聚到Evidence Graph。
+
+Graph：
+
+```text
+Document
+ │
+ ├── Metadata Evidence
+ │
+ ├── Visual Evidence
+ │      └── Region
+ │
+ ├── Semantic Element
+ │
+ ├── Template Evidence
+ │
+ └── Verification Evidence
+```
+
+例如：
+
+```text
+                    Invoice
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+      Metadata       Amount        QR Code
+          │            │            │
+      Photoshop     Visual       Decoded ID
+          │        anomaly          │
+          │            │             │
+          └────────────┼─────────────┘
+                       ↓
+                Verification
+                       │
+                Amount mismatch
+                       │
+                       ▼
+                 Risk Assessment
+```
+
+---
+
+# 11. Spatial Evidence Alignment
+
+这是Layer 2和Layer 3之间的重要接口。
+
+L2：
+
+```text
+bbox:
+[700, 800, 1100, 900]
+```
+
+L3：
+
+```text
+element:
+"Total Amount"
+
+bbox:
+[720, 810, 1080, 880]
+```
+
+系统计算空间overlap：
+
+```text
+IoU(L2_region, L3_element)
+```
+
+如果：
+
+```text
+IoU > threshold
+```
+
+则建立：
+
+```text
+VISUAL_EVIDENCE
+      │
+      └── affects ──> TOTAL_AMOUNT
+```
+
+于是系统可以说：
+
+> “视觉取证模型检测到的异常区域与文档中的Total Amount字段重合。”
+
+而不是泛泛地说：
+
+> “这张图片可能被修改。”
+
+---
+
+# 12. Evidence Fusion
+
+Risk Engine不应该简单：
+
+```python
+score = sum(layer_scores)
+```
+
+而应该考虑：
+
+## Evidence independence
+
+三个模型都发现：
+
+> “字体看起来奇怪”
+
+不应该当成三个独立证据。
+
+---
+
+## Evidence corroboration
+
+但是：
+
+```text
+Photoshop metadata
++
+visual manipulation
++
+amount mismatch
++
+QR mismatch
+```
+
+属于不同证据源。
+
+它们互相支持。
+
+因此：
+
+```text
+Metadata Evidence
+       +
+Visual Evidence
+       +
+Semantic Evidence
+       +
+Deterministic Verification
+```
+
+可以形成高强度corroboration。
+
+---
+
+# 13. Risk Model
+
+建议把：
+
+```text
+Risk Score
+```
+
+和：
+
+```text
+Evidence Confidence
+```
+
+分开。
+
+例如：
+
+```json
+{
+  "risk_score": 91,
+
+  "confidence": 0.94,
+
+  "severity": "HIGH",
+
+  "evidence_count": 7
+}
+```
+
+因为：
+
+> “风险很高”
+
+和：
+
+> “我们非常确定”
+
+不是同一个概念。
+
+---
+
+# 14. Risk Levels
+
+建议：
+
+```text
+0–20
+LOW / CLEAN
+
+21–50
+REVIEW
+
+51–75
+SUSPICIOUS
+
+76–100
+HIGH RISK
+```
+
+但最终报告必须解释为什么。
+
+例如：
+
+```text
+HIGH RISK
+
+Primary evidence:
+
+1. Visual manipulation detected
+   Page 1 / Total Amount
+   confidence: 0.91
+
+2. QR content inconsistent
+   Invoice ID: INV-00123
+   QR ID: INV-00124
+
+3. Mathematical inconsistency
+   Expected total: RM10,600
+   Actual total: RM12,000
+
+4. PDF provenance anomaly
+   Producer: Photoshop
+```
+
+---
+
+# 15. LangGraph Orchestration
+
+LangGraph不应该成为“每一步都让LLM思考”的框架。
+
+它主要负责：
+
+* state management
+* conditional routing
+* retry
+* specialist agents
+* tool calling
+* evidence accumulation
+
+例如：
+
+```text
+START
+  │
+  ▼
+Document Scanner
+  │
+  ▼
+L1 Metadata
+  │
+  ▼
+L3 Document Classification
+  │
+  ├──── template found ────► Template Analysis
+  │
+  └──── unknown ───────────► Generic Analysis
+  │
+  ▼
+L2 Visual Forensics
+  │
+  ▼
+Evidence Alignment
+  │
+  ▼
+Verification Agent
+  │
+  ├── math tool
+  ├── QR tool
+  ├── date tool
+  ├── external API
+  └── template validator
+  │
+  ▼
+Evidence Graph
+  │
+  ▼
+Risk Engine
+  │
+  ▼
+REPORT
+```
+
+---
+
+# 16. Execution Strategy
+
+不是所有Layer都必须顺序执行。
+
+可以：
+
+```text
+             Document
+                 │
+        ┌────────┼────────┐
+        ▼        ▼        ▼
+       L1       L2       OCR
+        │        │        │
+        └────────┼────────┘
+                 ▼
+             L3 Semantic
+                 │
+                 ▼
+           Verification
+```
+
+L1、L2、OCR可以parallel。
+
+这样可以降低latency。
+
+---
+
+# 17. Plugin Architecture
+
+所有第三方模型和工具应该通过Adapter接入。
+
+例如：
+
+```text
+VisualDetector
+      │
+      ├── TruForAdapter
+      ├── ManTraNetAdapter
+      └── NoiseprintAdapter
+```
+
+而不是：
+
+```python
+from trufor import ...
+```
+
+直接散落在业务逻辑里面。
+
+接口：
+
+```python
+class VisualForensicsEngine:
+
+    def analyze(
+        self,
+        image: Image,
+        context: DocumentContext
+    ) -> List[Evidence]:
+        ...
+```
+
+未来更换模型时：
+
+```text
+TruFor
+   ↓
+DINO-based detector
+```
+
+上层不需要修改。
+
+---
+
+# 18. Model Registry
+
+模型也应该成为可配置组件：
+
+```yaml
+visual:
+  primary: trufor
+  fallback: mantra_net
+
+semantic:
+  extractor: layoutlmv3
+
+embedding:
+  model: bge-m3
+
+vision_embedding:
+  model: dinov2
+```
+
+这样可以进行：
+
+* A/B testing
+* benchmark
+* fallback
+* model versioning
+
+---
+
+# 19. External Verification Boundary
+
+外部API必须与核心Engine隔离。
+
+例如：
+
+```text
+Forensic Engine
+       │
+       ▼
+Verification Interface
+       │
+       ├── LHDN Adapter
+       ├── Bank Adapter
+       ├── Company Registry Adapter
+       └── Generic URL Validator
+```
+
+这样TrustLens本身不会被某一个政府API绑死。
+
+---
+
+# 20. 3.0 Extension — Enterprise Evidence Knowledge Base
+
+Forensic Engine完成后，可以进一步将Evidence持久化。
+
+```text
+Document
+   ↓
+Evidence Graph
+   ↓
+Persistent Knowledge Base
+```
+
+然后建立：
+
+```text
+Semantic Index
+Visual Index
+Metadata Index
+Evidence Graph
+```
+
+从单文件：
+
+```text
+"Is this document suspicious?"
+```
+
+升级为：
+
+```text
+"Does this invoice contradict previous documents?"
+```
+
+例如：
+
+```text
+Quotation
+   ↓
+Purchase Order
+   ↓
+Invoice
+   ↓
+Payment
+```
+
+系统可以发现：
+
+```text
+PO:
+RM10,000
+
+Invoice:
+RM12,000
+
+Payment:
+RM12,000
+```
+
+这形成：
+
+```text
+CROSS_DOCUMENT_INCONSISTENCY
+```
+
+---
+
+# 21. 3.0 Enterprise Document Intelligence
+
+最终系统可以提供：
+
+```text
+Document Forensics
+        +
+Document Knowledge Base
+        +
+Cross-document Verification
+        +
+Natural Language Query
+```
+
+例如：
+
+> “找出所有invoice金额与PO不一致的供应商。”
+
+Agent：
+
+```text
+Natural Language Query
+        ↓
+Query Planner
+        ↓
+Evidence Graph
+        ↓
+Document Retrieval
+        ↓
+Deterministic Verification
+        ↓
+Result
+```
+
+这使TrustLens从：
+
+```text
+Document Fraud Detector
+```
+
+逐渐变成：
+
+```text
+Enterprise Document Trust & Intelligence Platform
+```
+
+---
+
+# 22. Recommended Technology Stack
+
+## Core
+
+```text
+Python
+FastAPI
+Pydantic
+PyMuPDF
+pikepdf / qpdf
+ExifTool
+```
+
+## ML
+
+```text
+PyTorch
+Hugging Face Transformers
+LayoutLMv3
+TruFor
+ManTra-Net
+DINOv2
+Sentence Transformers
+```
+
+## OCR
+
+```text
+PaddleOCR
+```
+
+## Agent
+
+```text
+LangGraph
+LLM Tool Calling
+```
+
+## Storage
+
+Prototype：
+
+```text
+PostgreSQL
+FAISS
+```
+
+Scale-up：
+
+```text
+PostgreSQL
+pgvector / Milvus
+Object Storage
+Redis
+```
+
+## Frontend
+
+```text
+React
+TypeScript
+```
+
+---
+
+# 23. Repository Architecture
+
+建议：
+
+```text
+trustlens/
+│
+├── core/
+│   ├── document_ir.py
+│   ├── evidence.py
+│   ├── evidence_graph.py
+│   ├── risk.py
+│   └── interfaces.py
+│
+├── ingestion/
+│   ├── pdf/
+│   ├── image/
+│   ├── ocr/
+│   └── renderer/
+│
+├── engines/
+│   │
+│   ├── metadata/
+│   │   ├── exiftool.py
+│   │   ├── qpdf.py
+│   │   └── pdf_structure.py
+│   │
+│   ├── visual/
+│   │   ├── trufor.py
+│   │   ├── mantra.py
+│   │   ├── logo.py
+│   │   └── seal.py
+│   │
+│   ├── semantic/
+│   │   ├── layoutlm.py
+│   │   ├── classifier.py
+│   │   └── extractor.py
+│   │
+│   └── template/
+│       ├── matcher.py
+│       ├── registry.py
+│       └── validator.py
+│
+├── verification/
+│   ├── math/
+│   ├── date/
+│   ├── qr/
+│   ├── barcode/
+│   ├── regex/
+│   ├── checksum/
+│   └── external/
+│
+├── agents/
+│   ├── verification_agent.py
+│   ├── template_agent.py
+│   └── query_agent.py
+│
+├── orchestration/
+│   └── graph.py
+│
+├── storage/
+│   ├── postgres/
+│   ├── vector/
+│   └── object_store/
+│
+├── api/
+│   └── routes/
+│
+└── tests/
+    ├── unit/
+    ├── integration/
+    └── benchmark/
+```
+
+---
+
+# 24. Core Data Flow
+
+一个典型Invoice的完整流程：
+
+```text
+PDF
+ │
+ ▼
+Ingestion
+ │
+ ├── SHA256
+ ├── PDF structure
+ ├── Metadata
+ ├── Page rendering
+ └── OCR
+ │
+ ▼
+Document IR
+ │
+ ├──────────────────┐
+ ▼                  ▼
+L1                 L2
+ │                  │
+Photoshop          manipulation
+detected           region
+ │                  │
+ └────────┬─────────┘
+          ▼
+         L3
+          │
+          ├── Invoice
+          ├── Supplier
+          ├── Amount
+          ├── Date
+          └── Template
+          │
+          ▼
+         L4
+          │
+          ├── calculate_total()
+          ├── decode_qr()
+          ├── validate_date()
+          └── compare_fields()
+          │
+          ▼
+     Evidence Graph
+          │
+          ▼
+      Risk Engine
+          │
+          ▼
+       HIGH RISK
+```
+
+最终不是：
+
+```text
+AI says fake.
+```
+
+而是：
+
+```text
+HIGH RISK
+
+Because:
+
+[Metadata]
+PDF was modified using Photoshop.
+
+[Visual]
+Manipulation detected around Total Amount.
+
+[Semantic]
+The affected region corresponds to the Total Amount field.
+
+[Verification]
+Subtotal + Tax = RM10,600
+Document Total = RM12,000
+
+[QR]
+QR encoded invoice ID does not match printed invoice ID.
+
+[Conclusion]
+Multiple independent evidence sources corroborate
+the presence of document manipulation.
+```
+
+---
+
+# 25. Definition of a Successful TrustLens 2.0
+
+TrustLens 2.0不应该以：
+
+> “模型accuracy达到多少”
+
+作为唯一成功标准。
+
+更重要的是完成下面三个闭环：
+
+### ① Detection
+
+```text
+发现异常
+```
+
+### ② Localization
+
+```text
+定位异常
+```
+
+### ③ Verification
+
+```text
+验证异常
+```
+
+最终：
+
+```text
+Detection
+   ↓
+Localization
+   ↓
+Semantic Mapping
+   ↓
+Deterministic Verification
+   ↓
+Evidence Graph
+   ↓
+Explainable Risk Assessment
+```
+
+如果这条链完整跑通，TrustLens就已经从Hackathon中的“几个检测算法拼起来”变成了一个真正具有工程架构的 **Forensic Engine Prototype**。
+
+---
+
+# 26. Long-term Architecture
+
+最终TrustLens可以演化成三个层次：
+
+```text
+                    TrustLens
+                       │
+        ┌──────────────┴──────────────┐
+        │                             │
+        ▼                             ▼
+ Forensic Engine              Enterprise Intelligence
+        │                             │
+ ┌──────┼──────┐              ┌───────┼───────┐
+ L1     L2     L3/L4          Knowledge      Cross-
+Metadata Visual Semantic      Base           Document
+                         \          /
+                          \        /
+                           Evidence
+                             Graph
+                               │
+                               ▼
+                         Trust Decision
+```
+
+**TrustLens 2.0的核心产品不是“一个AI模型”。**
+
+真正的核心资产应该是：
+
+> **一个能够把Metadata、Pixel、Semantic、Template以及Deterministic Verification统一转化为结构化证据，并通过Evidence Graph进行关联和风险推理的Forensic Engine。**
+
+模型可以换。
+
+工具可以换。
+
+LLM可以换。
+
+甚至Layer以后可以增加。
+
+但：
+
+**Document IR → Evidence → Evidence Graph → Verification → Risk**
+
+这条协议和架构应该成为TrustLens真正的Kernel。
