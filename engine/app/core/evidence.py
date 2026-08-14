@@ -1,0 +1,54 @@
+from enum import Enum
+from typing import Optional, Any, Dict, List
+from pydantic import BaseModel, Field
+from datetime import datetime
+
+
+class EvidenceType(str, Enum):
+    # L1 - Metadata Layer
+    METADATA_SOFTWARE = "METADATA_SOFTWARE"
+    METADATA_CREATOR = "METADATA_CREATOR"
+    TEMPORAL_INCONSISTENCY = "TEMPORAL_INCONSISTENCY"
+    PDF_INCREMENTAL_UPDATE = "PDF_INCREMENTAL_UPDATE"
+    PDF_XREF_CORRUPTION = "PDF_XREF_CORRUPTION"
+    PDF_STRUCTURAL_ANOMALY = "PDF_STRUCTURAL_ANOMALY"
+    UNEXPECTED_ACTIVE_CONTENT = "UNEXPECTED_ACTIVE_CONTENT"  # /JS, /Launch
+    EMBEDDED_OBJECT_FOUND = "EMBEDDED_OBJECT_FOUND"          # /EmbeddedFile
+    FONT_INCONSISTENCY = "FONT_INCONSISTENCY"
+    XMP_HISTORY_CHAIN = "XMP_HISTORY_CHAIN"
+    PRODUCER_FINGERPRINT_MISMATCH = "PRODUCER_FINGERPRINT_MISMATCH"
+    OBJECT_GRAPH_ANOMALY = "OBJECT_GRAPH_ANOMALY"
+    SIGNATURE_INTEGRITY_BROKEN = "SIGNATURE_INTEGRITY_BROKEN"
+    SIGNATURE_MISSING = "SIGNATURE_MISSING"
+    SIGNATURE_INTACT = "SIGNATURE_INTACT"
+
+    # Fallback / Generic
+    GENERIC_OBSERVATION = "GENERIC_OBSERVATION"
+
+
+class Severity(str, Enum):
+    INFO = "info"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class Evidence(BaseModel):
+    """证据基类 - 所有 Layer 产出的统一数据格式"""
+    type: EvidenceType
+    value: Any
+    confidence: float = Field(ge=0.0, le=1.0, description="置信度 0-1")
+    source: str = Field(..., description="来源模块/工具名，如 'ExifTool'")
+    severity: Severity = Severity.INFO
+    description: Optional[str] = None
+    location: Optional[Dict[str, Any]] = None  # {"page": 1, "bbox": [x1, y1, x2, y2]}
+    raw_data: Optional[Dict[str, Any]] = None  # 用于调试或深层分析
+    generated_at: datetime = Field(default_factory=datetime.now)
+
+    def __hash__(self):
+        # 基于内容去重（避免多个模块产生相同证据）
+        return hash((self.type, str(self.value), self.source, self.description))
+
+    class Config:
+        use_enum_values = True
