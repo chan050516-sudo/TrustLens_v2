@@ -1,0 +1,564 @@
+# PDF Producer Fingerprint Database
+# 基于学术研究 [ADHATARAO_2021] 和实际观察整理
+
+version: "1.0"
+description: "PDF generator fingerprint database for forensic identification"
+
+producers:
+  # ============ 办公软件类 ============
+  microsoft_word:
+    name: "Microsoft Word"
+    category: "office"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Creator"
+          pattern: "(?i)Microsoft\\s*Word"
+          weight: 1.0
+        - field: "Producer"
+          pattern: "(?i)Microsoft\\s*(:?Print\\s*To\\s*PDF|Word)"
+          weight: 0.9
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Microsoft\\s*Word"
+          weight: 1.0
+      header_binary:
+        - pattern: "\\xB5\\xB5\\xB5\\xB5"
+          weight: 0.95
+      structure:
+        - pattern: "trailer.*/Info.*/ID.*/Prev"
+          weight: 0.7
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "medium"
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "medium"
+
+  libreoffice:
+    name: "LibreOffice"
+    category: "office"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Creator"
+          pattern: "(?i)LibreOffice"
+          weight: 1.0
+        - field: "Producer"
+          pattern: "(?i)LibreOffice"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)LibreOffice"
+          weight: 1.0
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "medium"
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "medium"
+
+  # ============ Adobe 生态 ============
+  adobe_acrobat:
+    name: "Adobe Acrobat"
+    category: "pdf_editor"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Adobe\\s*Acrobat"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Adobe\\s*Acrobat"
+          weight: 0.8
+      header_binary:
+        - pattern: "\\xE2\\xE3\\xCF\\xD3"
+          weight: 0.95
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "low"
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "low"
+      tax_document: "low"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "low"
+
+  adobe_photoshop:
+    name: "Adobe Photoshop"
+    category: "image_editor"
+    risk_baseline: "high"  # 图像编辑器处理文档类文件本身可疑
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 0.9
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 0.9
+      header_binary:
+        - pattern: "\\xE2\\xE3\\xCF\\xD3"  # 与 Distiller 共享
+          weight: 0.3
+    variants:  # Photoshop 的 14 种版本变体 [11†L21-L28]
+      - "Adobe Photoshop for Windows"
+      - "Adobe Photoshop CS5 Windows"
+      - "Adobe Photoshop 23.4 (Macintosh)"
+      - "Adobe Photoshop 26.7 (Windows)"
+      - "Adobe Photoshop 2025 Windows"
+      - "Adobe Photoshop CS4 Macintosh"
+      - "Adobe Photoshop 7.0"
+      - "Adobe Photoshop CC 2017 (Windows)"
+      - "Adobe Photoshop CC 2019 (Windows)"
+      - "Adobe Photoshop 21.0 (Windows)"
+      - "Adobe Photoshop CS6 (Macintosh)"
+      - "Adobe Photoshop CC 2018 (Windows)"
+      - "PDF Presentation Adobe Photoshop"
+      - "Adobe Photoshop for Windows -- Image Conversion Plug-in"
+    document_type_risk:
+      invoice: "high"
+      bank_statement: "critical"
+      legal_document: "high"
+      contract: "high"
+      certificate: "high"
+      resume: "low"  # 简历可以用设计软件
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "high"
+      quotation: "medium"
+      purchase_order: "medium"
+      payslip: "critical"
+
+  adobe_indesign:
+    name: "Adobe InDesign"
+    category: "desktop_publishing"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Adobe\\s*InDesign"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)Adobe\\s*InDesign"
+          weight: 0.9
+    document_type_risk:
+      invoice: "medium"
+      bank_statement: "high"
+      legal_document: "medium"
+      contract: "medium"
+      certificate: "low"
+      resume: "low"
+      summons: "high"
+      tax_document: "high"
+      receipt: "medium"
+      quotation: "medium"
+      purchase_order: "medium"
+      payslip: "high"
+
+  # ============ 在线设计工具 ============
+  canva:
+    name: "Canva"
+    category: "online_design"
+    risk_baseline: "high"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Canva"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)Canva"
+          weight: 0.7
+      structure:
+        - field: "PDFVersion"
+          pattern: "1.4"  # Canva 100% 输出 PDF 1.4 [10†L23]
+          weight: 0.6
+    notes: |
+      Canva 常作为下游重保存工具出现——原始 Creator 可能是其他应用，
+      Producer 变为 Canva 表明文档经过了 Canva 的重建 [10†L2-L4]。
+      当 Canva 作为 Producer 而 Creator 是机构软件时，是强异常信号 [10†L12-L14]。
+    document_type_risk:
+      invoice: "high"
+      bank_statement: "critical"
+      legal_document: "high"
+      contract: "high"
+      certificate: "high"
+      resume: "medium"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "high"
+      quotation: "high"
+      purchase_order: "high"
+      payslip: "critical"
+
+  # ============ 操作系统/系统级 ============
+  macos_quartz:
+    name: "macOS Quartz"
+    category: "os_system"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Quartz\\s*PDFContext"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)Quartz"
+          weight: 0.7
+      header_binary:
+        - pattern: "\\x00\\x00\\x00\\x00"  # macOS 特有
+          weight: 0.5
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "low"  # 打印为PDF是常见操作 [18†L13-L14]
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "low"
+
+  microsoft_print_to_pdf:
+    name: "Microsoft Print to PDF"
+    category: "os_system"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Microsoft\\s*:?\\s*Print\\s*To\\s*PDF"
+          weight: 1.0
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "low"  # 打印为PDF是常见操作 [18†L13-L16]
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "low"
+
+  pdfium:
+    name: "PDFium (Chrome PDF Printer)"
+    category: "os_system"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)PDFium"
+          weight: 1.0
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "low"  # Chrome 打印为PDF [18†L15]
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "low"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "low"
+
+  # ============ 渲染/转换引擎 ============
+  ghostscript:
+    name: "Ghostscript"
+    category: "conversion_engine"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)GPL\\s*Ghostscript"
+          weight: 1.0
+        - field: "Producer"
+          pattern: "(?i)Ghostscript"
+          weight: 0.9
+      header_binary:
+        - pattern: "\\x00\\x00\\x00\\x00"  # Ghostscript 特定
+          weight: 0.4
+    notes: |
+      Ghostscript 转换时可能丢失原有元数据 [13†L16-L19]，
+      如果文档声称来自官方系统但 Producer 是 Ghostscript，需警惕。
+    document_type_risk:
+      invoice: "medium"
+      bank_statement: "high"
+      legal_document: "medium"
+      contract: "medium"
+      certificate: "medium"
+      resume: "low"
+      summons: "high"
+      tax_document: "high"
+      receipt: "medium"
+      quotation: "medium"
+      purchase_order: "medium"
+      payslip: "high"
+
+  skia_pdf:
+    name: "Skia/PDF (Chromium)"
+    category: "conversion_engine"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)Skia/PDF\\s*m\\d+"
+          weight: 1.0
+    document_type_risk:
+      invoice: "medium"
+      bank_statement: "medium"
+      legal_document: "medium"
+      contract: "medium"
+      certificate: "medium"
+      resume: "low"
+      summons: "high"
+      tax_document: "high"
+      receipt: "medium"
+      quotation: "medium"
+      purchase_order: "medium"
+      payslip: "medium"
+
+  # ============ TeX 生态 ============
+  pdftex:
+    name: "pdfTeX"
+    category: "tex"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)pdf[eE]?TeX"
+          weight: 1.0
+      header_binary:
+        - pattern: "\\xD0\\xD4\\xC5\\xD8"  # TeXLive Linux [7†L40-L43]
+          weight: 0.8
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "medium"
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"  # LaTeX 简历很常见
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "medium"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "medium"
+
+  luatex:
+    name: "LuaTeX"
+    category: "tex"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)LuaTeX"
+          weight: 1.0
+      header_binary:
+        - pattern: "\\xD0\\xD4\\xC5\\xD8"  # 与 pdfTeX 共享 [7†L40-L43]
+          weight: 0.6
+    document_type_risk:
+      invoice: "low"
+      bank_statement: "medium"
+      legal_document: "low"
+      contract: "low"
+      certificate: "low"
+      resume: "low"
+      summons: "medium"
+      tax_document: "medium"
+      receipt: "medium"
+      quotation: "low"
+      purchase_order: "low"
+      payslip: "medium"
+
+  # ============ PDF 库 ============
+  itext:
+    name: "iText"
+    category: "pdf_library"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)iText"
+          weight: 1.0
+    notes: |
+      iText 是广泛使用的 PDF 库。出现在官方文档中可能正常，
+      但结合其他异常（如缺少数字签名）则需警惕。
+    document_type_risk:
+      invoice: "medium"
+      bank_statement: "high"
+      legal_document: "medium"
+      contract: "medium"
+      certificate: "medium"
+      resume: "low"
+      summons: "high"
+      tax_document: "high"
+      receipt: "medium"
+      quotation: "medium"
+      purchase_order: "medium"
+      payslip: "high"
+
+  # ============ Python PDF 库 ============
+  reportlab:
+    name: "ReportLab"
+    category: "pdf_library"
+    risk_baseline: "high"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)ReportLab"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)ReportLab"
+          weight: 0.9
+    notes: |
+      ReportLab 是 Python PDF 生成库。出现在官方文档中极不正常，
+      AI 生成的伪造文档常用此类库 [5†L13-L14]。
+    document_type_risk:
+      invoice: "critical"
+      bank_statement: "critical"
+      legal_document: "critical"
+      contract: "critical"
+      certificate: "critical"
+      resume: "medium"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "critical"
+      quotation: "critical"
+      purchase_order: "critical"
+      payslip: "critical"
+
+  fpdf:
+    name: "FPDF / PyFPDF"
+    category: "pdf_library"
+    risk_baseline: "high"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)FPDF"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)FPDF"
+          weight: 0.9
+    notes: |
+      FPDF 是轻量级 Python PDF 库。出现在正式文档中高度可疑。
+    document_type_risk:
+      invoice: "critical"
+      bank_statement: "critical"
+      legal_document: "critical"
+      contract: "critical"
+      certificate: "critical"
+      resume: "medium"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "critical"
+      quotation: "critical"
+      purchase_order: "critical"
+      payslip: "critical"
+
+  # ============ 在线转换工具 ============
+  pdf24:
+    name: "PDF24 Tools"
+    category: "online_converter"
+    risk_baseline: "high"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)PDF24"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)PDF24"
+          weight: 0.8
+    notes: |
+      在线转换工具，常被用于伪造文档 [17†L19]。
+    document_type_risk:
+      invoice: "high"
+      bank_statement: "critical"
+      legal_document: "high"
+      contract: "high"
+      certificate: "high"
+      resume: "medium"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "high"
+      quotation: "high"
+      purchase_order: "high"
+      payslip: "critical"
+
+  pdf2go:
+    name: "PDF2Go"
+    category: "online_converter"
+    risk_baseline: "high"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)pdf2go"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)pdf2go"
+          weight: 0.8
+    document_type_risk:
+      invoice: "high"
+      bank_statement: "critical"
+      legal_document: "high"
+      contract: "high"
+      certificate: "high"
+      resume: "medium"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "high"
+      quotation: "high"
+      purchase_order: "high"
+      payslip: "critical"
+
+  # ============ AI/LLM 生成器 ============
+  chatgpt_pdf:
+    name: "ChatGPT PDF Export"
+    category: "ai_generator"
+    risk_baseline: "critical"
+    fingerprints:
+      metadata:
+        - field: "Producer"
+          pattern: "(?i)ChatGPT"
+          weight: 1.0
+        - field: "Creator"
+          pattern: "(?i)ChatGPT"
+          weight: 0.9
+    notes: |
+      AI 生成文档的直接标志 [5†L13-L14]。
+      任何官方文档中出现此标志都是严重异常。
+    document_type_risk:
+      invoice: "critical"
+      bank_statement: "critical"
+      legal_document: "critical"
+      contract: "critical"
+      certificate: "critical"
+      resume: "high"
+      summons: "critical"
+      tax_document: "critical"
+      receipt: "critical"
+      quotation: "critical"
+      purchase_order: "critical"
+      payslip: "critical"

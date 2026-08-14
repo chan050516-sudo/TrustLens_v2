@@ -1,0 +1,102 @@
+## 第五轮：高级验证器 —— 指纹库与数字签名（完整实现）
+
+在开始编码之前，我先基于搜索结果整理出一份**完整的生成器指纹知识库**，然后实现匹配引擎。
+
+
+### 一、生成器指纹知识库（基于学术研究与实际观察）
+
+根据多篇学术研究，PDF生成器会在文件的多个层次留下稳定的**工具痕迹（toolmarks）**。以下是经过验证的指纹特征：
+
+#### 1. PDF头部的二进制魔数（Header Binary Data）
+
+PDF规范允许在`%PDF-1.x`之后添加第二行注释，不同工具会写入不同的二进制值。研究表明**9种工具具有唯一值**，可直接用于识别：
+
+| 生成器 | 二进制魔数（十六进制） | 唯一性 |
+|--------|----------------------|--------|
+| Acrobat Distiller | `0xE2E3CFD3` | 唯一 |
+| Microsoft Office Word | `\xB5\xB5\xB5\xB5` | 唯一 |
+| LibreOffice | 特定值 | 唯一 |
+| Ghostscript | 特定值 | 唯一 |
+| Mac OS X Quartz | 特定值 | 唯一 |
+| PdfTeX | `0xD0D4C5D8` | 与LuaTeX共享（TeXLive Linux） |
+| LuaTeX | `0xD0D4C5D8` 或另一值 | 依赖发行版和OS |
+| Skia/PDF | 特定值 | 唯一 |
+| Cairo | 特定值 | 唯一 |
+
+#### 2. Metadata 指纹（ExifTool 可提取）
+
+| 生成器 | Creator 特征 | Producer 特征 | XMP 特征 |
+|--------|-------------|---------------|----------|
+| **Microsoft Word** | `Microsoft Word` | `Microsoft: Print To PDF` 或 `Microsoft Word` | 含 Office 命名空间 |
+| **Adobe Acrobat** | 原始应用名 | `Adobe Acrobat` / `Adobe Acrobat Pro` | Adobe XMP 命名空间 |
+| **Adobe Photoshop** | 原始应用名 | `Adobe Photoshop` + 版本 | Photoshop 命名空间，14种版本变体 |
+| **Canva** | 原始应用名（常为其他工具） | `Canva` | PDF 1.4 |
+| **LibreOffice** | `LibreOffice` | `LibreOffice` | LibreOffice 命名空间 |
+| **macOS Quartz** | 原始应用名 | `Quartz PDFContext` | macOS 特有 |
+| **Ghostscript** | 原始应用名 | `GPL Ghostscript` + 版本 | 可能缺失或自动生成 UUID |
+| **Skia/PDF** | 原始应用名 | `Skia/PDF mXXX` | Chrome/Chromium 相关 |
+| **iText** | 原始应用名 | `iText` | iText 命名空间 |
+| **PDFium** | 原始应用名 | `PDFium` | Chrome 内置打印 |
+| **ReportLab** | `ReportLab` | `ReportLab` | Python 库 |
+| **FPDF/PyFPDF** | `FPDF` | `FPDF` | Python 库 |
+
+#### 3. 结构级指纹
+
+| 生成器 | PDF版本 | 压缩方式 | 对象结构特征 |
+|--------|---------|---------|-------------|
+| **Canva** | PDF 1.4 | 标准 | 设计工具重建 |
+| **Photoshop** | PDF 1.4 (63%) / 1.3 (37%) | 光栅优先 | 嵌入图像栈 |
+| **Microsoft Word** | 取决于版本 | 标准 | `/Info` 对象包含 Word 特定元数据 |
+| **Acrobat Distiller** | 取决于配置 | Flate | 唯一 xref 结构 |
+
+#### 4. 文档类型与预期生成器映射
+
+| 文档类型 | 正常生成器 | 可疑生成器（高风险） |
+|---------|-----------|-------------------|
+| **Invoice（发票）** | 会计软件、Word、Acrobat | Photoshop、Canva、Python库 |
+| **Bank Statement（银行对账单）** | 银行系统、PDFium | Photoshop、Canva、AI生成器 |
+| **Payslip（工资单）** | HR系统、PDFium | Photoshop、Canva |
+| **Legal Document（法律文件）** | Word、Acrobat、专业软件 | Canva、Photoshop |
+| **Contract（合同）** | Word、Acrobat | Canva、设计工具 |
+| **Certificate（证书）** | 专业证书软件、Word | Canva、Photoshop |
+| **Resume（简历）** | Word、LaTeX、设计软件 | 无明显可疑（设计软件可接受） |
+| **Summons（传票）** | 法院系统、Word | 任何非官方工具 |
+| **Tax Document（税务文件）** | 税务软件、官方系统 | Photoshop、Canva |
+| **Receipt（收据）** | POS系统、会计软件 | Photoshop、Canva |
+| **Quotation（报价单）** | Word、会计软件 | Canva、Photoshop |
+| **Purchase Order（采购订单）** | ERP系统、Word | 设计工具 |
+
+
+
+### 三、验收标准（第五轮完成）
+
+1. **指纹匹配**：
+   - 输入包含 `Producer: Adobe Photoshop` 的 PDF，匹配到 `adobe_photoshop`，置信度 ≥ 0.9
+   - 输入包含 `Producer: Canva` 的 PDF，匹配到 `canva`，置信度 ≥ 0.9
+   - 输入包含 `Producer: Microsoft Word` 的 PDF，匹配到 `microsoft_word`，置信度 ≥ 0.85
+
+2. **文档类型风险**：
+   - `Photoshop` + `bank_statement` → 产出 `PRODUCER_FINGERPRINT_MISMATCH`，严重性 `CRITICAL`
+   - `Canva` + `legal_document` → 产出 `PRODUCER_FINGERPRINT_MISMATCH`，严重性 `HIGH`
+   - `Microsoft Word` + `resume` → 无高风险证据
+
+3. **Creator/Producer 不一致检测**：
+   - `Creator: Microsoft Word` + `Producer: Canva` → 检测到 `CANVA_REBUILD` 不匹配
+   - `Creator: Microsoft Word` + `Producer: Adobe Photoshop` → 检测到 `PHOTOSHOP_RASTER_REBUILD` 不匹配
+
+4. **数字签名检测**：
+   - 有签名的 PDF → `has_signatures=True`，`signature_status` 为 `HAS_SIGNATURE` 或 `VERIFIED`
+   - 签名被破坏的 PDF → `signature_status="BROKEN"`
+   - 无签名的 PDF → `signature_status="NO_SIGNATURE"`
+
+
+### 四、扩展指南
+
+指纹库设计为 **YAML 驱动**，添加新生成器只需：
+
+1. 在 `fingerprints.yaml` 的 `producers` 下添加新条目
+2. 定义 `metadata` 指纹（字段 + 正则模式 + 权重）
+3. 定义 `document_type_risk` 映射
+4. 可选：添加 `header_binary` 或 `structure` 指纹
+
+这种设计使得指纹库可以**独立于代码演进**，方便社区贡献和持续更新。
