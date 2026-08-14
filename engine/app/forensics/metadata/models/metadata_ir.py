@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -26,13 +26,25 @@ class PDFStructureReport(BaseModel):
 
 
 class ObjectGraph(BaseModel):
-    """pikepdf 构建的对象图（第3轮使用，第1轮先定义占位）"""
+    """pikepdf 构建的 PDF 对象图"""
     total_objects: int = 0
     total_streams: int = 0
-    embedded_files: List[str] = Field(default_factory=list)
+    embedded_files: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="嵌入文件列表，每个元素含 'id'(对象编号) 和 'name'(文件名)"
+    )
     javascript_present: bool = False
     launch_actions_present: bool = False
-    edges: List[tuple] = Field(default_factory=list)  # (from_obj_id, to_obj_id)
+    open_action_present: bool = False
+    edges: List[Tuple[int, int]] = Field(
+        default_factory=list,
+        description="边列表 (父对象ID, 子对象ID)，目前仅记录页面 -> XObject 引用"
+    )
+    pages_with_xobjects: Dict[int, List[int]] = Field(
+        default_factory=dict,
+        description="每页包含的 XObject 对象ID列表，键为页码(从1开始)"
+    )
+    error: Optional[str] = None
 
 
 class MetadataContainer(BaseModel):
