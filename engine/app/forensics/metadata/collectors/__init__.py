@@ -2,6 +2,7 @@ from typing import Dict, Type
 from app.forensics.metadata.interfaces import BaseCollector
 from app.forensics.metadata.collectors.exiftool import ExifToolCollector
 from app.forensics.metadata.collectors.qpdf import QPDFCollector
+from app.forensics.metadata.exceptions import CollectorError
 
 # 收集器注册表
 COLLECTOR_REGISTRY: Dict[str, Type[BaseCollector]] = {

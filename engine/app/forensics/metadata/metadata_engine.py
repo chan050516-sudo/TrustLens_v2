@@ -18,6 +18,7 @@ from app.forensics.metadata.models.metadata_ir import (
     ObjectGraph,
 )
 from app.forensics.metadata.registry.fingerprint_matcher import get_fingerprint_registry
+from app.forensics.metadata.exceptions import CollectorError, ParserError, AnalyzerError
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,9 @@ class MetadataEngine:
         """安全执行收集器（返回证据或 None）"""
         try:
             return collector.collect(context)
+        except (CollectorError, FileNotFoundError) as e:
+            logger.warning(f"Collector {collector.name()} failed: {e}")
+            raise
         except Exception as e:
             logger.warning(f"Collector {collector.name()} failed: {e}")
             raise
@@ -158,6 +162,9 @@ class MetadataEngine:
         """安全执行解析器（返回解析结果或 None）"""
         try:
             return parser.parse(context)
+        except (ParserError, FileNotFoundError) as e:
+            logger.warning(f"Parser {parser.name()} failed: {e}")
+            raise
         except Exception as e:
             logger.warning(f"Parser {parser.name()} failed: {e}")
             raise
@@ -261,7 +268,7 @@ class MetadataEngine:
                 evidences = analyzer.analyze(context, parsed_data)
                 if evidences:
                     all_evidences.extend(evidences)
-            except Exception as e:
+            except (AnalyzerError, Exception) as e:
                 logger.warning(f"Analyzer {name} failed: {e}", exc_info=True)
                 self._errors.append({"module": f"analyzer_{name}", "error": str(e)})
         
