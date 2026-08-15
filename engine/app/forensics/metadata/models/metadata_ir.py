@@ -54,3 +54,9 @@ class MetadataContainer(BaseModel):
     object_graph: Optional[ObjectGraph] = None
     fonts_per_page: Dict[int, List[str]] = Field(default_factory=dict)
     signature_fields: List[str] = Field(default_factory=list)
+    signatures: List[Dict[str, Any]] = Field(default_factory=list)  # 存储完整签名详情
+    has_acroform: bool = False
+    has_layers: bool = False
+    has_annotations: bool = False
+    object_stream_count: int = 0
+    images_per_page: Dict[int, int] = Field(default_factory=dict)  # 每页图像数量

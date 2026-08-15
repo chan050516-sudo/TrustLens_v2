@@ -6,4 +6,5 @@ __all__ = [
     "XMPAnalyzer",
     "ConsistencyAnalyzer",
     "FingerprintAnalyzer",
+    "SignatureAnalyzer",
 ]

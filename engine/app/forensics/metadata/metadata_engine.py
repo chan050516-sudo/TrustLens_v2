@@ -10,7 +10,7 @@ from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence, EvidenceType, Severity
 from app.forensics.metadata.collectors import ExifToolCollector, QPDFCollector
 from app.forensics.metadata.parsers import PikepdfParser, PyMuPDFParser, SignatureParser
-from app.forensics.metadata.analyzers import XMPAnalyzer, ConsistencyAnalyzer, FingerprintAnalyzer
+from app.forensics.metadata.analyzers import XMPAnalyzer, ConsistencyAnalyzer, FingerprintAnalyzer, SignatureAnalyzer
 from app.forensics.metadata.models.metadata_ir import (
     MetadataContainer,
     ExifToolMetadata,
@@ -53,6 +53,7 @@ class MetadataEngine:
         self.xmp_analyzer = XMPAnalyzer()
         self.consistency_analyzer = ConsistencyAnalyzer()
         self.fingerprint_analyzer = FingerprintAnalyzer()
+        self.signature_analyzer = SignatureAnalyzer()
         
         self.fingerprint_registry = get_fingerprint_registry()
         
@@ -212,20 +213,24 @@ class MetadataEngine:
                 except Exception as e:
                     logger.warning(f"Failed to parse object graph: {e}")
                     self._errors.append({"module": "pikepdf", "error": str(e)})
-        
+            container.has_acroform = pikepdf_result.get("has_acroform", False)
+            container.has_layers = pikepdf_result.get("has_layers", False)
+            container.has_annotations = pikepdf_result.get("has_annotations", False)
+            container.object_stream_count = pikepdf_result.get("object_stream_count", 0)
+
         # PyMuPDF 结果
         pymupdf_result = results.get("pymupdf")
         if pymupdf_result and isinstance(pymupdf_result, dict):
             fonts_per_page = pymupdf_result.get("fonts_per_page")
             if fonts_per_page:
                 container.fonts_per_page = fonts_per_page
+                container.images_per_page = pymupdf_result.get("images_per_page", {})
         
         # Signature 结果
         signature_result = results.get("signature")
         if signature_result and isinstance(signature_result, dict):
-            signature_fields = signature_result.get("signature_fields")
-            if signature_fields:
-                container.signature_fields = signature_fields
+            container.signature_fields = signature_result.get("signature_fields", [])
+            container.signatures = signature_result.get("signatures", [])
     
     def _run_analyzers(self, context: DocumentContext) -> List[Evidence]:
         """运行所有分析器，汇总证据"""
@@ -236,7 +241,12 @@ class MetadataEngine:
             "exiftool": self._container.exiftool if self._container else None,
             "structure": self._container.structure if self._container else None,
             "fonts_per_page": self._container.fonts_per_page if self._container else {},
-            "signature_fields": self._container.signature_fields if self._container else [],
+            "signatures": self._container.signatures if self._container else [],  # 新增
+            "has_acroform": self._container.has_acroform if self._container else False,
+            "has_layers": self._container.has_layers if self._container else False,
+            "has_annotations": self._container.has_annotations if self._container else False,
+            "object_stream_count": self._container.object_stream_count if self._container else 0,
+            "images_per_page": self._container.images_per_page if self._container else {},
         }
         
         # 额外添加一些上下文（如文档类型，可通过外部设置或自动识别）
@@ -261,6 +271,7 @@ class MetadataEngine:
             ("xmp", self.xmp_analyzer),
             ("consistency", self.consistency_analyzer),
             ("fingerprint", self.fingerprint_analyzer),
+            ("signature", self.signature_analyzer),
         ]
         
         for name, analyzer in analyzers:

@@ -48,6 +48,101 @@ class ConsistencyAnalyzer(BaseAnalyzer):
             if font_evidence:
                 evidences.append(font_evidence)
 
+        # --- 新增扩展检测 ---
+        
+        # 1. 页面尺寸不一致
+        dim_ev = self._analyze_page_dimension(raw)
+        if dim_ev: evidences.append(dim_ev)
+        
+        # 2. XMP 格式不匹配
+        fmt_ev = self._analyze_xmp_format(raw)
+        if fmt_ev: evidences.append(fmt_ev)
+        
+        # 3. XMP MetadataDate 晚于 CreateDate
+        meta_ev = self._analyze_xmp_metadata_date(raw)
+        if meta_ev: evidences.append(meta_ev)
+        
+        # 4. 编码异常（标题/主题乱码）
+        enc_ev = self._analyze_encoding_anomaly(raw)
+        if enc_ev: evidences.append(enc_ev)
+        
+        # 5. 公司字段不匹配（条件触发）
+        company_ev = self._analyze_company_mismatch(raw, context)
+        if company_ev: evidences.append(company_ev)
+        
+        # 6. 文件系统时间与 PDF ModifyDate 差异
+        fs_ev = self._analyze_fs_pdf_time_diff(context, exiftool_data)
+        if fs_ev: evidences.append(fs_ev)
+
+        # 7. 对象流异常 (OBJECT_STREAM_ANOMALY)
+        obj_stream_count = parsed_data.get("object_stream_count", 0)
+        total_objs = parsed_data.get("total_objects", 0)
+        if total_objs > 0:
+            ratio = obj_stream_count / total_objs
+            if ratio > 0.8:  # 超过 80% 是对象流，极易伪造
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.OBJECT_STREAM_ANOMALY,
+                        value=f"{obj_stream_count}/{total_objs} ({ratio:.0%})",
+                        confidence=0.75,
+                        source="consistency_analyzer",
+                        severity=Severity.LOW,
+                        description=f"High proportion of Object Streams ({ratio:.0%}) detected. While common in some PDFs, extreme values may indicate obfuscation.",
+                        raw_data={"stream_count": obj_stream_count, "total_objects": total_objs, "ratio": ratio}
+                    )
+                )
+        
+        # 8. 表单/图层/注释检测
+        if parsed_data.get("has_acroform"):
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.ACROFORM_DETECTED,
+                    value="AcroForm present",
+                    confidence=0.99,
+                    source="consistency_analyzer",
+                    severity=Severity.MEDIUM,
+                    description="PDF contains editable AcroForm fields. Suspicious if document is claimed to be a scanned/static image."
+                )
+            )
+        if parsed_data.get("has_layers"):
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.LAYERS_DETECTED,
+                    value="Layers (OCProperties) present",
+                    confidence=0.99,
+                    source="consistency_analyzer",
+                    severity=Severity.HIGH,
+                    description="PDF contains optional content groups (layers). Often used to hide/overlay forged text."
+                )
+            )
+        if parsed_data.get("has_annotations"):
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.ANNOTATIONS_DETECTED,
+                    value="Annotations present",
+                    confidence=0.99,
+                    source="consistency_analyzer",
+                    severity=Severity.MEDIUM,
+                    description="PDF contains annotations (comments/sticky notes). Rare in official final invoices."
+                )
+            )
+        
+        # 9. 过度嵌入图像
+        images_per_page = parsed_data.get("images_per_page", {})
+        for page_num, count in images_per_page.items():
+            if count > 20:  # 单页超过 20 张图像
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.EXCESSIVE_EMBEDDED_IMAGES,
+                        value=f"Page {page_num}: {count} images",
+                        confidence=0.80,
+                        source="consistency_analyzer",
+                        severity=Severity.MEDIUM,
+                        description=f"Page {page_num} contains {count} embedded images, far exceeding typical document layout. Suggests splicing or collage.",
+                        location={"page": page_num}
+                    )
+                )
+
         return evidences
 
     def _analyze_timeline(
@@ -234,3 +329,139 @@ class ConsistencyAnalyzer(BaseAnalyzer):
             return datetime.fromisoformat(dt_str.strip())
         except (ValueError, TypeError):
             return None
+
+
+    # ========== 新方法实现 ==========
+
+    def _analyze_page_dimension(self, raw: Dict[str, Any]) -> Optional[Evidence]:
+        """PAGE_DIMENSION_INCONSISTENCY: 图像宽高比与标准 A4/Letter 严重偏离"""
+        width = raw.get("ImageWidth")
+        height = raw.get("ImageHeight")
+        if not width or not height:
+            return None
+        try:
+            ratio = float(width) / float(height)
+        except (ValueError, TypeError):
+            return None
+        
+        # A4 比例 ≈ 1.414, Letter ≈ 1.294, 名片 ≈ 1.5~1.6, 方形容器 = 1.0
+        # 如果比例 < 0.8 (竖长) 或 > 2.0 (宽扁)，极可能被裁剪
+        if ratio < 0.8 or ratio > 2.0:
+            return Evidence(
+                type=EvidenceType.PAGE_DIMENSION_INCONSISTENCY,
+                value=f"width={width}, height={height}, ratio={ratio:.2f}",
+                confidence=0.85,
+                source="consistency_analyzer",
+                severity=Severity.MEDIUM,
+                description=f"Image aspect ratio ({ratio:.2f}) deviates significantly from standard document ratios (A4≈1.41). Possible cropping or unusual page size.",
+                raw_data={"width": width, "height": height, "ratio": ratio}
+            )
+        return None
+
+    def _analyze_xmp_format(self, raw: Dict[str, Any]) -> Optional[Evidence]:
+        """XMP_FORMAT_MISMATCH: 如果文档声称是扫描件，但 XMP 显示为 Word/Excel"""
+        xmp_format = raw.get("XMP:Format") or raw.get("Format")
+        if not xmp_format:
+            return None
+        xmp_format_lower = xmp_format.lower()
+        # 如果原始格式是 Office 文档，说明是转换而来
+        if "vnd.openxmlformats" in xmp_format_lower or "msword" in xmp_format_lower:
+            return Evidence(
+                type=EvidenceType.XMP_FORMAT_MISMATCH,
+                value=xmp_format,
+                confidence=0.78,
+                source="consistency_analyzer",
+                severity=Severity.MEDIUM,
+                description=f"XMP indicates original format is '{xmp_format}' (Office document), but document is presented as PDF. Suggests conversion, not a native scan.",
+                raw_data={"xmp_format": xmp_format}
+            )
+        return None
+
+    def _analyze_xmp_metadata_date(self, raw: Dict[str, Any]) -> Optional[Evidence]:
+        """XMP_METADATA_AFTER_CREATE: MetadataDate 远晚于 CreateDate，可能批量重写"""
+        create = self._parse_date(raw.get("XMP:CreateDate"))
+        metadata = self._parse_date(raw.get("XMP:MetadataDate"))
+        if not create or not metadata:
+            return None
+        diff_days = (metadata - create).total_seconds() / 86400
+        if diff_days > 30:  # 超过 30 天
+            return Evidence(
+                type=EvidenceType.XMP_METADATA_AFTER_CREATE,
+                value=f"MetadataDate: {metadata}, CreateDate: {create}",
+                confidence=0.82,
+                source="consistency_analyzer",
+                severity=Severity.MEDIUM,
+                description=f"XMP MetadataDate ({metadata}) is {diff_days:.1f} days after CreateDate ({create}), suggesting batch metadata reprocessing.",
+                raw_data={"create": str(create), "metadata": str(metadata), "diff_days": diff_days}
+            )
+        return None
+
+    def _analyze_encoding_anomaly(self, raw: Dict[str, Any]) -> Optional[Evidence]:
+        """METADATA_ENCODING_ANOMALY: 标题或主题包含不可打印的控制字符"""
+        title = raw.get("Title", "")
+        subject = raw.get("Subject", "")
+        # 检测控制字符 (ASCII < 32 且非换行/回车/制表) 或全问号、全乱码
+        import re
+        suspicious_patterns = []
+        for field_name, value in [("Title", title), ("Subject", subject)]:
+            if not value:
+                continue
+            # 检测控制字符
+            if re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', value):
+                suspicious_patterns.append(f"{field_name} contains control characters")
+            # 检测全是问号或类似替换字符
+            if re.fullmatch(r'[?�]+', value.strip()):
+                suspicious_patterns.append(f"{field_name} consists of replacement characters")
+        
+        if suspicious_patterns:
+            return Evidence(
+                type=EvidenceType.METADATA_ENCODING_ANOMALY,
+                value=", ".join(suspicious_patterns),
+                confidence=0.90,
+                source="consistency_analyzer",
+                severity=Severity.MEDIUM,
+                description=f"Metadata encoding anomaly detected: {', '.join(suspicious_patterns)}. Often indicates default/garbage metadata in forged PDFs.",
+                raw_data={"title": title, "subject": subject}
+            )
+        return None
+
+    def _analyze_company_mismatch(self, raw: Dict[str, Any], context: DocumentContext) -> Optional[Evidence]:
+        """COMPANY_METADATA_MISMATCH: 仅在外部传入预期公司时触发"""
+        expected_company = getattr(context, "expected_company", None) or context.custom_metadata.get("expected_company")
+        if not expected_company:
+            return None
+        actual_company = raw.get("Company")
+        if not actual_company:
+            return None
+        if expected_company.lower() not in actual_company.lower() and actual_company.lower() not in expected_company.lower():
+            return Evidence(
+                type=EvidenceType.COMPANY_METADATA_MISMATCH,
+                value=f"Expected: {expected_company}, Actual: {actual_company}",
+                confidence=0.95,
+                source="consistency_analyzer",
+                severity=Severity.HIGH,
+                description=f"Document Company metadata '{actual_company}' does not match expected '{expected_company}'.",
+                raw_data={"expected": expected_company, "actual": actual_company}
+            )
+        return None
+
+    def _analyze_fs_pdf_time_diff(self, context: DocumentContext, exiftool: Optional[ExifToolMetadata]) -> Optional[Evidence]:
+        """FS_VS_PDF_TIME_DIFF: 文件系统修改时间与 PDF ModifyDate 差异超过 24h"""
+        if not exiftool or not exiftool.modify_date:
+            return None
+        try:
+            fs_mtime = datetime.fromtimestamp(context.file_path.stat().st_mtime)
+        except Exception:
+            return None
+        diff_seconds = abs((fs_mtime - exiftool.modify_date).total_seconds())
+        if diff_seconds > 86400:  # 24h
+            return Evidence(
+                type=EvidenceType.FS_VS_PDF_TIME_DIFF,
+                value=f"FS: {fs_mtime}, PDF: {exiftool.modify_date}",
+                confidence=0.88,
+                source="consistency_analyzer",
+                severity=Severity.HIGH,
+                description=f"Filesystem mtime ({fs_mtime}) and PDF ModifyDate ({exiftool.modify_date}) differ by {diff_seconds/3600:.1f} hours. Metadata may have been altered independently.",
+                raw_data={"fs_mtime": str(fs_mtime), "pdf_modify": str(exiftool.modify_date), "diff_hours": diff_seconds/3600}
+            )
+        return None

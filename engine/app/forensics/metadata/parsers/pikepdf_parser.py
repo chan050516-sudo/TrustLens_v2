@@ -127,5 +127,53 @@ class PikepdfParser(BaseParser):
             logger.exception(error_msg)
             graph.error = error_msg
 
-        # 返回包含 object_graph 的字典，也可附带其他元数据
-        return {"object_graph": graph}
+
+        # === 新增检测 ===
+        has_acroform = False
+        has_layers = False
+        has_annotations = False
+        object_stream_count = 0
+        
+        try:
+            # 1. AcroForm 检测
+            if "/AcroForm" in pdf.Root:
+                has_acroform = True
+            
+            # 2. 图层 (OCProperties) 检测
+            if "/OCProperties" in pdf.Root:
+                has_layers = True
+            
+            # 3. 对象流统计 (Object Streams 通常用于压缩对象)
+            # 遍历所有对象，检查是否包含 /ObjStm
+            for ref in pdf.objects:
+                obj = pdf.objects[ref]
+                if hasattr(obj, "stream") and obj.stream is not None:
+                    # 检查 /Type 或直接检测流字典中的特殊键
+                    if hasattr(obj, "keys"):
+                        if "/Type" in obj and obj["/Type"] == "/ObjStm":
+                            object_stream_count += 1
+                        # 另一种检测方式：检查是否存在 /First 和 /N
+                        elif "/First" in obj and "/N" in obj:
+                            object_stream_count += 1
+            
+            # 4. 注释检测 (遍历每页的 /Annots)
+            for page in pdf.pages:
+                if "/Annots" in page:
+                    annots = page["/Annots"]
+                    # annots 可能是一个数组
+                    if hasattr(annots, "__len__") and len(annots) > 0:
+                        has_annotations = True
+                        break
+                    
+        except Exception as e:
+            logger.warning(f"Extended pikepdf detection error: {e}")
+
+        # 组装返回结果，新增字段
+        result = {"object_graph": graph}
+        result["has_acroform"] = has_acroform
+        result["has_layers"] = has_layers
+        result["has_annotations"] = has_annotations
+        result["object_stream_count"] = object_stream_count
+        result["total_objects"] = graph.total_objects
+        
+        return result

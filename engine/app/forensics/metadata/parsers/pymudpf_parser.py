@@ -2,7 +2,7 @@
 import logging
 from typing import Dict, Any
 
-import fitz  # PyMuPDF
+import pymupdf
 
 from app.core.document_ir import DocumentContext
 from app.forensics.metadata.interfaces import BaseParser
@@ -25,8 +25,9 @@ class PyMuPDFParser(BaseParser):
         text_contains_js = False
         text_contains_launch = False
 
+        images_per_page = {}
         try:
-            doc = fitz.open(file_path)
+            doc = pymupdf.open(file_path)
             for page_num in range(len(doc)):
                 page = doc[page_num]
                 # 提取字体信息：返回列表，每个元素包含字体名、编码等
@@ -34,6 +35,11 @@ class PyMuPDFParser(BaseParser):
                 # 取字体名称（第一个元素通常为字体名）
                 font_names = [f[0] for f in fonts if f]
                 fonts_per_page[page_num + 1] = font_names
+
+                # --- 新增：统计该页图像数量 ---
+                # get_images() 返回列表，每个元素是图像引用字典
+                images = page.get_images(full=True)
+                images_per_page[page_num + 1] = len(images)
 
                 # 扫描页面文本中是否存在可疑关键词（辅助）
                 text = page.get_text("text")
@@ -51,4 +57,5 @@ class PyMuPDFParser(BaseParser):
             "fonts_per_page": fonts_per_page,
             "text_contains_js": text_contains_js,
             "text_contains_launch": text_contains_launch,
+            "images_per_page": images_per_page,
         }
