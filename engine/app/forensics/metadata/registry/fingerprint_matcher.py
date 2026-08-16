@@ -187,19 +187,29 @@ class FingerprintRegistry:
             按置信度降序排列的匹配列表
         """
         matches: List[FingerprintMatch] = []
+
+        full_metadata = {
+            **metadata,
+            # 如果传入的 metadata 没有这些字段，尝试从 ExifTool 原始数据获取
+            "Software": metadata.get("Software"),
+            "Make": metadata.get("Make"),
+            "Model": metadata.get("Model"),
+            "EXIF:Software": metadata.get("EXIF:Software"),
+            "EXIF:Make": metadata.get("EXIF:Make"),
+            "EXIF:Model": metadata.get("EXIF:Model"),
+        }
         
         for producer_name, producer_data in self._producers.items():
             match = self._match_single_producer(
                 producer_name,
                 producer_data,
-                metadata,
+                full_metadata,
                 header_binary,
                 pdf_version
             )
             if match and match.confidence > 0:
                 matches.append(match)
-        
-        # 按置信度降序排列
+
         matches.sort(key=lambda m: m.confidence, reverse=True)
         return matches
     

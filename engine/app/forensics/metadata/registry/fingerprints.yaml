@@ -562,3 +562,143 @@ producers:
       quotation: "critical"
       purchase_order: "critical"
       payslip: "critical"
+
+
+  # ============ 图片编辑软件 (新增) ============
+  adobe_photoshop_image:
+    name: "Adobe Photoshop (Image)"
+    category: "image_editor"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Software"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 0.9
+        - field: "Creator"
+          pattern: "(?i)Adobe\\s*Photoshop"
+          weight: 0.8
+    document_type_risk:
+      photograph: "low"
+      official_document: "critical"
+      id_card: "critical"
+
+  adobe_lightroom:
+    name: "Adobe Lightroom"
+    category: "image_editor"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Software"
+          pattern: "(?i)Adobe\\s*Lightroom"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Adobe\\s*Lightroom"
+          weight: 0.9
+    document_type_risk:
+      photograph: "low"
+      official_document: "high"
+
+  gimp:
+    name: "GIMP"
+    category: "image_editor"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Software"
+          pattern: "(?i)GIMP"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)GIMP"
+          weight: 0.9
+    document_type_risk:
+      photograph: "low"
+      official_document: "high"
+
+  iphone_camera:
+    name: "iPhone Camera"
+    category: "camera"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Make"
+          pattern: "(?i)Apple"
+          weight: 1.0
+        - field: "Model"
+          pattern: "(?i)iPhone"
+          weight: 1.0
+        - field: "Software"
+          pattern: "(?i)iOS|iPhone"
+          weight: 0.7
+    document_type_risk:
+      photograph: "low"
+      official_document: "medium"
+      id_card: "medium"
+
+  android_camera:
+    name: "Android Camera"
+    category: "camera"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Make"
+          pattern: "(?i)Samsung|Google|OnePlus|Xiaomi|Huawei|Oppo|Vivo"
+          weight: 0.9
+        - field: "Model"
+          pattern: "(?i)SM-|Pixel|NE221|M2007"
+          weight: 0.8
+    document_type_risk:
+      photograph: "low"
+      official_document: "medium"
+      id_card: "medium"
+
+  canon_camera:
+    name: "Canon Camera"
+    category: "camera"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Make"
+          pattern: "(?i)Canon"
+          weight: 1.0
+        - field: "Model"
+          pattern: "(?i)EOS|PowerShot|IXUS"
+          weight: 0.9
+    document_type_risk:
+      photograph: "low"
+      official_document: "medium"
+
+  sony_camera:
+    name: "Sony Camera"
+    category: "camera"
+    risk_baseline: "low"
+    fingerprints:
+      metadata:
+        - field: "Make"
+          pattern: "(?i)Sony"
+          weight: 1.0
+        - field: "Model"
+          pattern: "(?i)ILCE|DSC|HDR"
+          weight: 0.9
+    document_type_risk:
+      photograph: "low"
+      official_document: "medium"
+
+  canva_image:
+    name: "Canva (Image Export)"
+    category: "image_editor"
+    risk_baseline: "medium"
+    fingerprints:
+      metadata:
+        - field: "Software"
+          pattern: "(?i)Canva"
+          weight: 1.0
+        - field: "XMP:CreatorTool"
+          pattern: "(?i)Canva"
+          weight: 0.8
+    document_type_risk:
+      photograph: "low"
+      official_document: "critical"
+      id_card: "critical"

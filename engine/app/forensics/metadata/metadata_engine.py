@@ -9,7 +9,7 @@ import time
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence, EvidenceType
 from app.forensics.metadata.collectors import ExifToolCollector, QPDFCollector
-from app.forensics.metadata.parsers import PikepdfParser, PyMuPDFParser, SignatureParser
+from app.forensics.metadata.parsers import PikepdfParser, PyMuPDFParser, SignatureParser, ImageStructuralParser
 from app.forensics.metadata.analyzers import XMPAnalyzer, ConsistencyAnalyzer, FingerprintAnalyzer, SignatureAnalyzer
 from app.forensics.metadata.models.metadata_ir import (
     MetadataContainer,
@@ -112,16 +112,43 @@ class MetadataEngine:
             "pikepdf": None,
             "pymupdf": None,
             "signature": None,
+            "image_structural": None,
         }
         
-        # 定义任务列表 (key, func, args)
+        # 定义基础任务（所有文件类型都需要）
         tasks = [
             ("exiftool", self._safe_collect, (self.exiftool_collector, context)),
-            ("qpdf", self._safe_collect, (self.qpdf_collector, context)),
-            ("pikepdf", self._safe_parse, (self.pikepdf_parser, context)),
-            ("pymupdf", self._safe_parse, (self.pymupdf_parser, context)),
-            ("signature", self._safe_parse, (self.signature_parser, context)),
         ]
+
+        # 根据 MIME 类型决定解析器
+        mime_type = context.mime_type or ""
+
+        if mime_type == "application/pdf":
+            # PDF 解析器
+            tasks.extend([
+                ("qpdf", self._safe_collect, (self.qpdf_collector, context)),
+                ("pikepdf", self._safe_parse, (self.pikepdf_parser, context)),
+                ("pymupdf", self._safe_parse, (self.pymupdf_parser, context)),
+                ("signature", self._safe_parse, (self.signature_parser, context)),
+            ])
+        elif mime_type in ["image/jpeg", "image/jpg", "image/png"]:
+            # 图片解析器
+            tasks.extend([
+                ("image_structural", self._safe_parse, (ImageStructuralParser(), context)),
+            ])
+            # 图片不需要 qpdf, pikepdf, signature
+            results["qpdf"] = None
+            results["pikepdf"] = None
+            results["pymupdf"] = None
+            results["signature"] = None
+        else:
+            # 未知/其他格式，只跑 ExifTool
+            logger.warning(f"Unknown MIME type: {mime_type}, only ExifTool will run")
+            results["qpdf"] = None
+            results["pikepdf"] = None
+            results["pymupdf"] = None
+            results["signature"] = None
+            results["image_structural"] = None
         
         # 使用线程池执行
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -175,26 +202,29 @@ class MetadataEngine:
         if not container:
             return
         
-        # ExifTool 结果：需要从 Evidence 中提取元数据
-        exiftool_evidence = results.get("exiftool")
-        if exiftool_evidence and isinstance(exiftool_evidence, Evidence):
-            raw_data = exiftool_evidence.raw_data or {}
-            full_metadata = raw_data.get("full_metadata")
-            if full_metadata:
+        # ExifTool 结果
+        exiftool_result = results.get("exiftool")
+        if exiftool_result and isinstance(exiftool_result, dict):
+            metadata = exiftool_result.get("metadata")
+            if metadata and isinstance(metadata, ExifToolMetadata):
+                container.exiftool = metadata
+            elif metadata:
                 try:
-                    container.exiftool = ExifToolMetadata(**full_metadata)
+                    container.exiftool = ExifToolMetadata(**metadata)
                 except Exception as e:
                     logger.warning(f"Failed to parse ExifTool metadata: {e}")
                     self._errors.append({"module": "exiftool", "error": str(e)})
-        
-        # qpdf 结果：从 Evidence 中提取结构报告
-        qpdf_evidence = results.get("qpdf")
-        if qpdf_evidence and isinstance(qpdf_evidence, Evidence):
-            raw_data = qpdf_evidence.raw_data or {}
-            structure_report = raw_data.get("structure_report")
-            if structure_report:
+
+        # qpdf 结果 (PDF only)
+        qpdf_result = results.get("qpdf")
+        if qpdf_result and isinstance(qpdf_result, dict):
+            structure = qpdf_result.get("structure")
+            if structure:
                 try:
-                    container.structure = PDFStructureReport(**structure_report)
+                    if isinstance(structure, PDFStructureReport):
+                        container.structure = structure
+                    else:
+                        container.structure = PDFStructureReport(**structure)
                 except Exception as e:
                     logger.warning(f"Failed to parse qpdf report: {e}")
                     self._errors.append({"module": "qpdf", "error": str(e)})
@@ -230,7 +260,23 @@ class MetadataEngine:
         if signature_result and isinstance(signature_result, dict):
             container.signature_fields = signature_result.get("signature_fields", [])
             container.signatures = signature_result.get("signatures", [])
-    
+
+        # ===== 新增: 图片结构解析结果 =====
+        image_result = results.get("image_structural")
+        if image_result and isinstance(image_result, dict):
+            container.image_type = image_result.get("image_type")
+            container.image_width = image_result.get("width")
+            container.image_height = image_result.get("height")
+            container.image_has_thumbnail = image_result.get("has_thumbnail", False)
+            container.image_thumbnail_width = image_result.get("thumbnail_width")
+            container.image_thumbnail_height = image_result.get("thumbnail_height")
+            container.image_structural_errors = image_result.get("structural_errors", [])
+            container.image_structural_details = {
+                "jpeg": image_result.get("jpeg"),
+                "png": image_result.get("png"),
+            }
+
+
     def _run_analyzers(self, context: DocumentContext) -> List[Evidence]:
         """运行所有分析器，汇总证据"""
         all_evidences: List[Evidence] = []

@@ -49,6 +49,7 @@ class ObjectGraph(BaseModel):
 
 class MetadataContainer(BaseModel):
     """L1 所有收集数据的容器"""
+    # PDF 相关
     exiftool: Optional[ExifToolMetadata] = None
     structure: Optional[PDFStructureReport] = None
     object_graph: Optional[ObjectGraph] = None
@@ -60,3 +61,13 @@ class MetadataContainer(BaseModel):
     has_annotations: bool = False
     object_stream_count: int = 0
     images_per_page: Dict[int, int] = Field(default_factory=dict)  # 每页图像数量
+
+    # ===== 图片相关字段 =====
+    image_type: Optional[str] = None  # "jpeg", "png"
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+    image_has_thumbnail: bool = False
+    image_thumbnail_width: Optional[int] = None
+    image_thumbnail_height: Optional[int] = None
+    image_structural_errors: List[str] = Field(default_factory=list)
+    image_structural_details: Dict[str, Any] = Field(default_factory=dict)

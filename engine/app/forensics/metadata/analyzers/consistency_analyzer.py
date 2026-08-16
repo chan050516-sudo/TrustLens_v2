@@ -138,6 +138,15 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     )
                 )
 
+        # ===== 图片专用检测 =====
+        # 仅在图片文件时执行
+        image_type = parsed_data.get("image_type")
+        if image_type in ["jpeg", "png"]:
+            img_meta_ev = self._analyze_image_metadata_consistency(exiftool_data, parsed_data)
+            evidences.extend(img_meta_ev)
+            img_struct_ev = self._analyze_image_structural_anomalies(parsed_data)
+            evidences.extend(img_struct_ev)
+
         return evidences
 
     def _analyze_timeline(
@@ -447,3 +456,166 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 raw_data={"fs_mtime": str(fs_mtime), "pdf_modify": str(exiftool.modify_date), "diff_hours": diff_seconds/3600}
             )
         return None
+
+    # ========== 图片专用一致性检测 ==========
+
+    def _analyze_image_metadata_consistency(
+        self,
+        exiftool: Optional[ExifToolMetadata],
+        parsed_data: Dict[str, Any]
+    ) -> List[Evidence]:
+        """
+        图片元数据交叉验证:
+        1. EXIF 尺寸 vs 实际文件尺寸
+        2. 缩略图一致性 (简单标记)
+        """
+        evidences: List[Evidence] = []
+
+        if not exiftool:
+            return evidences
+
+        raw = exiftool.raw_json
+
+        # 1. 尺寸一致性: EXIF 尺寸 vs 文件头尺寸
+        exif_width = raw.get("EXIF:ImageWidth") or raw.get("ImageWidth")
+        exif_height = raw.get("EXIF:ImageHeight") or raw.get("ImageHeight")
+        file_width = parsed_data.get("image_width")
+        file_height = parsed_data.get("image_height")
+
+        if exif_width and file_width and exif_height and file_height:
+            try:
+                ew, fw = int(exif_width), int(file_width)
+                eh, fh = int(exif_height), int(file_height)
+                if abs(ew - fw) > 2 or abs(eh - fh) > 2:  # 允许 2px 误差
+                    evidences.append(
+                        Evidence(
+                            type=EvidenceType.IMAGE_DIMENSION_MISMATCH,
+                            value=f"EXIF: {ew}x{eh}, File: {fw}x{fh}",
+                            confidence=0.92,
+                            source="consistency_analyzer",
+                            description=f"EXIF reports {ew}x{eh} but file header reports {fw}x{fh}. Possible image cropping or metadata tampering.",
+                            raw_data={
+                                "exif_width": ew,
+                                "exif_height": eh,
+                                "file_width": fw,
+                                "file_height": fh,
+                            }
+                        )
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        # 2. 缩略图存在性 (如果 EXIF 显示有缩略图但结构解析没找到，标记)
+        exif_has_thumbnail = raw.get("EXIF:ThumbnailImage") is not None
+        struct_has_thumbnail = parsed_data.get("image_has_thumbnail", False)
+
+        if exif_has_thumbnail and not struct_has_thumbnail:
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.THUMBNAIL_INCONSISTENCY,
+                    value="EXIF claims thumbnail but not found in structure",
+                    confidence=0.78,
+                    source="consistency_analyzer",
+                    description="EXIF metadata indicates a thumbnail image exists, but structural parser could not locate it. May indicate incomplete modification.",
+                    raw_data={
+                        "exif_has_thumbnail": exif_has_thumbnail,
+                        "struct_has_thumbnail": struct_has_thumbnail,
+                    }
+                )
+            )
+
+        # 3. JPEG 质量标注一致性 (如果 EXIF 有质量标注)
+        quality_claimed = raw.get("XMP:Quality") or raw.get("Quality")
+        dqt_quality = parsed_data.get("image_structural_details", {}).get("jpeg", {}).get("estimated_quality")
+        if quality_claimed and dqt_quality:
+            try:
+                claimed = int(quality_claimed)
+                if abs(claimed - dqt_quality) > 20:
+                    evidences.append(
+                        Evidence(
+                            type=EvidenceType.JPEG_QUALITY_MISMATCH,
+                            value=f"Claimed: {claimed}, DQT-estimated: {dqt_quality}",
+                            confidence=0.85,
+                            source="consistency_analyzer",
+                            description=f"XMP claims quality {claimed}% but quantization table suggests ~{dqt_quality}%. Multiple save cycles likely.",
+                            raw_data={
+                                "claimed_quality": claimed,
+                                "estimated_quality": dqt_quality,
+                            }
+                        )
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        return evidences
+
+    def _analyze_image_structural_anomalies(
+        self,
+        parsed_data: Dict[str, Any]
+    ) -> List[Evidence]:
+        """图片结构异常检测 (JPEG DQT/DHT, PNG chunk)"""
+        evidences: List[Evidence] = []
+
+        structural_errors = parsed_data.get("image_structural_errors", [])
+        for error in structural_errors:
+            if "DQT" in error or "quantization" in error.lower():
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.JPEG_DQT_ANOMALY,
+                        value=error,
+                        confidence=0.90,
+                        source="consistency_analyzer",
+                        description=f"JPEG quantization table anomaly: {error}",
+                        raw_data={"error": error}
+                    )
+                )
+            elif "DHT" in error or "Huffman" in error:
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.JPEG_DHT_ANOMALY,
+                        value=error,
+                        confidence=0.90,
+                        source="consistency_analyzer",
+                        description=f"JPEG Huffman table anomaly: {error}",
+                        raw_data={"error": error}
+                    )
+                )
+            elif "PNG" in error or "chunk" in error.lower():
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.PNG_CHUNK_ANOMALY,
+                        value=error,
+                        confidence=0.90,
+                        source="consistency_analyzer",
+                        description=f"PNG chunk anomaly: {error}",
+                        raw_data={"error": error}
+                    )
+                )
+            elif "header" in error.lower() or "signature" in error.lower():
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.JPEG_HEADER_CORRUPTION,
+                        value=error,
+                        confidence=0.90,
+                        source="consistency_analyzer",
+                        description=f"Image header/signature anomaly: {error}",
+                        raw_data={"error": error}
+                    )
+                )
+
+        # PNG 特有: 检查关键块
+        png_details = parsed_data.get("image_structural_details", {}).get("png", {})
+        critical_chunks = png_details.get("critical_chunks", [])
+        if "IHDR" not in critical_chunks or "IDAT" not in critical_chunks:
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.PNG_CHUNK_ANOMALY,
+                    value="Missing critical chunks",
+                    confidence=0.85,
+                    source="consistency_analyzer",
+                    description=f"PNG missing critical chunks: {critical_chunks}. Image may be truncated or corrupted.",
+                    raw_data={"critical_chunks": critical_chunks}
+                )
+            )
+
+        return evidences
