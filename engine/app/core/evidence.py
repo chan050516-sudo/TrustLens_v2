@@ -43,21 +43,12 @@ class EvidenceType(str, Enum):
     GENERIC_OBSERVATION = "GENERIC_OBSERVATION"
 
 
-class Severity(str, Enum):
-    INFO = "info"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""
     type: EvidenceType
     value: Any
     confidence: float = Field(ge=0.0, le=1.0, description="置信度 0-1")
     source: str = Field(..., description="来源模块/工具名，如 'ExifTool'")
-    severity: Severity = Severity.INFO
     description: Optional[str] = None
     location: Optional[Dict[str, Any]] = None  # {"page": 1, "bbox": [x1, y1, x2, y2]}
     raw_data: Optional[Dict[str, Any]] = None  # 用于调试或深层分析

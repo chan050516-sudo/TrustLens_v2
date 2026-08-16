@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-from app.core.evidence import Evidence, EvidenceType, Severity
+from app.core.evidence import Evidence, EvidenceType
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,123 @@ class FingerprintMatch:
     max_possible_weight: float
     confidence: float  # total_weight / max_possible_weight
     raw_data: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------- 新增：工具分类关键词库 ----------
+TOOL_CATEGORIES = {
+    "office_suite": {
+        "keywords": [
+            "microsoft word", "microsoft excel", "microsoft powerpoint", "microsoft office",
+            "libreoffice", "openoffice", "writer", "calc", "impress",
+            "wps office", "wps writer", "wps spreadsheet",
+            "pages", "numbers", "keynote",  # Apple iWork
+            "google docs", "google sheets", "google slides",
+            "wordperfect", "quattro pro",  # 老牌办公
+            "onlyoffice", "zoho writer"
+        ],
+        "display_name": "Office/Document Editor"
+    },
+    "image_editor": {
+        "keywords": [
+            "adobe photoshop", "photoshop", "ps",
+            "canva",
+            "gimp", "gnu image manipulation",
+            "photopea",
+            "pixlr",
+            "krita",
+            "procreate",
+            "affinity photo", "affinity designer",
+            "coreldraw", "corel photopaint",
+            "paint.net", "paint shop pro",
+            "sketch", "figma", "adobe illustrator", "illustrator", "ai",
+            "inkscape"
+        ],
+        "display_name": "Image/Graphics Editor"
+    },
+    "pdf_editor": {
+        "keywords": [
+            "adobe acrobat", "acrobat",
+            "foxit pdf", "foxit phantompdf",
+            "pdf-xchange", "pdf-xchange editor",
+            "nitro pdf", "nitro pro",
+            "pdfelement", "wondershare pdfelement",
+            "sejda", "pdf escape",
+            "abbyy finereader", "abbyy pdf"
+        ],
+        "display_name": "PDF Editor/Optimizer"
+    },
+    "scan_capture": {
+        "keywords": [
+            "adobe scan", "adobe scanner",
+            "camscanner",
+            "microsoft lens", "office lens",
+            "abbyy", "tesseract",
+            "scanner", "scanning",
+            "genius scan", "scanner pro",
+            "clear scanner", "pdf scanner",
+            "photocopier", "canon", "brother", "epson"  # 扫描仪硬件驱动
+        ],
+        "display_name": "Scan/Capture (OCR/Digital Camera)"
+    },
+    "online_converter": {
+        "keywords": [
+            "ilovepdf",
+            "smallpdf",
+            "pdf24",
+            "pdf2go",
+            "pdfcandy",
+            "online-convert",
+            "cloudconvert",
+            "hipdf",
+            "easypdf",
+            "deftpdf",
+            "pdfonline", "convertio"
+        ],
+        "display_name": "Online Conversion Tool"
+    },
+    "pdf_library": {
+        "keywords": [
+            "reportlab",
+            "fpdf", "pyfpdf",
+            "pypdf", "pypdf2", "pikepdf",
+            "pymupdf", "fitz",
+            "cairo", "pango",
+            "skia", "chromium pdf",
+            "itext", "itextsharp",
+            "pdfbox", "apache pdfbox",
+            "tcpdf", "dompdf",
+            "wkhtmltopdf", "weasyprint",
+            "xhtml2pdf", "pdfkit",
+            "prawn", "hexapdf", "libharu", "hpdf"
+        ],
+        "display_name": "Programmatic PDF Library"
+    },
+    "os_print_system": {
+        "keywords": [
+            "microsoft print to pdf",
+            "windows print", "windows pdf",
+            "quartz pdfcontext", "macos quartz", "mac pdf",
+            "cups", "cups-pdf",
+            "chromium print", "google chrome print", "edge print", "firefox print"
+        ],
+        "display_name": "OS/Print PDF Generator"
+    },
+    "tex_ecosystem": {
+        "keywords": [
+            "pdftex", "pdflatex",
+            "luatex", "lualatex",
+            "xetex", "xelatex",
+            "tex", "latex"
+        ],
+        "display_name": "TeX/LaTeX Typesetter"
+    }
+}
+
+# 构建反向查找映射（用于快速匹配）
+_KEYWORD_TO_CATEGORY = {}
+for cat, info in TOOL_CATEGORIES.items():
+    for kw in info["keywords"]:
+        _KEYWORD_TO_CATEGORY[kw] = cat
 
 
 class FingerprintRegistry:
@@ -200,55 +317,96 @@ class FingerprintRegistry:
         producer: Optional[str]
     ) -> Optional[Dict[str, Any]]:
         """
-        检测 Creator 与 Producer 是否属于不匹配的类别
+        检测 Creator 与 Producer 的工具类型映射（纯事实分类，无风险判断）
         
-        例如：Creator 是 Microsoft Word，Producer 是 Canva
-        表明文档经过 Canva 重建 [10†L12-L14]
+        返回值结构：
+        {
+            "has_mapping": True,
+            "mappings": [
+                {
+                    "creator_category": "office_suite",
+                    "creator_display": "Microsoft Word",
+                    "producer_category": "image_editor",
+                    "producer_display": "Adobe Photoshop",
+                    "matched_keyword_creator": "microsoft word",
+                    "matched_keyword_producer": "adobe photoshop"
+                }
+            ]
+        }
         """
         if not creator or not producer:
             return None
         
-        # 归一化
         creator_lower = creator.lower()
         producer_lower = producer.lower()
         
-        # 检测常见的不匹配模式
-        mismatches = []
+        # 识别 creator 类型
+        creator_category = None
+        matched_creator_kw = None
+        for kw, cat in _KEYWORD_TO_CATEGORY.items():
+            if kw in creator_lower:
+                creator_category = cat
+                matched_creator_kw = kw
+                break
         
-        # Canva 作为 Producer，原始 Creator 是机构软件
-        if "canva" in producer_lower:
-            institutional_keywords = ["word", "excel", "office", "adobe", "acrobat", "indesign"]
-            if any(kw in creator_lower for kw in institutional_keywords):
-                mismatches.append({
-                    "type": "CANVA_REBUILD",
-                    "description": f"Creator is '{creator}' but Producer is Canva — document was rebuilt by Canva",
-                    "severity": "high"
-                })
+        # 识别 producer 类型
+        producer_category = None
+        matched_producer_kw = None
+        for kw, cat in _KEYWORD_TO_CATEGORY.items():
+            if kw in producer_lower:
+                producer_category = cat
+                matched_producer_kw = kw
+                break
         
-        # Photoshop 作为 Producer，原始 Creator 是文本编辑器
-        if "photoshop" in producer_lower:
-            text_editor_keywords = ["word", "office", "libreoffice", "writer"]
-            if any(kw in creator_lower for kw in text_editor_keywords):
-                mismatches.append({
-                    "type": "PHOTOSHOP_RASTER_REBUILD",
-                    "description": f"Creator is '{creator}' but Producer is Photoshop — text document was raster-rebuilt",
-                    "severity": "high"
-                })
+        # 如果两者都能识别，且类别不同，则构成映射
+        mappings = []
+        if creator_category and producer_category and creator_category != producer_category:
+            mappings.append({
+                "creator_category": creator_category,
+                "creator_display": TOOL_CATEGORIES.get(creator_category, {}).get("display_name", creator_category),
+                "creator_raw": creator,
+                "producer_category": producer_category,
+                "producer_display": TOOL_CATEGORIES.get(producer_category, {}).get("display_name", producer_category),
+                "producer_raw": producer,
+                "matched_keyword_creator": matched_creator_kw,
+                "matched_keyword_producer": matched_producer_kw,
+                "category_relationship": f"{creator_category} -> {producer_category}"
+            })
         
-        # Python 库作为 Producer
-        python_libs = ["reportlab", "fpdf", "pypdf", "pikepdf"]
-        if any(lib in producer_lower for lib in python_libs):
-            if creator and not any(lib in creator_lower for lib in python_libs):
-                mismatches.append({
-                    "type": "PYTHON_LIBRARY_PRODUCER",
-                    "description": f"Producer is '{producer}' (Python PDF library) but Creator is '{creator}' — possible programmatic generation",
-                    "severity": "high"
-                })
+        # 如果检测到在线转换器作为 Producer，即使 Creator 未识别，也记录这种“重制”关系
+        if producer_category == "online_converter" and not creator_category:
+            mappings.append({
+                "creator_category": "unknown",
+                "creator_display": "Unknown/Unrecognized",
+                "creator_raw": creator,
+                "producer_category": "online_converter",
+                "producer_display": "Online Conversion Tool",
+                "producer_raw": producer,
+                "matched_keyword_producer": matched_producer_kw,
+                "category_relationship": "unknown -> online_converter"
+            })
+        
+        # 如果检测到 Scan/Capture 作为 Producer，记录可能的扫描转化关系
+        if producer_category == "scan_capture" and creator_category and creator_category != "scan_capture":
+            mappings.append({
+                "creator_category": creator_category,
+                "creator_display": TOOL_CATEGORIES.get(creator_category, {}).get("display_name", creator_category),
+                "creator_raw": creator,
+                "producer_category": "scan_capture",
+                "producer_display": "Scan/Capture (OCR/Digital Camera)",
+                "producer_raw": producer,
+                "matched_keyword_creator": matched_creator_kw,
+                "matched_keyword_producer": matched_producer_kw,
+                "category_relationship": f"{creator_category} -> scan_capture"
+            })
+        
+        if not mappings:
+            return None
         
         return {
-            "has_mismatch": len(mismatches) > 0,
-            "mismatches": mismatches
-        } if mismatches else None
+            "has_mapping": True,
+            "mappings": mappings
+        }
 
 
 # 单例实例

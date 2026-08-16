@@ -41,7 +41,6 @@ def main():
         print(f"\nEvidence #{i}:")
         print(f"  Type: {ev.type}")
         print(f"  Value: {ev.value}")
-        print(f"  Severity: {ev.severity}")
         print(f"  Confidence: {ev.confidence:.2f}")
         print(f"  Source: {ev.source}")
         if ev.description:

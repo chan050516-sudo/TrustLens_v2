@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 
 from app.core.document_ir import DocumentContext
-from app.core.evidence import Evidence, EvidenceType, Severity
+from app.core.evidence import Evidence, EvidenceType
 from app.forensics.metadata.collectors import ExifToolCollector, QPDFCollector
 from app.forensics.metadata.parsers import PikepdfParser, PyMuPDFParser, SignatureParser
 from app.forensics.metadata.analyzers import XMPAnalyzer, ConsistencyAnalyzer, FingerprintAnalyzer, SignatureAnalyzer
@@ -94,7 +94,6 @@ class MetadataEngine:
                     value="L1_PARTIAL_FAILURE",
                     confidence=1.0,
                     source="metadata_engine",
-                    severity=Severity.INFO,
                     description=f"Some L1 modules failed: {len(self._errors)} errors",
                     raw_data={"errors": self._errors}
                 )

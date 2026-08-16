@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from app.core.document_ir import DocumentContext
-from app.core.evidence import Evidence, EvidenceType, Severity
+from app.core.evidence import Evidence, EvidenceType
 from app.forensics.metadata.interfaces import BaseAnalyzer
 from app.forensics.metadata.models.metadata_ir import ExifToolMetadata
 
@@ -21,50 +21,46 @@ class SignatureAnalyzer(BaseAnalyzer):
     - 颁发者与文档类型冲突
     - 多签名不一致
     """
-
     def name(self) -> str:
         return "signature_analyzer"
 
     def analyze(self, context: DocumentContext, parsed_data: Dict[str, Any]) -> List[Evidence]:
         evidences: List[Evidence] = []
-        
         signatures = parsed_data.get("signatures", [])
         if not signatures:
             return evidences
         
         exiftool: Optional[ExifToolMetadata] = parsed_data.get("exiftool")
+        doc_type = parsed_data.get("document_type", "unknown")
         
-        # 1. 检查每个签名
         for sig in signatures:
-            # 1.1 过期状态
+            # 1. 过期状态
             if sig.get("is_expired", False):
                 evidences.append(
                     Evidence(
                         type=EvidenceType.CERTIFICATE_EXPIRED,
-                        value=f"Signature '{sig.get('field_name')}' is expired",
+                        value=f"Signature '{sig.get('field_name')}' expired",
                         confidence=0.98,
                         source="signature_analyzer",
-                        severity=Severity.HIGH,
                         description=f"Certificate for signature '{sig.get('field_name')}' has expired (valid_to: {sig.get('certificate_valid_to')}).",
                         raw_data={"field": sig.get("field_name"), "valid_to": sig.get("certificate_valid_to")}
                     )
                 )
             
-            # 1.2 吊销状态
+            # 2. 吊销状态
             if sig.get("is_revoked", False):
                 evidences.append(
                     Evidence(
                         type=EvidenceType.CERTIFICATE_REVOKED,
-                        value=f"Signature '{sig.get('field_name')}' is revoked",
+                        value=f"Signature '{sig.get('field_name')}' revoked",
                         confidence=0.99,
                         source="signature_analyzer",
-                        severity=Severity.CRITICAL,
-                        description=f"Certificate for signature '{sig.get('field_name')}' has been revoked.",
+                        description="Certificate has been revoked.",
                         raw_data={"field": sig.get("field_name")}
                     )
                 )
             
-            # 1.3 签名时间 vs PDF 创建时间
+            # 3. 签名时间与创建时间矛盾
             if exiftool and exiftool.create_date:
                 sig_time_str = sig.get("signing_time")
                 if sig_time_str:
@@ -73,47 +69,45 @@ class SignatureAnalyzer(BaseAnalyzer):
                         evidences.append(
                             Evidence(
                                 type=EvidenceType.SIGNATURE_TIME_MISMATCH,
-                                value=f"Signature time ({sig_time}) before PDF creation ({exiftool.create_date})",
+                                value=f"Signing before creation",
                                 confidence=0.95,
                                 source="signature_analyzer",
-                                severity=Severity.HIGH,
-                                description=f"Signature '{sig.get('field_name')}' timestamp ({sig_time}) is earlier than PDF CreateDate ({exiftool.create_date}). This is physically impossible.",
+                                description=f"Signature timestamp ({sig_time}) is earlier than PDF CreateDate ({exiftool.create_date}).",
                                 raw_data={"sig_time": str(sig_time), "pdf_create": str(exiftool.create_date)}
                             )
                         )
             
-            # 1.4 颁发者与文档类型冲突（需外部传入 document_type）
-            doc_type = parsed_data.get("document_type", "").lower()
-            issuer_cn = sig.get("issuer_cn", "")
-            if doc_type and issuer_cn:
-                # 如果文档是政府/银行类，但颁发者是个人或非可信 CA
-                if any(kw in doc_type for kw in ["government", "legal", "bank", "official", "tax", "summons"]):
-                    if "private" in issuer_cn.lower() or "self" in issuer_cn.lower() or "test" in issuer_cn.lower():
-                        evidences.append(
-                            Evidence(
-                                type=EvidenceType.SIGNER_ORIGIN_MISMATCH,
-                                value=f"Issuer '{issuer_cn}' vs doc type '{doc_type}'",
-                                confidence=0.85,
-                                source="signature_analyzer",
-                                severity=Severity.HIGH,
-                                description=f"Official document type '{doc_type}' signed by certificate issuer '{issuer_cn}'. Expected a trusted institutional CA.",
-                                raw_data={"issuer": issuer_cn, "doc_type": doc_type}
-                            )
+            # 4. ---------- 关键修复 ----------
+            # 移除 if any(kw in doc_type) 判断，只要是真实的证书颁发者信息，一律提取为纯事实证据
+            issuer_raw = sig.get("certificate_issuer")
+            if issuer_raw and "CN=" in issuer_raw:
+                import re
+                match = re.search(r'CN\s*=\s*([^,]+)', issuer_raw)
+                if match:
+                    cn = match.group(1).strip()
+                    evidences.append(
+                        Evidence(
+                            type=EvidenceType.SIGNER_ISSUER_INFO,  # 新类型，仅表示事实
+                            value=cn,
+                            confidence=0.99,
+                            source="signature_analyzer",
+                            description=f"Certificate issuer Common Name: {cn}. Document context: '{doc_type}'.",
+                            raw_data={"issuer_cn": cn, "full_issuer": issuer_raw, "document_type": doc_type}
                         )
+                    )
+            # ---------------------------------
         
-        # 2. 多签名一致性检测
+        # 5. 多签名一致性
         if len(signatures) > 1:
             valid_statuses = [s.get("is_valid", False) for s in signatures]
             if any(valid_statuses) and not all(valid_statuses):
-                # 部分有效部分无效
                 evidences.append(
                     Evidence(
                         type=EvidenceType.MULTI_SIGNATURE_INCONSISTENCY,
-                        value="Mixed signature validity",
+                        value="Mixed validity",
                         confidence=0.98,
                         source="signature_analyzer",
-                        severity=Severity.CRITICAL,
-                        description=f"Document contains {len(signatures)} signatures, but not all are valid (valid: {sum(valid_statuses)}/{len(signatures)}). Suggests partial tampering.",
+                        description=f"Partial signature validity ({sum(valid_statuses)}/{len(signatures)} valid).",
                         raw_data={"signatures": [s.get("field_name") for s in signatures], "validity": valid_statuses}
                     )
                 )

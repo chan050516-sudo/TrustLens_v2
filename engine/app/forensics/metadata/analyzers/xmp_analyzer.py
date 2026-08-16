@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from app.core.document_ir import DocumentContext
-from app.core.evidence import Evidence, EvidenceType, Severity
+from app.core.evidence import Evidence, EvidenceType
 from app.forensics.metadata.interfaces import BaseAnalyzer
 from app.forensics.metadata.models.metadata_ir import ExifToolMetadata
 
@@ -48,7 +48,6 @@ class XMPAnalyzer(BaseAnalyzer):
                     value=history_chain,
                     confidence=0.92,
                     source="xmp_analyzer",
-                    severity=self._evaluate_history_severity(history_chain),
                     description=f"XMP history shows: {' → '.join([f'{a} ({s})' for a, s, _ in history_chain])}",
                     raw_data={"history_chain": history_chain}
                 )
@@ -72,7 +71,6 @@ class XMPAnalyzer(BaseAnalyzer):
                             value=f"CreatorTool='{creator_tool}', Producer='{producer}'",
                             confidence=0.78,
                             source="xmp_analyzer",
-                            severity=Severity.MEDIUM,
                             description=f"CreatorTool ({creator_tool}) differs from Producer ({producer}) - possible conversion chain or tampering.",
                             raw_data={"creator_tool": creator_tool, "producer": producer}
                         )
@@ -88,7 +86,6 @@ class XMPAnalyzer(BaseAnalyzer):
                     value="XMP_DERIVED_FROM",
                     confidence=0.85,
                     source="xmp_analyzer",
-                    severity=Severity.MEDIUM,
                     description=f"XMP indicates document derived from another source: {derived_from[:100]}...",
                     raw_data={"derived_from": derived_from}
                 )
@@ -140,29 +137,3 @@ class XMPAnalyzer(BaseAnalyzer):
                 chain.append((action, software or "unknown", when))
 
         return chain
-
-    def _evaluate_history_severity(self, history_chain: List[Tuple[str, str, Optional[str]]]) -> Severity:
-        """根据历史链判断风险等级"""
-        if not history_chain:
-            return Severity.INFO
-
-        # 检测是否包含 "converted" 或 "saved" 等动作
-        actions = [a.lower() for a, _, _ in history_chain]
-        softwares = [s.lower() for _, s, _ in history_chain if s]
-
-        # 如果出现 "converted" 且涉及 Photoshop/Canva 等图像软件，提高风险
-        if "converted" in actions:
-            if any("photoshop" in s or "canva" in s or "gimp" in s for s in softwares):
-                return Severity.HIGH
-
-        # 如果同时出现 Word/Excel 和 Photoshop，也提高风险 (文档转图像再转PDF)
-        has_office = any("word" in s or "excel" in s or "office" in s for s in softwares)
-        has_image_editor = any("photoshop" in s or "canva" in s for s in softwares)
-        if has_office and has_image_editor:
-            return Severity.HIGH
-
-        # 如果历史链长度 > 5，频繁保存也可能可疑
-        if len(history_chain) > 5:
-            return Severity.MEDIUM
-
-        return Severity.LOW

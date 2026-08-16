@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from app.core.document_ir import DocumentContext
-from app.core.evidence import Evidence, EvidenceType, Severity
+from app.core.evidence import Evidence, EvidenceType
 from app.forensics.metadata.interfaces import BaseAnalyzer
 from app.forensics.metadata.models.metadata_ir import ExifToolMetadata, PDFStructureReport
 
@@ -86,7 +86,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value=f"{obj_stream_count}/{total_objs} ({ratio:.0%})",
                         confidence=0.75,
                         source="consistency_analyzer",
-                        severity=Severity.LOW,
                         description=f"High proportion of Object Streams ({ratio:.0%}) detected. While common in some PDFs, extreme values may indicate obfuscation.",
                         raw_data={"stream_count": obj_stream_count, "total_objects": total_objs, "ratio": ratio}
                     )
@@ -100,7 +99,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     value="AcroForm present",
                     confidence=0.99,
                     source="consistency_analyzer",
-                    severity=Severity.MEDIUM,
                     description="PDF contains editable AcroForm fields. Suspicious if document is claimed to be a scanned/static image."
                 )
             )
@@ -111,7 +109,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     value="Layers (OCProperties) present",
                     confidence=0.99,
                     source="consistency_analyzer",
-                    severity=Severity.HIGH,
                     description="PDF contains optional content groups (layers). Often used to hide/overlay forged text."
                 )
             )
@@ -122,7 +119,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     value="Annotations present",
                     confidence=0.99,
                     source="consistency_analyzer",
-                    severity=Severity.MEDIUM,
                     description="PDF contains annotations (comments/sticky notes). Rare in official final invoices."
                 )
             )
@@ -137,7 +133,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value=f"Page {page_num}: {count} images",
                         confidence=0.80,
                         source="consistency_analyzer",
-                        severity=Severity.MEDIUM,
                         description=f"Page {page_num} contains {count} embedded images, far exceeding typical document layout. Suggests splicing or collage.",
                         location={"page": page_num}
                     )
@@ -189,7 +184,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value="MODIFY_BEFORE_CREATE",
                         confidence=0.95,
                         source="consistency_analyzer",
-                        severity=Severity.HIGH,
                         description=f"PDF ModifyDate ({exiftool.modify_date}) is earlier than CreateDate ({exiftool.create_date}) - clock tampering or file corruption.",
                         raw_data={"create": str(exiftool.create_date), "modify": str(exiftool.modify_date)}
                     )
@@ -205,7 +199,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value="XMP_CREATE_MISMATCH",
                         confidence=0.88,
                         source="consistency_analyzer",
-                        severity=Severity.MEDIUM,
                         description=f"XMP CreateDate ({times['xmp_create']}) significantly differs from PDF CreateDate ({times['pdf_create']}).",
                         raw_data={"xmp_create": str(times["xmp_create"]), "pdf_create": str(times["pdf_create"])}
                     )
@@ -220,7 +213,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value="FS_MTIME_BEFORE_CREATE",
                         confidence=0.90,
                         source="consistency_analyzer",
-                        severity=Severity.HIGH,
                         description=f"Filesystem mtime ({times['fs_mtime']}) is earlier than PDF CreateDate ({times['pdf_create']}) - file was backdated or metadata altered.",
                         raw_data={"fs_mtime": str(times["fs_mtime"]), "pdf_create": str(times["pdf_create"])}
                     )
@@ -248,7 +240,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                         value=f"Multiple revisions ({structure.revision_count}) with image editor producer.",
                         confidence=0.92,
                         source="consistency_analyzer",
-                        severity=Severity.HIGH,
                         description=f"PDF has {structure.revision_count} incremental updates and is produced by {producer}. Repeated edits by image editor on a document is suspicious.",
                         raw_data={"revisions": structure.revision_count, "producer": producer}
                     )
@@ -262,7 +253,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     value="LINEARIZED_PHOTOSHOP",
                     confidence=0.75,
                     source="consistency_analyzer",
-                    severity=Severity.MEDIUM,
                     description="PDF is linearized (web-optimized) but produced by Photoshop, which is atypical.",
                     raw_data={"is_linearized": structure.is_linearized, "producer": producer}
                 )
@@ -295,7 +285,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     value="PHOTOSHOP_STANDARD_FONTS",
                     confidence=0.70,
                     source="consistency_analyzer",
-                    severity=Severity.MEDIUM,
                     description=f"Producer is Photoshop but all fonts are standard PDF fonts ({list(all_fonts)[:5]}...). Suggests document might be a scanned image with OCR text overlaid.",
                     raw_data={"fonts": list(all_fonts), "producer": producer}
                 )
@@ -308,7 +297,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value="EXCESSIVE_FONT_VARIETY",
                 confidence=0.65,
                 source="consistency_analyzer",
-                severity=Severity.LOW,
                 description=f"Document uses {len(all_fonts)} different fonts, which may indicate multiple copy-paste sources.",
                 raw_data={"font_count": len(all_fonts), "fonts": list(all_fonts)}
             )
@@ -352,7 +340,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value=f"width={width}, height={height}, ratio={ratio:.2f}",
                 confidence=0.85,
                 source="consistency_analyzer",
-                severity=Severity.MEDIUM,
                 description=f"Image aspect ratio ({ratio:.2f}) deviates significantly from standard document ratios (A4≈1.41). Possible cropping or unusual page size.",
                 raw_data={"width": width, "height": height, "ratio": ratio}
             )
@@ -371,7 +358,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value=xmp_format,
                 confidence=0.78,
                 source="consistency_analyzer",
-                severity=Severity.MEDIUM,
                 description=f"XMP indicates original format is '{xmp_format}' (Office document), but document is presented as PDF. Suggests conversion, not a native scan.",
                 raw_data={"xmp_format": xmp_format}
             )
@@ -390,7 +376,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value=f"MetadataDate: {metadata}, CreateDate: {create}",
                 confidence=0.82,
                 source="consistency_analyzer",
-                severity=Severity.MEDIUM,
                 description=f"XMP MetadataDate ({metadata}) is {diff_days:.1f} days after CreateDate ({create}), suggesting batch metadata reprocessing.",
                 raw_data={"create": str(create), "metadata": str(metadata), "diff_days": diff_days}
             )
@@ -419,7 +404,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value=", ".join(suspicious_patterns),
                 confidence=0.90,
                 source="consistency_analyzer",
-                severity=Severity.MEDIUM,
                 description=f"Metadata encoding anomaly detected: {', '.join(suspicious_patterns)}. Often indicates default/garbage metadata in forged PDFs.",
                 raw_data={"title": title, "subject": subject}
             )
@@ -439,7 +423,6 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 value=f"Expected: {expected_company}, Actual: {actual_company}",
                 confidence=0.95,
                 source="consistency_analyzer",
-                severity=Severity.HIGH,
                 description=f"Document Company metadata '{actual_company}' does not match expected '{expected_company}'.",
                 raw_data={"expected": expected_company, "actual": actual_company}
             )
@@ -459,8 +442,7 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                 type=EvidenceType.FS_VS_PDF_TIME_DIFF,
                 value=f"FS: {fs_mtime}, PDF: {exiftool.modify_date}",
                 confidence=0.88,
-                source="consistency_analyzer",
-                severity=Severity.HIGH,
+                source="consistency_analyzer", 
                 description=f"Filesystem mtime ({fs_mtime}) and PDF ModifyDate ({exiftool.modify_date}) differ by {diff_seconds/3600:.1f} hours. Metadata may have been altered independently.",
                 raw_data={"fs_mtime": str(fs_mtime), "pdf_modify": str(exiftool.modify_date), "diff_hours": diff_seconds/3600}
             )
