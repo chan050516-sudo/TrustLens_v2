@@ -2,7 +2,7 @@
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 import time
 
@@ -23,6 +23,21 @@ from app.forensics.metadata.exceptions import CollectorError, ParserError, Analy
 logger = logging.getLogger(__name__)
 
 
+# 预定义的解析器集合 (供调用方选择)
+class ResolverSet:
+    """预定义的解析器集合，供 MetadataEngine 使用"""
+    PDF = [
+        ("qpdf", lambda: QPDFCollector(), "collect"),
+        ("pikepdf", lambda: PikepdfParser(), "parse"),
+        ("pymupdf", lambda: PyMuPDFParser(), "parse"),
+        ("signature", lambda: SignatureParser(), "parse"),
+    ]
+    IMAGE = [
+        ("image_structural", lambda: ImageStructuralParser(), "parse"),
+    ]
+    MINIMAL = []  # 只跑 ExifTool
+
+
 class MetadataEngine:
     """
     Layer 1: Metadata Forensics Engine
@@ -34,7 +49,7 @@ class MetadataEngine:
     - 证据统一为 Evidence 对象
     """
     
-    def __init__(self, max_workers: int = 4, timeout_seconds: int = 60):
+    def __init__(self, max_workers: int = 4, timeout_seconds: int = 60, resolver_set: Optional[List[tuple]] = None):
         """
         Args:
             max_workers: 线程池最大工作线程数
@@ -42,6 +57,7 @@ class MetadataEngine:
         """
         self.max_workers = max_workers
         self.timeout_seconds = timeout_seconds
+        self.resolver_set = resolver_set or ResolverSet.MINIMAL
         
         # 初始化各组件
         self.exiftool_collector = ExifToolCollector()
@@ -120,35 +136,15 @@ class MetadataEngine:
             ("exiftool", self._safe_collect, (self.exiftool_collector, context)),
         ]
 
-        # 根据 MIME 类型决定解析器
-        mime_type = context.mime_type or ""
-
-        if mime_type == "application/pdf":
-            # PDF 解析器
-            tasks.extend([
-                ("qpdf", self._safe_collect, (self.qpdf_collector, context)),
-                ("pikepdf", self._safe_parse, (self.pikepdf_parser, context)),
-                ("pymupdf", self._safe_parse, (self.pymupdf_parser, context)),
-                ("signature", self._safe_parse, (self.signature_parser, context)),
-            ])
-        elif mime_type in ["image/jpeg", "image/jpg", "image/png"]:
-            # 图片解析器
-            tasks.extend([
-                ("image_structural", self._safe_parse, (ImageStructuralParser(), context)),
-            ])
-            # 图片不需要 qpdf, pikepdf, signature
-            results["qpdf"] = None
-            results["pikepdf"] = None
-            results["pymupdf"] = None
-            results["signature"] = None
-        else:
-            # 未知/其他格式，只跑 ExifTool
-            logger.warning(f"Unknown MIME type: {mime_type}, only ExifTool will run")
-            results["qpdf"] = None
-            results["pikepdf"] = None
-            results["pymupdf"] = None
-            results["signature"] = None
-            results["image_structural"] = None
+        # 添加调用方指定的解析器任务
+        for key, factory, action in self.resolver_set:
+            if action == "collect":
+                # 工厂返回收集器实例
+                collector = factory()
+                tasks.append((key, self._safe_collect, (collector, context)))
+            elif action == "parse":
+                parser = factory()
+                tasks.append((key, self._safe_parse, (parser, context)))
         
         # 使用线程池执行
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:

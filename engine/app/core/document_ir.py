@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class DocumentContext(BaseModel):
-    """文档上下文，作为所有 Layer 的统一输入"""
+    """文档上下文 - 由 Ingestion 层完全填充"""
     file_path: Path
     file_name: Optional[str] = None
     file_size_bytes: Optional[int] = None
