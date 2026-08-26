@@ -287,6 +287,19 @@ class MetadataEngine:
                 "png": image_result.get("png"),
             }
 
+        container.document_ids = {}
+        container.xmp_history_raw = []
+        container.image_exif = {}
+        container.revision_details = []
+        container.encryption_info = {}
+        container.annotations_detail = []
+        container.forms_detail = []
+        container.embedded_files_detail = []
+        container.active_content_detail = {}
+        container.orphan_objects = []
+        container.semantic_text_pages = {}
+        container.page_order_confidence = {}
+
 
     def _run_analyzers(self, context: DocumentContext) -> List[Evidence]:
         """运行所有分析器，汇总证据"""

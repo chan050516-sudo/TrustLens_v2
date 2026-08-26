@@ -71,3 +71,75 @@ class MetadataContainer(BaseModel):
     image_thumbnail_height: Optional[int] = None
     image_structural_errors: List[str] = Field(default_factory=list)
     image_structural_details: Dict[str, Any] = Field(default_factory=dict)
+
+    # ---- 文档身份 (指南 §1.2) ----
+    document_ids: Dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        description="DocumentID, InstanceID, OriginalDocumentID 的字典"
+    )
+
+    # ---- XMP History 完整数据 (指南 §1.8) ----
+    xmp_history_raw: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="原始的 XMP History 列表，含 parameters"
+    )
+
+    # ---- EXIF/图片元数据 (指南 §1.10) ----
+    image_exif: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Make, Model, Software, DateTimeOriginal, GPS, ColorSpace, ICC"
+    )
+
+    # ---- 修订详情 (指南 §2.4) ----
+    revision_details: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="每次修订的 added/modified 对象列表"
+    )
+
+    # ---- 加密信息 (指南 §2.8) ----
+    encryption_info: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="encrypted, algorithm, permissions, password_protected"
+    )
+
+    # ---- 完整注释详情 (指南 §3.10) ----
+    annotations_detail: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="完整的注释信息: page, type, uri, action, bbox, content"
+    )
+
+    # ---- 表单字段详情 (指南 §3.11) ----
+    forms_detail: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="表单字段: name, type, value, rect, page"
+    )
+
+    # ---- 嵌入文件详情 (指南 §4.4) ----
+    embedded_files_detail: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="嵌入文件: name, size, mime, xref"
+    )
+
+    # ---- 活跃内容详情 (指南 §4.3) ----
+    active_content_detail: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="javascript, open_action, launch_action, script_hash, script_snippet"
+    )
+
+    # ---- 孤立对象 (指南 §4.6, §4.7) ----
+    orphan_objects: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="孤立对象: xref, type, size, semantic_snippet"
+    )
+
+    # ---- 全文文本 (指南 §3.1) ----
+    semantic_text_pages: Dict[int, str] = Field(
+        default_factory=dict,
+        description="页码 -> 完整页面文本"
+    )
+
+    # ---- 页面阅读顺序置信度 (指南 §3.2) ----
+    page_order_confidence: Dict[int, float] = Field(
+        default_factory=dict,
+        description="页码 -> 阅读顺序置信度"
+    )

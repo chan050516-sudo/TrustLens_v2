@@ -1,0 +1,1589 @@
+可以。基于我们刚才修正后的原则，我会把这份指南重新定义成 **TrustLens v2 的“四工具 Raw Metadata → LLM Context 清洗规范”**。
+
+核心不是“尽可能压缩”，而是：
+
+> **删除 representation redundancy，但不删除 potentially useful facts。**
+>
+> **Semantic information loss-sensitive；structural information compression-friendly。**
+
+同时严格保持你的双层架构：
+
+```text
+                    ┌─────────────────────┐
+Raw Tool Output ───►│  Sanitization       │
+                    │  + Aggregation      │
+                    └─────────┬───────────┘
+                              │
+              ┌───────────────┴──────────────┐
+              ▼                              ▼
+       Evidence IR                  LLM Forensic Context
+       deterministic                 global / loss-minimized
+       findings                      contextual data
+```
+
+**不建立第三层 raw-database retrieval layer。**
+
+---
+
+# 0. 总原则
+
+四个工具的数据不要用同一种清洗逻辑。
+
+| 数据性质                             | 策略          |
+| -------------------------------- | ----------- |
+| 正文/业务语义                          | **原则上全量保留** |
+| 日期/金额/编号/身份信息                    | **全量保留**    |
+| Provenance                       | **高保真保留**   |
+| Annotation / Action / Attachment | **高保真保留**   |
+| 工具产生的异常                          | **保留**      |
+| 工具间可以确定关联的信息                     | **保留关联**    |
+| 正常的 layout metadata              | 聚合          |
+| 大量重复 span 属性                     | 聚合          |
+| byte offset                      | 删除          |
+| 正常 xref 表                        | 删除          |
+| raw binary stream                | 删除          |
+| 完整 PDF AST                       | 删除          |
+| Object ID                        | **选择性保留**   |
+| 不确定的跨工具 mapping                  | **不要强行合并**  |
+
+最重要的一条：
+
+> **任何“剪枝”都不能因为某个 detector 判断它目前看起来正常，就把潜在的 semantic evidence 删除。**
+
+---
+
+# 1. ExifTool 清洗规范
+
+ExifTool 的核心任务：
+
+> **Provenance + Metadata + Timeline + Identity**
+
+它不是负责判断“伪造”。
+
+---
+
+## 1.1 第一层：Metadata 分类
+
+不要直接把 ExifTool 的几百个 key 原样交给 LLM。
+
+先根据 namespace / tag 建立：
+
+```text
+IDENTITY
+PROVENANCE
+TEMPORAL
+DOCUMENT
+IMAGE
+XMP_HISTORY
+SIGNATURE
+TECHNICAL
+FILESYSTEM
+NOISE
+```
+
+---
+
+# 1.2 必须保留：Identity
+
+例如：
+
+```text
+FileType
+MIMEType
+FileSize
+FileName
+DocumentID
+InstanceID
+OriginalDocumentID
+```
+
+但是：
+
+```text
+绝对路径
+用户名
+机器路径
+临时目录
+```
+
+通常应该 sanitize / 删除。
+
+例如：
+
+```text
+C:\Users\John\AppData\Temp\invoice.pdf
+```
+
+不要直接给 LLM。
+
+转换：
+
+```json
+{
+  "filename": "invoice.pdf"
+}
+```
+
+如果用户名本身是 forensic evidence，则另行判断是否需要保留，但不要无意义泄露 filesystem PII。
+
+---
+
+# 1.3 必须保留：Software Provenance
+
+重点字段：
+
+```text
+Creator
+Producer
+CreatorTool
+Application
+Software
+HistorySoftwareAgent
+```
+
+统一成：
+
+```json
+{
+  "software_provenance": [
+    {
+      "source": "PDF:Creator",
+      "value": "Microsoft Word"
+    },
+    {
+      "source": "PDF:Producer",
+      "value": "Adobe PDF Library"
+    },
+    {
+      "source": "XMP:CreatorTool",
+      "value": "Microsoft Word"
+    }
+  ]
+}
+```
+
+**不要在这里直接删掉“看起来正常”的软件。**
+
+例如：
+
+```text
+Word
+→ Acrobat
+```
+
+即使这是正常转换链，也应该保留。
+
+因为未来可能出现：
+
+```text
+Word
+→ Photoshop
+→ Acrobat
+```
+
+组合本身才有意义。
+
+---
+
+# 1.4 Software Fingerprint 的处理
+
+这里分成：
+
+### Raw observation
+
+```json
+{
+  "software": "CamScanner"
+}
+```
+
+### Evidence IR
+
+```json
+{
+  "evidence_type": "METADATA_SOFTWARE",
+  "observation": "Producer indicates CamScanner"
+}
+```
+
+### LLM context
+
+保留：
+
+```json
+{
+  "software_provenance": [
+    "CamScanner"
+  ]
+}
+```
+
+以及：
+
+```json
+{
+  "software_sources": [
+    {
+      "tag": "Producer",
+      "value": "CamScanner"
+    }
+  ]
+}
+```
+
+---
+
+## 1.5 Fingerprint matcher 的 rule 不应该隐藏掉原始值
+
+假设 fingerprint database：
+
+```yaml
+camscanner:
+  category: scanner
+  expected_formats:
+    - image/jpeg
+    - application/pdf
+```
+
+不要只告诉 LLM：
+
+```text
+PRODUCER_FINGERPRINT_MISMATCH
+```
+
+还应该告诉：
+
+```json
+{
+  "observed": "CamScanner",
+  "identified_category": "scanner",
+  "document_type": "PDF",
+  "matcher_result": "mismatch"
+}
+```
+
+这样 LLM 能重新审视这个 inference。
+
+---
+
+# 1.6 时间数据：必须高保真
+
+保留：
+
+```text
+PDF CreateDate
+PDF ModifyDate
+XMP CreateDate
+XMP ModifyDate
+XMP MetadataDate
+XMP History when
+Filesystem mtime
+Filesystem ctime（如果可靠）
+Signature time
+```
+
+统一格式：
+
+```text
+ISO-8601 + timezone
+```
+
+例如：
+
+```json
+{
+  "source": "XMP-xmp:CreateDate",
+  "raw": "2026:04:10 17:15:00+08:00",
+  "normalized": "2026-04-10T17:15:00+08:00"
+}
+```
+
+**不要只保留最终 timeline。**
+
+最好：
+
+```json
+{
+  "timestamps": [...],
+  "timeline": [...]
+}
+```
+
+因为 timeline 是 derived representation。
+
+---
+
+# 1.7 不要删除 timestamp source
+
+错误：
+
+```json
+{
+  "timeline": [...]
+}
+```
+
+正确：
+
+```json
+{
+  "timeline": [
+    {
+      "time": "...",
+      "source": "XMP-xmp:CreateDate"
+    },
+    {
+      "time": "...",
+      "source": "PDF:ModifyDate"
+    }
+  ]
+}
+```
+
+因为 Detective 需要知道：
+
+> **是谁说的这个时间？**
+
+---
+
+# 1.8 XMP History：高保真
+
+不要只变成：
+
+```text
+created → saved → converted
+```
+
+至少保留：
+
+```json
+{
+  "action": "saved",
+  "software_agent": "Adobe Acrobat",
+  "when": "...",
+  "instance_id": "...",
+  "parameters": "..."
+}
+```
+
+如果参数巨大，再针对字段做 pruning。
+
+---
+
+# 1.9 DerivedFrom
+
+保留：
+
+```text
+DerivedFrom
+DocumentID
+InstanceID
+OriginalDocumentID
+```
+
+因为它可能形成：
+
+```text
+original document
+      ↓
+derived document
+      ↓
+current PDF
+```
+
+这种 provenance chain。
+
+---
+
+# 1.10 EXIF：不要把所有 EXIF 都给 LLM
+
+图片情况下：
+
+### 保留
+
+```text
+Make
+Model
+Software
+DateTimeOriginal
+CreateDate
+ModifyDate
+Orientation
+ImageWidth
+ImageHeight
+ColorSpace
+ICC profile information
+GPS（如果任务允许且有 forensic relevance）
+```
+
+### 通常压缩/删除
+
+```text
+ExifByteOrder
+MakerNote 内大量无解释字段
+文件 offset
+padding
+segment length
+```
+
+但是：
+
+> **未知字段不要因为“不认识”就直接删除。**
+
+可以保留：
+
+```json
+{
+  "unknown_metadata": {
+    "tag": "...",
+    "value": "..."
+  }
+}
+```
+
+并设置较低 context priority。
+
+---
+
+# 1.11 ExifTool 最终输出
+
+建议：
+
+```json
+{
+  "metadata_identity": {},
+  "software_provenance": [],
+  "timestamps": [],
+  "timeline": [],
+  "xmp_history": [],
+  "document_lineage": [],
+  "image_metadata": {},
+  "signature_metadata": {},
+  "selected_technical_metadata": []
+}
+```
+
+---
+
+# 2. QPDF 清洗规范
+
+QPDF 的核心：
+
+> **PDF structural history + revision + syntax integrity**
+
+---
+
+# 2.1 坚决删除
+
+这些通常没有直接 forensic semantic：
+
+```text
+raw byte offsets
+normal xref entries
+object stream byte positions
+compressed byte lengths
+normal parsing addresses
+```
+
+例如：
+
+```text
+object 41 → byte offset 183742
+```
+
+这个 `183742` 对 LLM 基本没意义。
+
+---
+
+# 2.2 必须保留：Structural errors
+
+例如：
+
+```text
+xref corruption
+invalid object
+damaged structure
+unexpected EOF
+invalid stream
+```
+
+不要只保存：
+
+```text
+qpdf failed
+```
+
+应该：
+
+```json
+{
+  "severity": "warning",
+  "message": "xref table damaged",
+  "source": "qpdf"
+}
+```
+
+---
+
+# 2.3 Revision Count：保留
+
+```json
+{
+  "revision_count": 3,
+  "incremental_update": true
+}
+```
+
+但是：
+
+> `revision_count > 1` ≠ forgery。
+
+它只是 forensic fact。
+
+---
+
+# 2.4 Incremental update：保留相关对象
+
+例如：
+
+```json
+{
+  "revision": 2,
+  "objects_added": [
+    "208 0 R",
+    "209 0 R"
+  ],
+  "objects_modified": [
+    "15 0 R"
+  ]
+}
+```
+
+这里 object ID 非常有价值。
+
+---
+
+# 2.5 Object ID 的正确清洗
+
+不要：
+
+```text
+保留所有 object ID
+```
+
+也不要：
+
+```text
+删除所有 object ID
+```
+
+采用：
+
+```text
+RELEVANT XREF RETENTION
+```
+
+保留：
+
+### A. revision-related objects
+
+```text
+objects added/modified by incremental update
+```
+
+### B. Evidence-referenced objects
+
+例如：
+
+```text
+annotation xref
+font xref
+image xref
+page xref
+signature xref
+attachment xref
+```
+
+### C. Cross-tool referenced objects
+
+如果其他分析器引用：
+
+```text
+xref = 208
+```
+
+就保留。
+
+---
+
+# 2.6 Object ID 不作为独立风险判断
+
+不要：
+
+```text
+xref 208 很大
+→ suspicious
+```
+
+而是：
+
+```text
+xref 208
+revision 3
+font resource
+used by page 2
+```
+
+LLM 才能自己推理。
+
+---
+
+# 2.7 Linearization
+
+保留：
+
+```text
+is_linearized
+```
+
+但是优先级低。
+
+它可能帮助解释：
+
+```text
+web-optimized PDF
+```
+
+但通常不是强 forensic signal。
+
+---
+
+# 2.8 Encryption / Security
+
+保留：
+
+```text
+encrypted
+encryption algorithm
+permissions
+password protection
+```
+
+但不要直接解释：
+
+```text
+encrypted → suspicious
+```
+
+---
+
+# 2.9 QPDF 最终输出
+
+```json
+{
+  "pdf_integrity": {
+    "warnings": [],
+    "errors": [],
+    "structural_validity": true
+  },
+
+  "revision_history": {
+    "revision_count": 2,
+    "incremental_update": true,
+    "revisions": []
+  },
+
+  "relevant_objects": [
+    {
+      "xref": 208,
+      "revision": 2
+    }
+  ],
+
+  "document_structure": {
+    "linearized": false,
+    "encrypted": false
+  }
+}
+```
+
+---
+
+# 3. PyMuPDF 清洗规范
+
+这是四个工具里**最容易犯错误**的地方。
+
+因为 PyMuPDF 同时产生：
+
+```text
+semantic data
+visual data
+layout data
+font data
+image data
+annotation data
+```
+
+所以必须拆开处理。
+
+---
+
+# 3.1 第一原则：全文 semantic text 不剪
+
+这是硬规则。
+
+输出：
+
+```json
+{
+  "pages": [
+    {
+      "page": 1,
+      "text": "..."
+    },
+    {
+      "page": 2,
+      "text": "..."
+    }
+  ]
+}
+```
+
+保留：
+
+```text
+所有文字
+所有数字
+所有日期
+所有金额
+所有编号
+所有业务字段
+```
+
+不要 summary。
+
+不要 embedding。
+
+不要让 extractor 决定：
+
+> “这段看起来普通，所以删除。”
+
+---
+
+# 3.2 Reading order
+
+可以做 normalization：
+
+```text
+span
+→ block
+→ line
+→ page
+```
+
+但必须避免改变原始语义。
+
+例如：
+
+```text
+Invoice No: 123
+Date: 2026-04-10
+```
+
+不要被错误重排成：
+
+```text
+2026-04-10 Invoice No: 123
+```
+
+如果 reading order 不确定：
+
+```json
+{
+  "text": "...",
+  "order_confidence": 0.7
+}
+```
+
+---
+
+# 3.3 BBox：正常文本可以删除
+
+例如：
+
+```json
+{
+  "text": "Invoice No: 123",
+  "bbox": [100,200,300,220],
+  "font": "Arial",
+  "size": 11
+}
+```
+
+如果完全正常：
+
+LLM semantic context 只需要：
+
+```json
+{
+  "text": "Invoice No: 123"
+}
+```
+
+---
+
+# 3.4 异常文本：恢复完整 layout metadata
+
+如果发现：
+
+```text
+hidden
+out-of-bound
+overlap
+font anomaly
+color anomaly
+```
+
+则：
+
+```json
+{
+  "page": 2,
+  "text": "RM 85,000",
+  "bbox": [...],
+  "font": "...",
+  "size": 11,
+  "color": "...",
+  "flags": [...]
+}
+```
+
+---
+
+# 3.5 Font：不要全量 span dump
+
+统计：
+
+```text
+font
+usage count
+character coverage
+page distribution
+```
+
+例如：
+
+```json
+{
+  "font_distribution": [
+    {
+      "font": "Arial",
+      "coverage": 94.2
+    },
+    {
+      "font": "SimSun",
+      "coverage": 1.2
+    }
+  ]
+}
+```
+
+---
+
+# 3.6 Minority fonts
+
+不要简单：
+
+```text
+<5% = suspicious
+```
+
+因为：
+
+```text
+signature
+title
+Chinese characters
+special symbols
+```
+
+都可能合法。
+
+正确：
+
+```text
+minority font
+→ contextual observation
+```
+
+如果它同时：
+
+```text
+minority font
++
+incremental revision
++
+only renders tax number
+```
+
+LLM 再推理。
+
+---
+
+# 3.7 Text color / hidden text
+
+可以保留异常：
+
+```text
+background-color match
+opacity
+outside CropBox
+outside MediaBox
+tiny text
+overlap
+```
+
+但不要简单：
+
+```text
+white text = hidden = fraud
+```
+
+因为 PDF 本来就可能有设计元素。
+
+---
+
+# 3.8 Images
+
+正常图片不要逐个 dump：
+
+```text
+image xref
+width
+height
+colorspace
+matrix
+bbox
+SMask
+```
+
+而是统计：
+
+```json
+{
+  "image_summary": {
+    "count": 7,
+    "dimensions": [...],
+    "page_distribution": [...]
+  }
+}
+```
+
+异常图片才展开：
+
+```json
+{
+  "page": 2,
+  "bbox": [...],
+  "xref": 41,
+  "width": 800,
+  "height": 600,
+  "dpi": 72,
+  "has_alpha": true
+}
+```
+
+---
+
+# 3.9 不要把 DPI 本身当风险
+
+例如：
+
+```text
+72 DPI
+```
+
+不意味着伪造。
+
+应该作为：
+
+```text
+physical characteristic
+```
+
+交给 Detective。
+
+---
+
+# 3.10 Annotations：高保真
+
+这是你特别应该保留的地方。
+
+例如：
+
+```json
+{
+  "page": 1,
+  "type": "Link",
+  "uri": "https://...",
+  "bbox": [...]
+}
+```
+
+尤其：
+
+```text
+URI
+GoTo
+Launch
+File attachment
+Widget
+Popup
+```
+
+不能简单 summary 成：
+
+```text
+annotation exists
+```
+
+因为：
+
+> **annotation 的 payload 本身可能是隐藏 forensic clue。**
+
+你举的：
+
+```text
+Exif 被洗掉
++
+JPEG/PDF 中没有 CamScanner metadata
++
+Annotation URI 指向 CamScanner
+```
+
+就是典型案例。
+
+---
+
+# 3.11 Forms
+
+保留：
+
+```text
+AcroForm
+field name
+field type
+field value
+field appearance
+widget annotation
+```
+
+尤其：
+
+```text
+field name
+```
+
+有时具有非常强的 provenance clue。
+
+---
+
+# 3.12 PyMuPDF 最终结构
+
+```json
+{
+  "semantic_text": {
+    "pages": []
+  },
+
+  "layout_summary": {
+    "fonts": [],
+    "images": [],
+    "page_statistics": []
+  },
+
+  "anomalous_regions": [],
+
+  "annotations": [],
+
+  "forms": []
+}
+```
+
+---
+
+# 4. pikepdf 清洗规范
+
+pikepdf 的核心：
+
+> **PDF object graph + semantic structural relationships**
+
+它和 QPDF 有重叠，但定位不同。
+
+可以理解：
+
+```text
+qpdf
+= revision / parser / structural integrity
+
+pikepdf
+= object graph / dictionary / relationship
+```
+
+---
+
+# 4.1 不要输出完整 object tree
+
+绝对不要：
+
+```json
+Root
+ ├── Pages
+ │    ├── Kids
+ │    │    ├── Page
+ │    │    │    ├── Resources
+ │    │    │       ├── Font
+ │    │    │       ├── XObject
+...
+```
+
+这种东西对 LLM 极度污染。
+
+---
+
+# 4.2 Root-level semantic objects：保留
+
+重点：
+
+```text
+/Root
+/Pages
+/AcroForm
+/Names
+/Names/EmbeddedFiles
+/OCProperties
+/Metadata
+/OpenAction
+/AA
+/StructTreeRoot
+```
+
+但是只输出**有意义的存在关系**。
+
+例如：
+
+```json
+{
+  "active_content": {
+    "javascript": true,
+    "open_action": true,
+    "launch_action": false
+  }
+}
+```
+
+---
+
+# 4.3 JavaScript / Actions
+
+高优先级。
+
+保留：
+
+```text
+JavaScript present
+OpenAction
+Additional Actions
+Launch
+SubmitForm
+URI
+GoTo
+```
+
+如果 script 本身短：
+
+可以保留。
+
+如果巨大：
+
+```text
+hash
+length
+language/type
+selected snippet
+```
+
+不要把几万字 JS 丢给 Detective。
+
+---
+
+# 4.4 Embedded files
+
+必须保留。
+
+例如：
+
+```json
+{
+  "embedded_files": [
+    {
+      "name": "original_invoice.docx",
+      "size": 18342,
+      "mime": "application/vnd.openxmlformats..."
+    }
+  ]
+}
+```
+
+如果里面的文件已经被 TrustLens 解析：
+
+建立：
+
+```text
+embedded document → child analysis
+```
+
+但这是以后可以扩展的系统，不需要现在搞复杂。
+
+---
+
+# 4.5 Annotations / Links
+
+与 PyMuPDF 重叠的数据可以：
+
+```text
+deterministically deduplicate
+```
+
+但不要为了去重而丢 source。
+
+例如：
+
+```json
+{
+  "annotation": {
+    "page": 2,
+    "type": "Link",
+    "uri": "...",
+    "sources": [
+      "PyMuPDF",
+      "pikepdf"
+    ]
+  }
+}
+```
+
+---
+
+# 4.6 Orphan objects
+
+这个需要谨慎。
+
+如果：
+
+```text
+object
+```
+
+无法从 Root reachable：
+
+可以产生：
+
+```json
+{
+  "orphan_objects": [
+    {
+      "xref": 208,
+      "type": "stream",
+      "size": 1234
+    }
+  ]
+}
+```
+
+但：
+
+> orphan ≠ deleted original ≠ forgery。
+
+所以不要：
+
+```text
+orphan → suspicious
+```
+
+---
+
+# 4.7 如果 orphan object 有 semantic content
+
+这时候提升优先级。
+
+例如：
+
+```text
+orphan object
+→ text stream
+→ "$8,500"
+```
+
+那么：
+
+```json
+{
+  "xref": 208,
+  "orphan": true,
+  "content_type": "text",
+  "semantic_snippet": "$8,500"
+}
+```
+
+这个非常有价值。
+
+---
+
+# 4.8 Object graph relationship
+
+保留**关系**，不要保留完整 graph。
+
+例如：
+
+```json
+{
+  "relationships": [
+    {
+      "page": 2,
+      "references": ["208 0 R", "41 0 R"]
+    }
+  ]
+}
+```
+
+而不是：
+
+```text
+完整 adjacency list
+```
+
+---
+
+# 4.9 Object ID gap
+
+建议：
+
+**不作为独立 evidence。**
+
+可以保留：
+
+```json
+{
+  "object_number": 208,
+  "revision": 2
+}
+```
+
+但不要：
+
+```json
+{
+  "gap": 184,
+  "suspicious": true
+}
+```
+
+如果以后实验发现 ID distribution 有稳定 forensic value，再增加：
+
+```text
+OBJECT_NUMBER_RELATIVE_POSITION
+```
+
+而不是直接硬编码风险。
+
+---
+
+# 4.10 pikepdf 最终结构
+
+```json
+{
+  "object_graph": {
+    "relevant_objects": [],
+    "relationships": [],
+    "orphan_objects": []
+  },
+
+  "active_content": {
+    "javascript": false,
+    "open_action": false,
+    "launch_action": false
+  },
+
+  "annotations": [],
+  "forms": [],
+  "embedded_files": [],
+  "layers": []
+}
+```
+
+---
+
+# 5. 四个工具的最终清洗矩阵
+
+| 数据                    | ExifTool | QPDF | PyMuPDF | pikepdf |
+| --------------------- | -------- | ---- | ------- | ------- |
+| Software              | ⭐⭐⭐      |      |         |         |
+| Creator/Producer      | ⭐⭐⭐      |      |         |         |
+| Timestamp             | ⭐⭐⭐      |      |         |         |
+| XMP History           | ⭐⭐⭐      |      |         |         |
+| Document IDs          | ⭐⭐⭐      |      |         |         |
+| Full text             |          |      | ⭐⭐⭐     |         |
+| Fonts                 |          |      | ⭐⭐⭐     |         |
+| Images                | EXIF     |      | ⭐⭐⭐     | ⭐       |
+| Annotation            |          |      | ⭐⭐⭐     | ⭐⭐⭐     |
+| Form                  |          |      | ⭐⭐      | ⭐⭐⭐     |
+| Revision              |          | ⭐⭐⭐  |         | ⭐⭐      |
+| Xref                  |          | ⭐⭐   |         | ⭐⭐⭐     |
+| Object graph          |          | ⭐    |         | ⭐⭐⭐     |
+| JavaScript            |          | ⭐    |         | ⭐⭐⭐     |
+| Embedded file         |          | ⭐    |         | ⭐⭐⭐     |
+| Structural corruption |          | ⭐⭐⭐  |         | ⭐       |
+| Visual anomaly        |          |      | ⭐⭐⭐     |         |
+| Filesystem time       | ⭐⭐⭐      |      |         |         |
+| Byte offsets          | ❌        | ❌    | ❌       | ❌       |
+| Raw AST               | ❌        | ❌    | ❌       | ❌       |
+| Raw streams           | ❌        | ❌    | ❌       | ❌       |
+
+---
+
+# 6. 最重要的“绝对不能剪”的数据
+
+如果你问我 TrustLens v2 最怕漏掉什么，我会列这张清单：
+
+```text
+1. 全文 semantic text
+2. 所有金额
+3. 所有日期
+4. 所有 ID / invoice number / tax number
+5. Creator / Producer / Software
+6. XMP History
+7. 所有重要 timestamp
+8. Annotation URI / Action
+9. Form field names / values
+10. Embedded file metadata
+11. JavaScript / OpenAction / Launch
+12. Revision history
+13. Relevant XREF
+14. Orphan object semantic snippets
+15. Document IDs / lineage
+```
+
+这 15 类漏掉任何一类，都可能破坏跨证据推理。
+
+---
+
+# 7. 可以放心剪掉的东西
+
+另一方面，以下东西大量出现时，**可以非常激进地剪**：
+
+```text
+1. byte offset
+2. 正常 xref table
+3. raw compressed stream
+4. PDF AST 中重复的 dictionary structure
+5. 每一个 text span 的正常 bbox
+6. 每一个正常 span 的 font metadata
+7. 每一个正常 image 的完整低层属性
+8. ExifTool 的无语义 technical flags
+9. filesystem path
+10. parser implementation details
+11. 正常 object 的完整 dictionary
+12. 重复出现的相同 metadata
+```
+
+这里的原则不是：
+
+> “这些信息绝对没用。”
+
+而是：
+
+> **它们的 forensic information density 太低。**
+
+---
+
+# 8. 最终 LLM Context 的理想形态
+
+最终我不建议追求：
+
+> **50–100 行 JSON**
+
+这个目标太武断。
+
+应该追求：
+
+> **Information density，而不是 line count。**
+
+一个 20 页 invoice 可能有：
+
+```text
+semantic text: 8,000 tokens
+metadata: 1,000 tokens
+structural context: 1,000 tokens
+layout anomalies: 500 tokens
+```
+
+总共：
+
+```text
+~10k tokens
+```
+
+完全可能比一个人为压缩成 2k token 的“漂亮 dossier”更有 forensic value。
+
+---
+
+# 9. 你这个架构最终真正厉害的地方
+
+我现在反而认为，你最初提出的：
+
+> **“所有 evidence 一次性给 Detective”**
+
+是对的。
+
+但需要加一个非常重要的限定：
+
+> **不是所有 raw data 一次性给 Detective，而是所有“不可安全丢失的 semantic facts” + “高信息密度的 structural facts”一次性给 Detective。**
+
+因此：
+
+```text
+Raw tool output
+      ↓
+Remove representation noise
+      ↓
+Preserve semantic information
+      ↓
+Aggregate repetitive structure
+      ↓
+Expand anomalies
+      ↓
+Preserve forensic addresses
+      ↓
+LLM
+```
+
+而不是：
+
+```text
+Raw
+ ↓
+Detector
+ ↓
+Suspicious?
+ ↓
+Keep
+```
+
+后者会把 TrustLens 变成一个**information-lossy rule engine**。
+
+前者才真正符合你想做的：
+
+> **“把材料全部摊在侦探桌上，让 LLM 自己发现我们事先不知道的关系。”**
+
+这也是为什么我会建议你把 **Layer 2 明确命名成 `Forensic Context`，而不是 `Filtered Evidence`**。它不是第二轮 evidence detector，而是给 Detective 准备的、经过**无损语义 + 有损结构压缩**后的案件现场。

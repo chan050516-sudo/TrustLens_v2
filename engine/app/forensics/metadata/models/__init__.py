@@ -1,14 +1,12 @@
-# engine/app/forensics/metadata/__init__.py
-from .metadata_engine import MetadataEngine
-from .models.metadata_ir import (
+# engine/app/forensics/metadata/models/__init__.py
+from .metadata_ir import (
     ExifToolMetadata,
     PDFStructureReport,
     ObjectGraph,
     MetadataContainer,
 )
-from .models.forensic_context import (
-    ForensicContext,
-    # 可选：导出子模型方便使用
+from .forensic_context import (
+    # 子模型
     MetadataIdentity,
     SoftwareProvenanceItem,
     TimelineItem,
@@ -16,24 +14,34 @@ from .models.forensic_context import (
     DocumentLineage,
     ImageMetadata,
     PDFIntegrity,
+    RevisionDetail,
     RevisionHistory,
+    PageText,
     SemanticText,
+    FontDistributionItem,
+    ImageSummaryItem,
+    PageStatistics,
     LayoutSummary,
+    AnomalousRegion,
     Annotation,
     Form,
     ActiveContent,
     EmbeddedFile,
+    RelevantObject,
+    Relationship,
+    OrphanObject,
     ObjectGraphSummary,
+    # 顶层容器
+    ForensicContext,
 )
 
 __all__ = [
-    "MetadataEngine",
+    # 原有
     "ExifToolMetadata",
     "PDFStructureReport",
     "ObjectGraph",
     "MetadataContainer",
-    "ForensicContext",
-    # 子模型
+    # 新增
     "MetadataIdentity",
     "SoftwareProvenanceItem",
     "TimelineItem",
@@ -41,12 +49,22 @@ __all__ = [
     "DocumentLineage",
     "ImageMetadata",
     "PDFIntegrity",
+    "RevisionDetail",
     "RevisionHistory",
+    "PageText",
     "SemanticText",
+    "FontDistributionItem",
+    "ImageSummaryItem",
+    "PageStatistics",
     "LayoutSummary",
+    "AnomalousRegion",
     "Annotation",
     "Form",
     "ActiveContent",
     "EmbeddedFile",
+    "RelevantObject",
+    "Relationship",
+    "OrphanObject",
     "ObjectGraphSummary",
+    "ForensicContext",
 ]
