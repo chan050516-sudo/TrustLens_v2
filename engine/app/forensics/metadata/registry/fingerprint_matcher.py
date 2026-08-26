@@ -168,6 +168,17 @@ class FingerprintRegistry:
         except yaml.YAMLError as e:
             logger.error(f"Failed to parse fingerprint registry: {e}")
             return {"producers": {}}
+
+    @staticmethod
+    def _sanitize_for_match(text: Any) -> str:
+        """
+        文本降噪：将所有非字母、非数字的字符（包括标点、商标符号、乱码）替换为空格。
+        例如 "Microsoft┬« Word 2024" -> "Microsoft   Word 2024"
+        """
+        if not text:
+            return ""
+        # 替换非单词字符（\w 包含字母数字下划线，支持多语言字母）为空格
+        return re.sub(r'[^\w]', ' ', str(text))
     
     def match(
         self,
@@ -237,10 +248,12 @@ class FingerprintRegistry:
             max_possible_weight += weight
             
             value = metadata.get(field, "")
-            if value and re.search(pattern, str(value), re.IGNORECASE):
-                matched_fields.append(f"{field}={value[:50]}")
-                total_weight += weight
-                raw_data[field] = value
+            if value:
+                sanitized_value = self._sanitize_for_match(value)
+                if re.search(pattern, sanitized_value, re.IGNORECASE):
+                    matched_fields.append(f"{field}={str(value)[:50]}")
+                    total_weight += weight
+                    raw_data[field] = value
         
         # 2. Header Binary 匹配
         header_fingerprints = fingerprints.get("header_binary", [])
@@ -263,7 +276,7 @@ class FingerprintRegistry:
             max_possible_weight += weight
             
             if field == "PDFVersion" and pdf_version:
-                if re.search(pattern, pdf_version, re.IGNORECASE):
+                if re.search(pattern, str(pdf_version), re.IGNORECASE):
                     matched_fields.append(f"PDFVersion={pdf_version}")
                     total_weight += weight
                     raw_data["pdf_version"] = pdf_version

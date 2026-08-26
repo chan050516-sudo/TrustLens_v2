@@ -1,9 +1,9 @@
 # engine/app/forensics/metadata/parsers/pikepdf_parser.py
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any
 
 import pikepdf
-from pikepdf import Dictionary, Name, Stream, Reference
+from pikepdf import Dictionary, Stream, Object, Array
 
 from app.core.document_ir import DocumentContext
 from app.forensics.metadata.interfaces import BaseParser
@@ -24,99 +24,117 @@ class PikepdfParser(BaseParser):
             raise FileNotFoundError(f"File not found: {file_path}")
 
         graph = ObjectGraph()
+        has_acroform = False
+        has_layers = False
+        has_annotations = False
+        object_stream_count = 0
+
         try:
-            # 打开 PDF，只读模式
+            # 🔴 核心修复：所有操作必须内聚在 with 上下文管理器内部
             with pikepdf.open(file_path, allow_overwriting_input=False) as pdf:
                 # 统计对象总数
-                total_objs = len(pdf.objects)
-                graph.total_objects = total_objs
+                graph.total_objects = len(pdf.objects)
 
-                # 遍历所有对象，检测流和特殊对象
                 embedded_files = []
                 js_refs = []
                 launch_refs = []
                 open_action_ref = None
 
-                for ref in pdf.objects:
-                    obj = pdf.objects[ref]
-                    obj_id = ref.objgen[0]
+                # ✅ 修复 1：正确遍历 pdf.objects
+                # 直接迭代 pdf.objects 获取 Object 对象
+                for obj in pdf.objects:
+                    if obj is None:
+                        continue
 
+                    # 安全获取对象编号（只有间接对象才有 objgen）
+                    obj_id = obj.objgen[0] if getattr(obj, "is_indirect", False) else None
+                    if obj_id is None:
+                        continue
+
+                    # 统计流对象
                     if isinstance(obj, Stream):
                         graph.total_streams += 1
 
-                        # 检测嵌入文件：类型为 /Filespec 且含 /EF，或直接包含 /EmbeddedFile
-                        is_embedded = False
-                        file_name = None
+                        # 检测对象流 (/ObjStm)
+                        obj_type = str(obj.get("/Type", ""))
+                        if obj_type == "/ObjStm" or ("/First" in obj and "/N" in obj):
+                            object_stream_count += 1
 
-                        # 检查 /Type
-                        if "/Type" in obj and obj["/Type"] == "/Filespec":
-                            # 有 /EF 键表示嵌入文件
-                            if "/EF" in obj:
-                                is_embedded = True
-                                # 获取文件名 (可能为 /UF 或 /F)
-                                file_name = obj.get("/UF", None)
-                                if file_name is None:
-                                    file_name = obj.get("/F", None)
-                                if isinstance(file_name, bytes):
-                                    file_name = file_name.decode(errors="ignore")
+                    # ✅ 修复 2：同时检测 Dictionary 和 Stream（不再只限制 Stream）
+                    if isinstance(obj, (Dictionary, Stream)):
+                        obj_type = str(obj.get("/Type", ""))
 
-                        # 也检查直接包含 /EmbeddedFile (较少见)
-                        if "/EmbeddedFile" in obj:
-                            is_embedded = True
-                            file_name = obj.get("/F", None)
-                            if isinstance(file_name, bytes):
-                                file_name = file_name.decode(errors="ignore")
+                        # --- 检测嵌入文件 ---
+                        if obj_type == "/Filespec" or "/EF" in obj or "/EmbeddedFile" in obj:
+                            file_name = None
+                            for key in ("/UF", "/F", "/Unix", "/DOS"):
+                                if key in obj:
+                                    # 处理可能为 bytes 或 Object 的值
+                                    raw_val = obj[key]
+                                    if isinstance(raw_val, bytes):
+                                        file_name = raw_val.decode("utf-8", errors="ignore")
+                                    else:
+                                        file_name = str(raw_val)
+                                    break
 
-                        if is_embedded:
                             embedded_files.append({
                                 "id": str(obj_id),
                                 "name": file_name or f"embedded_{obj_id}"
                             })
 
-                        # 检测 JavaScript
+                        # --- 检测 JavaScript ---
                         if "/JavaScript" in obj or "/JS" in obj:
                             js_refs.append(str(obj_id))
+                        # 也检查动作类型 (S 键)
+                        action_s = str(obj.get("/S", ""))
+                        if action_s == "/JavaScript":
+                            js_refs.append(str(obj_id))
 
-                        # 检测 Launch
+                        # --- 检测 Launch ---
                         if "/Launch" in obj:
                             launch_refs.append(str(obj_id))
+                        if action_s == "/Launch":
+                            launch_refs.append(str(obj_id))
 
-                # 检查根部的 /OpenAction
+                # ✅ 修复 3：全局属性检测（Root 级别）
                 if "/OpenAction" in pdf.Root:
                     open_action_ref = str(pdf.Root["/OpenAction"])
+                if "/AcroForm" in pdf.Root:
+                    has_acroform = True
+                if "/OCProperties" in pdf.Root:
+                    has_layers = True
 
                 graph.embedded_files = embedded_files
                 graph.javascript_present = len(js_refs) > 0
                 graph.launch_actions_present = len(launch_refs) > 0
                 graph.open_action_present = open_action_ref is not None
 
-                # 构建页面 -> XObject 边
-                try:
-                    for page_num, page in enumerate(pdf.pages, start=1):
-                        # 获取页面对象ID
-                        page_ref = page.objgen[0]  # 实际上 page 是 pikepdf.IndirectObject，其 objgen 是 (id, gen)
-                        # 但我们可以获取其引用
-                        # 更好：使用 page._ref 或 page.objgen
-                        if hasattr(page, 'objgen'):
-                            page_id = page.objgen[0]
-                        else:
-                            # fallback: 通过查找
-                            page_id = None
+                # ✅ 修复 4：页面维度的遍历（XObjects + 注释）
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    page_id = page.objgen[0] if getattr(page, "is_indirect", False) else None
 
-                        resources = page.get("/Resources", {})
-                        xobjects = resources.get("/XObject", {})
-                        if isinstance(xobjects, Dictionary):
+                    # 注释检测
+                    if "/Annots" in page:
+                        annots = page.get("/Annots")
+                        if isinstance(annots, Array) and len(annots) > 0:
+                            has_annotations = True
+
+                    # XObject 解析（构建对象图边）
+                    resources = page.get("/Resources")
+                    if isinstance(resources, (Dictionary, Object)):
+                        xobjects = resources.get("/XObject")
+                        if isinstance(xobjects, (Dictionary, Object)):
                             xobject_ids = []
-                            for xobj_name, xobj_ref in xobjects.items():
-                                if isinstance(xobj_ref, Reference):
-                                    xobject_ids.append(xobj_ref.objgen[0])
+                            # 迭代 xobjects 中的值
+                            for _, xobj in xobjects.items():
+                                if getattr(xobj, "is_indirect", False):
+                                    xobject_ids.append(xobj.objgen[0])
+
                             if xobject_ids:
                                 graph.pages_with_xobjects[page_num] = xobject_ids
                                 if page_id is not None:
                                     for xid in xobject_ids:
                                         graph.edges.append((page_id, xid))
-                except Exception as e:
-                    logger.warning(f"Error extracting page XObjects: {e}")
 
         except pikepdf.PdfError as e:
             error_msg = f"pikepdf error: {e}"
@@ -127,53 +145,12 @@ class PikepdfParser(BaseParser):
             logger.exception(error_msg)
             graph.error = error_msg
 
-
-        # === 新增检测 ===
-        has_acroform = False
-        has_layers = False
-        has_annotations = False
-        object_stream_count = 0
-        
-        try:
-            # 1. AcroForm 检测
-            if "/AcroForm" in pdf.Root:
-                has_acroform = True
-            
-            # 2. 图层 (OCProperties) 检测
-            if "/OCProperties" in pdf.Root:
-                has_layers = True
-            
-            # 3. 对象流统计 (Object Streams 通常用于压缩对象)
-            # 遍历所有对象，检查是否包含 /ObjStm
-            for ref in pdf.objects:
-                obj = pdf.objects[ref]
-                if hasattr(obj, "stream") and obj.stream is not None:
-                    # 检查 /Type 或直接检测流字典中的特殊键
-                    if hasattr(obj, "keys"):
-                        if "/Type" in obj and obj["/Type"] == "/ObjStm":
-                            object_stream_count += 1
-                        # 另一种检测方式：检查是否存在 /First 和 /N
-                        elif "/First" in obj and "/N" in obj:
-                            object_stream_count += 1
-            
-            # 4. 注释检测 (遍历每页的 /Annots)
-            for page in pdf.pages:
-                if "/Annots" in page:
-                    annots = page["/Annots"]
-                    # annots 可能是一个数组
-                    if hasattr(annots, "__len__") and len(annots) > 0:
-                        has_annotations = True
-                        break
-                    
-        except Exception as e:
-            logger.warning(f"Extended pikepdf detection error: {e}")
-
-        # 组装返回结果，新增字段
-        result = {"object_graph": graph}
-        result["has_acroform"] = has_acroform
-        result["has_layers"] = has_layers
-        result["has_annotations"] = has_annotations
-        result["object_stream_count"] = object_stream_count
-        result["total_objects"] = graph.total_objects
-        
-        return result
+        # 所有 result 组装都在 with 块外，但数据已经安全保存到变量中
+        return {
+            "object_graph": graph,
+            "has_acroform": has_acroform,
+            "has_layers": has_layers,
+            "has_annotations": has_annotations,
+            "object_stream_count": object_stream_count,
+            "total_objects": graph.total_objects
+        }

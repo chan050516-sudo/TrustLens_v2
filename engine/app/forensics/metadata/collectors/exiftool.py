@@ -31,10 +31,10 @@ class ExifToolCollector(BaseCollector):
             cmd = [
                 "exiftool",
                 "-j",
-                "-XMP",
-                "-EXIF",
-                "-PDF",
-                "-All",
+                "-G1",
+                "-a",
+                "-charset", "utf8",
+                "-All",          # 关键：使用 -All 而不是 -XMP -EXIF -PDF
                 str(file_path)
             ]
 
@@ -42,6 +42,8 @@ class ExifToolCollector(BaseCollector):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",      # 强制子进程通信使用 UTF-8
+                errors="replace",      # 遇到无法解码的字符替换为 �，防止崩溃
                 timeout=30,
                 check=False
             )
@@ -79,20 +81,12 @@ class ExifToolCollector(BaseCollector):
                 return None
             dt_str = dt_str.strip()
 
-            # 如果有时区偏移（如 +08:00 或 -05:00），先剥离干净，保留主体
-            # 注意：ExifTool 的日期时常包含时区，但 datetime.strptime 无法直接解析带冒号的时区
-            base_str = dt_str
-            if '+' in dt_str:
-                base_str = dt_str.split('+')[0].strip()
-            elif dt_str.endswith('Z'):
-                base_str = dt_str[:-1].strip()
-            elif '-' in dt_str and len(dt_str.split('-')) > 3:  # 像 2026-08-15 这种，但不要让普通减号干扰
-                # 仅当看起来像 ISO 时区时处理，如 -05:00
-                parts = dt_str.split('-')
-                if len(parts) == 4 and len(parts[-1]) == 5 and ':' in parts[-1]:
-                    base_str = '-'.join(parts[:-1]).strip()
-                elif len(parts) == 3 and ':' not in dt_str:
-                    pass  # 这是纯日期，不处理
+            import re
+            match = re.match(r'^([\d:\- T]+)([+-]\d{2}:\d{2}|Z)?$', dt_str)
+            if match:
+                base = match.group(1)
+            else:
+                base = dt_str
 
             # 定义严格匹配的格式白名单（按频率排序）
             # 注意：%Y:%m:%d 是 ExifTool 最经典的格式
@@ -108,7 +102,7 @@ class ExifToolCollector(BaseCollector):
 
             for fmt in formats:
                 try:
-                    return datetime.strptime(base_str, fmt)
+                    return datetime.strptime(base, fmt)
                 except ValueError:
                     continue
 
@@ -116,13 +110,19 @@ class ExifToolCollector(BaseCollector):
             logger.warning(f"Unsupported date format from ExifTool: {dt_str}")
             return None
 
+        producer = raw.get("PDF:Producer") or raw.get("XMP-pdf:Producer") or raw.get("Producer")
+        creator = raw.get("PDF:Creator") or raw.get("XMP-dc:Creator") or raw.get("Creator") or raw.get("XMP:CreatorTool")
+        create_date_str = raw.get("PDF:CreateDate") or raw.get("XMP-xmp:CreateDate") or raw.get("CreateDate")
+        modify_date_str = raw.get("PDF:ModifyDate") or raw.get("XMP-xmp:ModifyDate") or raw.get("ModifyDate")
+        software = raw.get("PDF:Software") or raw.get("XMP-pdf:Producer") or raw.get("Software")
+
         return ExifToolMetadata(
-            producer=raw.get("Producer"),
-            creator=raw.get("Creator"),
-            create_date=parse_date_safe(raw.get("CreateDate")),
-            modify_date=parse_date_safe(raw.get("ModifyDate")),
-            software=raw.get("Software"),
-            xmp={k: v for k, v in raw.items() if k.startswith("XMP")},
-            exif={k: v for k, v in raw.items() if k.startswith("EXIF") or k.startswith("GPS")},
+            producer=producer,
+            creator=creator,
+            create_date=parse_date_safe(create_date_str),
+            modify_date=parse_date_safe(modify_date_str),
+            software=software,
+            xmp={k: v for k, v in raw.items() if k.startswith("XMP-") or k.startswith("XMP:")},
+            exif={k: v for k, v in raw.items() if k.startswith("EXIF:") or k.startswith("GPS:")},
             raw_json=raw
         )

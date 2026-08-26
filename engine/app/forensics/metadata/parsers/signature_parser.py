@@ -55,31 +55,44 @@ class SignatureParser(BaseParser):
         return result
 
     def _extract_with_pymupdf(self, file_path: Path, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        使用 PyMuPDF 检测 PDF 中是否存在签名表单字段（Widget）。
+        注意：PyMuPDF 无法读取 PKCS#7 证书内容，此处仅做物理结构检测。
+        """
         try:
             import pymupdf
             doc = pymupdf.open(file_path)
-
-            sig_fields = doc.get_sig_fields()
-            if sig_fields:
+            
+            signature_widgets = []
+            for page in doc:
+                for widget in page.widgets():
+                    # PyMuPDF 的 field_type 是 int，需要与常量比较
+                    # PDF_WIDGET_TYPE_SIGNATURE 在 pymupdf 中通常为 3
+                    # 但为了兼容不同版本，使用 getattr 安全获取
+                    sig_type = getattr(pymupdf, "PDF_WIDGET_TYPE_SIGNATURE", 3)
+                    if widget.field_type == sig_type:
+                        signature_widgets.append({
+                            "field_name": widget.field_name,
+                            "field_type": "signature",
+                            "is_signed": getattr(widget, "is_signed", False),
+                            "rect": widget.rect,
+                        })
+            
+            if signature_widgets:
                 result["has_signatures"] = True
-                result["signature_fields"] = list(sig_fields.keys())
-                result["signature_status"] = "HAS_SIGNATURE"
-
-                for field_name, field_info in sig_fields.items():
-                    result["signatures"].append({
-                        "field_name": field_name,
-                        "signer_name": field_info.get("signer", None),
-                        "signing_time": field_info.get("signing_time", None),
-                        "is_valid": field_info.get("valid", False),
-                        "certificate_issuer": field_info.get("issuer", None),
-                        "certificate_subject": field_info.get("subject", None),
-                    })
+                result["signature_fields"] = [w["field_name"] for w in signature_widgets]
+                result["signature_status"] = "HAS_SIGNATURE"  # 会被 pdfsig 覆盖
+                # 存储原始物理信息，供后续分析
+                result["signature_widgets"] = signature_widgets
+            
             doc.close()
         except ImportError:
-            logger.warning("PyMuPDF not available for signature extraction")
+            logger.debug("PyMuPDF not available for signature widget detection")
         except Exception as e:
-            logger.warning(f"PyMuPDF signature extraction failed: {e}")
+            logger.warning(f"PyMuPDF signature widget detection failed: {e}")
+        
         return result
+
 
     def _verify_with_pdfsig(self, file_path: Path) -> Optional[List[Dict[str, Any]]]:
         try:
@@ -121,13 +134,25 @@ class SignatureParser(BaseParser):
                 val = val.strip()
 
                 map_keys = {
-                    "signer": "signer_name", "commonname": "signer_name",
-                    "valid": "valid", "signing_time": "signing_time",
-                    "issuer": "certificate_issuer", "subject": "certificate_subject",
+                    "signer": "signer_name",
+                    "signer_name": "signer_name",
+                    "commonname": "signer_name",
+                    "valid": "valid",
+                    "signature_valid": "valid",
+                    "signing_time": "signing_time",
+                    "time": "signing_time",
+                    "issuer": "certificate_issuer",
+                    "certificate_issuer": "certificate_issuer",
+                    "subject": "certificate_subject",
+                    "certificate_subject": "certificate_subject",
                     "serial": "certificate_serial",
-                    "valid_from": "certificate_valid_from", "not_before": "certificate_valid_from",
-                    "valid_to": "certificate_valid_to", "not_after": "certificate_valid_to",
-                    "expired": "is_expired", "revoked": "is_revoked"
+                    "certificate_serial": "certificate_serial",
+                    "valid_from": "certificate_valid_from",
+                    "not_before": "certificate_valid_from",
+                    "valid_to": "certificate_valid_to",
+                    "not_after": "certificate_valid_to",
+                    "expired": "is_expired",
+                    "revoked": "is_revoked",
                 }
                 if key in map_keys:
                     target = map_keys[key]

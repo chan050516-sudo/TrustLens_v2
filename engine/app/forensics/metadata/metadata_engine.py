@@ -170,13 +170,13 @@ class MetadataEngine:
         
         return results
     
-    def _safe_collect(self, collector, context: DocumentContext) -> Optional[Evidence]:
+    def _safe_collect(self, collector, context: DocumentContext) -> Optional[Dict[str, Any]]:
         """安全执行收集器（返回证据或 None）"""
         try:
             return collector.collect(context)
-        except (CollectorError, FileNotFoundError) as e:
-            logger.warning(f"Collector {collector.name()} failed: {e}")
-            raise
+        # except (CollectorError, FileNotFoundError) as e:
+        #     logger.warning(f"Collector {collector.name()} failed: {e}")
+        #     raise
         except Exception as e:
             logger.warning(f"Collector {collector.name()} failed: {e}")
             raise
@@ -197,19 +197,30 @@ class MetadataEngine:
         container = self._container
         if not container:
             return
+
+        # 调试：打印各模块返回的键
+        logger.debug(f"Results keys: {list(results.keys())}")
+        for key, value in results.items():
+            if value is not None:
+                logger.debug(f"  {key}: {type(value).__name__} - keys: {list(value.keys()) if isinstance(value, dict) else 'N/A'}")
         
         # ExifTool 结果
         exiftool_result = results.get("exiftool")
         if exiftool_result and isinstance(exiftool_result, dict):
             metadata = exiftool_result.get("metadata")
+            logger.debug(f"exiftool metadata type: {type(metadata)}")
             if metadata and isinstance(metadata, ExifToolMetadata):
                 container.exiftool = metadata
+                logger.debug(f"exiftool producer: {metadata.producer}")
             elif metadata:
                 try:
                     container.exiftool = ExifToolMetadata(**metadata)
+                    logger.debug(f"exiftool parsed: {container.exiftool.producer}")
                 except Exception as e:
                     logger.warning(f"Failed to parse ExifTool metadata: {e}")
                     self._errors.append({"module": "exiftool", "error": str(e)})
+        else:
+            logger.warning("exiftool result is None or not a dict")
 
         # qpdf 结果 (PDF only)
         qpdf_result = results.get("qpdf")
@@ -219,11 +230,15 @@ class MetadataEngine:
                 try:
                     if isinstance(structure, PDFStructureReport):
                         container.structure = structure
+                        logger.debug(f"qpdf revision_count: {structure.revision_count}")
                     else:
                         container.structure = PDFStructureReport(**structure)
+                        logger.debug(f"qpdf parsed: {container.structure.revision_count}")
                 except Exception as e:
                     logger.warning(f"Failed to parse qpdf report: {e}")
                     self._errors.append({"module": "qpdf", "error": str(e)})
+        else:
+            logger.warning("qpdf result is None or not a dict")
         
         # pikepdf 结果
         pikepdf_result = results.get("pikepdf")
@@ -305,7 +320,9 @@ class MetadataEngine:
         # 获取 PDF 版本（从 ExifTool 或其他来源）
         if self._container and self._container.exiftool:
             raw = self._container.exiftool.raw_json
-            parsed_data["pdf_version"] = raw.get("PDFVersion")
+            pdf_version = raw.get("PDFVersion") or raw.get("PDF:PDFVersion")
+            if pdf_version is not None:
+                parsed_data["pdf_version"] = pdf_version
         
         # 运行各分析器
         analyzers = [

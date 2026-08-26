@@ -138,6 +138,29 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     )
                 )
 
+        object_graph = parsed_data.get("object_graph")
+        if object_graph:
+            if object_graph.total_objects > 500:
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.OBJECT_GRAPH_ANOMALY,
+                        value=f"Total objects: {object_graph.total_objects}",
+                        confidence=0.70,
+                        source="consistency_analyzer",
+                        description=f"PDF contains {object_graph.total_objects} indirect objects, unusually high for typical documents."
+                    )
+                )
+            if object_graph.embedded_files:
+                evidences.append(
+                    Evidence(
+                        type=EvidenceType.EMBEDDED_OBJECT_FOUND,
+                        value=len(object_graph.embedded_files),
+                        confidence=0.90,
+                        source="consistency_analyzer",
+                        description=f"PDF contains {len(object_graph.embedded_files)} embedded file(s)."
+                    )
+                )
+
         # ===== 图片专用检测 =====
         # 仅在图片文件时执行
         image_type = parsed_data.get("image_type")
@@ -161,13 +184,16 @@ class ConsistencyAnalyzer(BaseAnalyzer):
         if not exiftool:
             return evidences
 
-        # 收集所有可用时间
+        xmp_create_str = raw.get("XMP-xmp:CreateDate") or raw.get("XMP:CreateDate")
+        xmp_modify_str = raw.get("XMP-xmp:ModifyDate") or raw.get("XMP:ModifyDate")
+        xmp_metadata_str = raw.get("XMP-xmp:MetadataDate") or raw.get("XMP:MetadataDate")
+
         times = {
             "pdf_create": exiftool.create_date,
             "pdf_modify": exiftool.modify_date,
-            "xmp_create": self._parse_date(raw.get("XMP:CreateDate")),
-            "xmp_modify": self._parse_date(raw.get("XMP:ModifyDate")),
-            "xmp_metadata_date": self._parse_date(raw.get("XMP:MetadataDate")),
+            "xmp_create": self._parse_date(xmp_create_str),
+            "xmp_modify": self._parse_date(xmp_modify_str),
+            "xmp_metadata_date": self._parse_date(xmp_metadata_str),
         }
 
         # 文件系统时间
@@ -312,20 +338,44 @@ class ConsistencyAnalyzer(BaseAnalyzer):
 
         return None
 
-    def _parse_date(self, dt_str: Optional[str]) -> Optional[datetime]:
-        """辅助日期解析 (兼容 ExifTool 格式)"""
+    @staticmethod
+    def _parse_date(dt_str: Optional[str]) -> Optional[datetime]:
+        """
+        严格的白名单日期解析，拒绝盲目转换。
+        仅处理 ExifTool 在 PDF/EXIF 中最常见的格式。
+        """
         if not dt_str:
             return None
-        try:
-            # 尝试替换冒号分隔的日期部分
-            if ":" in dt_str and " " in dt_str:
-                dt_str = dt_str.replace(":", "-", 2)
-            # 移除时区偏移
-            if "+" in dt_str:
-                dt_str = dt_str.split("+")[0]
-            return datetime.fromisoformat(dt_str.strip())
-        except (ValueError, TypeError):
-            return None
+        dt_str = dt_str.strip()
+
+        import re
+        match = re.match(r'^([\d:\- T]+)([+-]\d{2}:\d{2}|Z)?$', dt_str)
+        if match:
+            base = match.group(1)
+        else:
+            base = dt_str
+
+        # 定义严格匹配的格式白名单（按频率排序）
+        # 注意：%Y:%m:%d 是 ExifTool 最经典的格式
+        formats = [
+            "%Y:%m:%d %H:%M:%S",
+            "%Y:%m:%d",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+            "%d/%m/%Y %H:%M:%S",  # 备用
+            "%a %b %d %H:%M:%S %Y",  # 如 Wed Aug 14 10:00:00 2026
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(base, fmt)
+            except ValueError:
+                continue
+
+        # 如果上述都失败，丢弃（绝不强制猜测）
+        logger.warning(f"Unsupported date format from ExifTool: {dt_str}")
+        return None
 
 
     # ========== 新方法实现 ==========

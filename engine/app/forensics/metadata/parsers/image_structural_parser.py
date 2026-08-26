@@ -132,7 +132,7 @@ class ImageStructuralParser(BaseParser):
 
     def _parse_jpeg(self, file_path: Path) -> JPEGStructure:
         """解析 JPEG 二进制结构"""
-        struct = JPEGStructure()
+        jpeg_struct = JPEGStructure()
 
         try:
             with open(file_path, "rb") as f:
@@ -140,8 +140,8 @@ class ImageStructuralParser(BaseParser):
 
             # JPEG 必须以 FF D8 开头
             if len(data) < 2 or data[0] != 0xFF or data[1] != 0xD8:
-                struct.structural_errors.append("Invalid JPEG header (missing SOI)")
-                return struct
+                jpeg_struct.structural_errors.append("Invalid JPEG header (missing SOI)")
+                return jpeg_struct
 
             # 遍历 JPEG 标记段
             pos = 2  # 跳过 SOI
@@ -171,49 +171,49 @@ class ImageStructuralParser(BaseParser):
                 # 处理特定的 APP 段
                 if 0xE0 <= marker <= 0xEF:
                     app_name = self._get_app_name(marker)
-                    struct.app_segments.append(app_name)
+                    jpeg_struct.app_segments.append(app_name)
 
                     if marker == 0xE0 and segment_data.startswith(b"JFIF"):
-                        struct.has_jfif = True
+                        jpeg_struct.has_jfif = True
                     elif marker == 0xE1 and segment_data.startswith(b"Exif"):
-                        struct.has_exif = True
+                        jpeg_struct.has_exif = True
                         # 尝试提取缩略图信息
                         thumb_info = self._extract_thumbnail_info(segment_data)
                         if thumb_info:
-                            struct.has_thumbnail = True
-                            struct.thumbnail_width = thumb_info.get("width")
-                            struct.thumbnail_height = thumb_info.get("height")
+                            jpeg_struct.has_thumbnail = True
+                            jpeg_struct.thumbnail_width = thumb_info.get("width")
+                            jpeg_struct.thumbnail_height = thumb_info.get("height")
                     elif marker == 0xED and segment_data.startswith(b"Photoshop"):
-                        struct.has_photoshop = True
+                        jpeg_struct.has_photoshop = True
 
                 # 处理 DQT (Define Quantization Table) - 量化表指纹
                 elif marker == 0xDB:
                     dqt_fingerprint = self._extract_dqt_fingerprint(segment_data)
                     if dqt_fingerprint:
-                        struct.dqt_tables.append(dqt_fingerprint)
+                        jpeg_struct.dqt_tables.append(dqt_fingerprint)
 
                 # 处理 DHT (Define Huffman Table) - 霍夫曼表指纹
                 elif marker == 0xC4:
                     dht_fingerprint = self._extract_dht_fingerprint(segment_data)
                     if dht_fingerprint:
-                        struct.dht_tables.append(dht_fingerprint)
+                        jpeg_struct.dht_tables.append(dht_fingerprint)
 
                 # 处理 SOF (Start of Frame) - 提取尺寸
                 elif 0xC0 <= marker <= 0xCF and marker not in [0xC4, 0xC8, 0xCC]:
                     # SOF0, SOF1, SOF2 等
                     if len(segment_data) >= 7:
-                        struct.height = struct.unpack(">H", segment_data[1:3])[0]
-                        struct.width = struct.unpack(">H", segment_data[3:5])[0]
+                        jpeg_struct.height = struct.unpack(">H", segment_data[1:3])[0]
+                        jpeg_struct.width = struct.unpack(">H", segment_data[3:5])[0]
 
                 # 提取 DQT 估算质量
-                if struct.dqt_tables:
-                    struct.estimated_quality = self._estimate_quality_from_dqt(struct.dqt_tables[0])
+                if jpeg_struct.dqt_tables:
+                    jpeg_struct.estimated_quality = self._estimate_quality_from_dqt(jpeg_struct.dqt_tables[0])
 
         except Exception as e:
             logger.exception(f"JPEG parse error: {e}")
-            struct.structural_errors.append(f"Parse error: {str(e)}")
+            jpeg_struct.structural_errors.append(f"Parse error: {str(e)}")
 
-        return struct
+        return jpeg_struct
 
     def _get_app_name(self, marker: int) -> str:
         """获取 APP 段名称"""
@@ -318,7 +318,7 @@ class ImageStructuralParser(BaseParser):
 
     def _parse_png(self, file_path: Path) -> PNGStructure:
         """解析 PNG 二进制结构"""
-        struct = PNGStructure()
+        png_struct = PNGStructure()
 
         try:
             with open(file_path, "rb") as f:
@@ -326,8 +326,8 @@ class ImageStructuralParser(BaseParser):
 
             # PNG 签名检查: 89 50 4E 47 0D 0A 1A 0A
             if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
-                struct.structural_errors.append("Invalid PNG signature")
-                return struct
+                png_struct.structural_errors.append("Invalid PNG signature")
+                return png_struct
 
             pos = 8
             critical_count = 0
@@ -342,13 +342,13 @@ class ImageStructuralParser(BaseParser):
                 # 跳过 CRC (4 bytes)
                 pos += 4
 
-                struct.chunk_count += 1
+                png_struct.chunk_count += 1
 
                 # 关键块
                 if chunk_type == "IHDR":
-                    struct.critical_chunks.append("IHDR")
+                    png_struct.critical_chunks.append("IHDR")
                     if len(chunk_data) >= 13:
-                        struct.ihdr = {
+                        png_struct.ihdr = {
                             "width": struct.unpack(">I", chunk_data[0:4])[0],
                             "height": struct.unpack(">I", chunk_data[4:8])[0],
                             "bit_depth": chunk_data[8],
@@ -360,22 +360,22 @@ class ImageStructuralParser(BaseParser):
                         critical_count += 1
 
                 elif chunk_type == "PLTE":
-                    struct.has_plte = True
-                    struct.critical_chunks.append("PLTE")
+                    png_struct.has_plte = True
+                    png_struct.critical_chunks.append("PLTE")
                     critical_count += 1
 
                 elif chunk_type == "IDAT":
-                    struct.has_idat = True
-                    struct.critical_chunks.append("IDAT")
+                    png_struct.has_idat = True
+                    png_struct.critical_chunks.append("IDAT")
                     critical_count += 1
 
                 elif chunk_type == "IEND":
-                    struct.critical_chunks.append("IEND")
+                    png_struct.critical_chunks.append("IEND")
                     critical_count += 1
 
                 elif chunk_type == "pHYs":
                     if len(chunk_data) >= 9:
-                        struct.phys = {
+                        png_struct.phys = {
                             "pixels_per_unit_x": struct.unpack(">I", chunk_data[0:4])[0],
                             "pixels_per_unit_y": struct.unpack(">I", chunk_data[4:8])[0],
                             "unit": chunk_data[8],
@@ -388,7 +388,7 @@ class ImageStructuralParser(BaseParser):
                         if null_pos != -1:
                             keyword = chunk_data[:null_pos].decode("utf-8", errors="ignore")
                             value = chunk_data[null_pos+1:].decode("utf-8", errors="ignore")
-                            struct.text_chunks.append({
+                            png_struct.text_chunks.append({
                                 "type": chunk_type,
                                 "keyword": keyword,
                                 "value": value[:200]  # 截断长文本
@@ -398,12 +398,12 @@ class ImageStructuralParser(BaseParser):
 
             # 检查关键块完整性
             required = ["IHDR", "IDAT", "IEND"]
-            missing = [r for r in required if r not in struct.critical_chunks]
+            missing = [r for r in required if r not in png_struct.critical_chunks]
             if missing:
-                struct.structural_errors.append(f"Missing critical chunks: {missing}")
+                png_struct.structural_errors.append(f"Missing critical chunks: {missing}")
 
         except Exception as e:
             logger.exception(f"PNG parse error: {e}")
-            struct.structural_errors.append(f"Parse error: {str(e)}")
+            png_struct.structural_errors.append(f"Parse error: {str(e)}")
 
-        return struct
+        return png_struct

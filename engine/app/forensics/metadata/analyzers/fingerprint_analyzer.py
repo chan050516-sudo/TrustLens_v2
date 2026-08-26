@@ -40,10 +40,11 @@ class FingerprintAnalyzer(BaseAnalyzer):
         registry = get_fingerprint_registry()
         
         metadata_for_match = {
-            "Creator": raw.get("Creator") or raw.get("XMP:CreatorTool"),
+            "Creator": raw.get("PDF:Creator") or raw.get("XMP-dc:Creator") or raw.get("Creator"),
             "Producer": exiftool_data.producer,
-            "XMP:CreatorTool": raw.get("XMP:CreatorTool"),
-            "XMP:MetadataDate": raw.get("XMP:MetadataDate"),
+            "XMP:CreatorTool": raw.get("XMP-xmp:CreatorTool") or raw.get("XMP:CreatorTool"),
+            "XMP:MetadataDate": raw.get("XMP-xmp:MetadataDate") or raw.get("XMP:MetadataDate"),
+            "Software": raw.get("PDF:Software") or raw.get("XMP-xmp:CreatorTool") or raw.get("Software"),
         }
         
         header_binary = parsed_data.get("header_binary")
@@ -66,52 +67,53 @@ class FingerprintAnalyzer(BaseAnalyzer):
                     raw_data={"metadata": metadata_for_match}
                 )
             )
-            return evidences
-        
-        best_match = matches[0]
-        
-        # 证据1：识别出的具体生成器（总是添加）
-        evidences.append(
-            Evidence(
-                type=EvidenceType.METADATA_SOFTWARE,
-                value=best_match.producer_name,
-                confidence=best_match.confidence,
-                source="fingerprint_analyzer",
-                description=f"Identified PDF producer: {best_match.producer_name} (match confidence: {best_match.confidence:.2f})",
-                raw_data={
-                    "matched_fields": best_match.matched_fields,
-                    "total_weight": best_match.total_weight,
-                    "max_weight": best_match.max_possible_weight,
-                    "category": best_match.category
-                }
+
+        else: 
+            best_match = matches[0]
+
+            # 证据1：识别出的具体生成器（总是添加）
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.METADATA_SOFTWARE,
+                    value=best_match.producer_name,
+                    confidence=best_match.confidence,
+                    source="fingerprint_analyzer",
+                    description=f"Identified PDF producer: {best_match.producer_name} (match confidence: {best_match.confidence:.2f})",
+                    raw_data={
+                        "matched_fields": best_match.matched_fields,
+                        "total_weight": best_match.total_weight,
+                        "max_weight": best_match.max_possible_weight,
+                        "category": best_match.category
+                    }
+                )
             )
-        )
-        
-        # ---------- 关键修复 ----------
-        # 证据2：生成器与文档类型的关系（纯事实，无论风险高低都产出）
-        # 移除了 if risk_level in ["high", "critical"] 的丢弃逻辑
-        risk_level, risk_score = registry.get_document_type_risk(
-            best_match.producer_name,
-            document_type
-        )
-        
-        # 总是添加这个证据，让上层推理引擎去判断“风险”
-        evidences.append(
-            Evidence(
-                type=EvidenceType.PRODUCER_FINGERPRINT_MISMATCH,
-                value=f"{best_match.producer_name} on {document_type}",
-                confidence=best_match.confidence * 0.9,
-                source="fingerprint_analyzer",
-                description=f"Document type '{document_type}' produced by '{best_match.producer_name}'. "
-                            f"Associated risk score in registry: {risk_score} (level: {risk_level})",
-                raw_data={
-                    "producer": best_match.producer_name,
-                    "document_type": document_type,
-                    "registry_risk_level": risk_level,
-                    "registry_risk_score": risk_score
-                }
+            
+            # ---------- 关键修复 ----------
+            # 证据2：生成器与文档类型的关系（纯事实，无论风险高低都产出）
+            # 移除了 if risk_level in ["high", "critical"] 的丢弃逻辑
+            risk_level, risk_score = registry.get_document_type_risk(
+                best_match.producer_name,
+                document_type
             )
-        )
+            
+            # 总是添加这个证据，让上层推理引擎去判断“风险”
+            evidences.append(
+                Evidence(
+                    type=EvidenceType.PRODUCER_FINGERPRINT_MISMATCH,
+                    value=f"{best_match.producer_name} on {document_type}",
+                    confidence=best_match.confidence * 0.9,
+                    source="fingerprint_analyzer",
+                    description=f"Document type '{document_type}' produced by '{best_match.producer_name}'. "
+                                f"Associated risk score in registry: {risk_score} (level: {risk_level})",
+                    raw_data={
+                        "producer": best_match.producer_name,
+                        "document_type": document_type,
+                        "registry_risk_level": risk_level,
+                        "registry_risk_score": risk_score
+                    }
+                )
+            )
+
         # ---------------------------------
         
         # 证据3：Creator/Producer 不一致检测
