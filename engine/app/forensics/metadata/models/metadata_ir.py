@@ -169,4 +169,20 @@ class MetadataContainer(BaseModel):
         description="页码 -> 阅读顺序置信度"
     )
 
-    
+    # ---- 字体分布 (指南 §3.5) ----
+    font_distribution: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="字体分布: font, coverage_percent, pages"
+    )
+
+    # ---- 图像摘要 (指南 §3.8) ----
+    image_summary: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="图像摘要: count, dimensions, page_distribution"
+    )
+
+    # ---- 异常区域 (指南 §3.4) ----
+    anomalous_regions: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="异常区域: page, bbox, type, reason, text, font, font_size"
+    )

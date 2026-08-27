@@ -339,6 +339,20 @@ class MetadataEngine:
             if images_per_page:
                 container.images_per_page = images_per_page
 
+            # ===== 新增：映射字体分布和图像摘要 =====
+            font_dist = pymupdf_result.get("font_distribution")
+            if font_dist:
+                container.font_distribution = font_dist
+
+            img_summary = pymupdf_result.get("image_summary")
+            if img_summary:
+                container.image_summary = img_summary
+
+            # ===== 新增：映射异常区域 =====
+            anomalous = pymupdf_result.get("anomalous_regions")
+            if anomalous:
+                container.anomalous_regions = anomalous
+
             # ---- 全文语义文本 (指南 §3.1) ----
             semantic_text = pymupdf_result.get("semantic_text_pages")
             if semantic_text:
