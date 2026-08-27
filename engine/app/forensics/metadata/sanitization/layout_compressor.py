@@ -32,6 +32,8 @@ class LayoutCompressor:
         semantic_text_pages: Dict[int, str],
         font_distribution: List[Dict[str, Any]],  # 来自 pymupdf_parser 预计算
         image_summary: Dict[str, Any],            # 来自 pymupdf_parser 预计算
+        color_distribution=None,
+        size_distribution=None
     ) -> LayoutSummary:
         """构建布局摘要"""
 
@@ -99,6 +101,20 @@ class LayoutCompressor:
                 font_count=len(fonts),
                 image_count=images,
             ))
+
+        # ===== 新增：检测 <1% 的异常颜色 =====
+        low_coverage_colors = []
+        if color_distribution:
+            for item in color_distribution:
+                if item["coverage_percent"] < 1.0 and item["coverage_percent"] > 0:
+                    low_coverage_colors.append(item)
+        
+        # ===== 新增：检测 <1% 的异常字号 =====
+        low_coverage_sizes = []
+        if size_distribution:
+            for item in size_distribution:
+                if item["coverage_percent"] < 1.0 and item["coverage_percent"] > 0:
+                    low_coverage_sizes.append(item)
 
         return LayoutSummary(
             font_distribution=font_items,

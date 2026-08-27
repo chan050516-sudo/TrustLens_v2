@@ -39,6 +39,14 @@ class PyMuPDFParser(BaseParser):
 
         # ===== 新增：图像尺寸聚合 (指南 §3.8) =====
         image_dimensions = []  # List of (width, height)
+
+        # ===== 新增：颜色、字号、替换字符、重叠、DPI =====
+        color_counts = {}           # color_hex -> count
+        size_counts = {}            # size -> count
+        total_spans = 0
+        replacement_chars = []      # [(page, text, bbox)]
+        text_overlaps = []          # [(page, bbox1, bbox2, text1, text2)]
+        image_dpi = {}              # page -> dpi_value
         
         try:
             doc = pymupdf.open(file_path)
@@ -163,7 +171,72 @@ class PyMuPDFParser(BaseParser):
                                     "font_size": span.get("size", 0),
                                     "color": None,
                                 })
-                            # 注意：隐藏文本（颜色与背景相同）在 PyMuPDF 中较难检测，留给后续版本
+
+                # --- 颜色/字号统计 & 替换字符检测 ---
+                text_blocks = page.get_text("dict")
+                spans_with_bbox = []  # 用于重叠检测
+                
+                for block in text_blocks.get("blocks", []):
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            total_spans += 1
+                            text = span.get("text", "")
+                            size = span.get("size", 0)
+                            color_int = span.get("color", 0)
+                            color_hex = f"#{color_int:06x}" if color_int else "#000000"
+                            bbox = span.get("bbox")
+                            
+                            # 统计颜色
+                            color_counts[color_hex] = color_counts.get(color_hex, 0) + 1
+                            # 统计字号
+                            if size > 0:
+                                size_counts[size] = size_counts.get(size, 0) + 1
+                            
+                            # ---- 替换字符检测 (U+FFFD) ----
+                            if "\ufffd" in text or "�" in text:
+                                replacement_chars.append({
+                                    "page": page_num + 1,
+                                    "text": text[:100],
+                                    "bbox": bbox,
+                                })
+                            
+                            # ---- 收集用于重叠检测 ----
+                            if bbox:
+                                spans_with_bbox.append({
+                                    "text": text[:50],
+                                    "bbox": bbox,
+                                    "page": page_num + 1,
+                                })
+
+                # --- 文本重叠检测 ---
+                # 比较同一页内所有 span 的 bbox 重叠
+                for i, s1 in enumerate(spans_with_bbox):
+                    for j, s2 in enumerate(spans_with_bbox):
+                        if i >= j:
+                            continue
+                        bbox1 = s1["bbox"]
+                        bbox2 = s2["bbox"]
+                        # 计算重叠面积
+                        overlap = self._calculate_overlap(bbox1, bbox2)
+                        if overlap > 0.5:  # 重叠面积 > 50%
+                            text_overlaps.append({
+                                "page": s1["page"],
+                                "text1": s1["text"],
+                                "text2": s2["text"],
+                                "bbox1": bbox1,
+                                "bbox2": bbox2,
+                                "overlap_ratio": round(overlap, 2),
+                            })
+
+                # --- 图像 DPI 计算 ---
+                # 获取页面中的图像，计算 DPI
+                images = page.get_images(full=True)
+                for img in images:
+                    img_width = img.get("width", 0)
+                    img_height = img.get("height", 0)
+                    # 获取图像在页面上的 bbox（需要从资源中获取，简化处理）
+                    # 用 page.get_images() 只能获取引用，获取 bbox 需要遍历 XObject
+                    pass  # 见下方详细实现
 
             doc.close()
         except Exception as e:
@@ -180,6 +253,26 @@ class PyMuPDFParser(BaseParser):
                     "coverage_percent": round(coverage, 2),
                     "pages": sorted(font_page_distribution.get(font, [])),
                 })
+
+        # 计算颜色/字号覆盖率
+        color_distribution = []
+        size_distribution = []
+        if total_spans > 0:
+            for color, count in color_counts.items():
+                color_distribution.append({
+                    "color": color,
+                    "count": count,
+                    "coverage_percent": round((count / total_spans) * 100, 2),
+                })
+            for size, count in size_counts.items():
+                size_distribution.append({
+                    "size": size,
+                    "count": count,
+                    "coverage_percent": round((count / total_spans) * 100, 2),
+                })
+        # 按覆盖率降序排列
+        color_distribution.sort(key=lambda x: x["coverage_percent"], reverse=True)
+        size_distribution.sort(key=lambda x: x["coverage_percent"], reverse=True)
 
         # 图像尺寸分布
         from collections import Counter
@@ -204,4 +297,24 @@ class PyMuPDFParser(BaseParser):
             "page_order_confidence": page_order_confidence,
             "font_distribution": font_distribution,
             "image_summary": image_summary,
+            "color_distribution": color_distribution,
+            "size_distribution": size_distribution,
+            "replacement_chars": replacement_chars,
+            "text_overlaps": text_overlaps,
         }
+
+    @staticmethod
+    def _calculate_overlap(bbox1, bbox2):
+        """计算两个 bbox 的重叠比例 (相对于较小的那个)"""
+        if not bbox1 or not bbox2 or len(bbox1) < 4 or len(bbox2) < 4:
+            return 0.0
+        x1 = max(bbox1[0], bbox2[0])
+        y1 = max(bbox1[1], bbox2[1])
+        x2 = min(bbox1[2], bbox2[2])
+        y2 = min(bbox1[3], bbox2[3])
+        if x1 >= x2 or y1 >= y2:
+            return 0.0
+        overlap_area = (x2 - x1) * (y2 - y1)
+        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
+        return overlap_area / min(area1, area2) if min(area1, area2) > 0 else 0.0

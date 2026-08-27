@@ -260,6 +260,46 @@ class ContextBuilder:
                 orphan_objects=orphan_objects,
             )
 
+        # ===== 新增：低覆盖率颜色作为异常区域 =====
+        for item in container.color_distribution:
+            if item.get("coverage_percent", 100) < 1.0:
+                anomalous_regions.append(AnomalousRegion(
+                    page=0,  # 全页范围
+                    bbox=[],
+                    type="low_coverage_color",
+                    reason=f"Color {item['color']} appears only {item['coverage_percent']}% of text",
+                ))
+
+        # ===== 新增：低覆盖率字号作为异常区域 =====
+        for item in container.size_distribution:
+            if item.get("coverage_percent", 100) < 1.0:
+                anomalous_regions.append(AnomalousRegion(
+                    page=0,
+                    bbox=[],
+                    type="low_coverage_font_size",
+                    reason=f"Font size {item['size']} appears only {item['coverage_percent']}% of text",
+                ))
+
+        # ===== 新增：替换字符作为异常区域 =====
+        for item in container.replacement_chars:
+            anomalous_regions.append(AnomalousRegion(
+                page=item.get("page", 0),
+                bbox=item.get("bbox", []),
+                type="replacement_character",
+                reason=f"Replacement character found: {item.get('text', '')[:50]}",
+                text=item.get("text", ""),
+            ))
+
+        # ===== 新增：文本重叠作为异常区域 =====
+        for item in container.text_overlaps:
+            anomalous_regions.append(AnomalousRegion(
+                page=item.get("page", 0),
+                bbox=item.get("bbox1", []),
+                type="text_overlap",
+                reason=f"Text overlap detected: '{item.get('text1', '')}' overlaps '{item.get('text2', '')}'",
+                text=item.get("text1", "") + " | " + item.get("text2", ""),
+            ))
+
         # ============================================
         # 组装 ForensicContext
         # ============================================
@@ -280,4 +320,9 @@ class ContextBuilder:
             active_content=active_content,
             embedded_files=embedded_files,
             object_graph=object_graph_summary,
+            color_distribution=getattr(container, 'color_distribution', []),
+            size_distribution=getattr(container, 'size_distribution', []),
+            replacement_chars=getattr(container, 'replacement_chars', []),
+            text_overlaps=getattr(container, 'text_overlaps', []),
+            image_dpi=getattr(container, 'image_dpi', {}),
         )

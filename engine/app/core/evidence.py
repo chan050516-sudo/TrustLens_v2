@@ -64,6 +64,8 @@ class EvidenceType(str, Enum):
     # Fallback / Generic
     GENERIC_OBSERVATION = "GENERIC_OBSERVATION"
 
+    HIDDEN_TEXT_DETECTED = "HIDDEN_TEXT_DETECTED"
+
 
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""

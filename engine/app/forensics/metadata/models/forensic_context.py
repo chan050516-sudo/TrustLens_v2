@@ -295,6 +295,36 @@ class ForensicContext(BaseModel):
     
     # Object Graph
     object_graph: Optional[ObjectGraphSummary] = None
+
+        # ===== 新增：颜色分布 (指南 §3.5 扩展) =====
+    color_distribution: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="颜色分布: color, count, coverage_percent"
+    )
+
+    # ===== 新增：字号分布 (指南 §3.5 扩展) =====
+    size_distribution: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="字号分布: size, count, coverage_percent"
+    )
+
+    # ===== 新增：替换字符 (指南 §3.1 扩展) =====
+    replacement_chars: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="替换字符: page, text, bbox"
+    )
+
+    # ===== 新增：文本重叠 (指南 §3.4 扩展) =====
+    text_overlaps: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="文本重叠: page, text1, text2, bbox1, bbox2, overlap_ratio"
+    )
+
+    # ===== 新增：图像 DPI (指南 §3.8 扩展) =====
+    image_dpi: Dict[int, float] = Field(
+        default_factory=dict,
+        description="页面 -> DPI 值"
+    )
     
     class Config:
         json_encoders = {

@@ -273,16 +273,18 @@ class PikepdfParser(BaseParser):
                                 except Exception:
                                     snippet = "[binary data]"
                             elif isinstance(obj, Dictionary):
-                                # 检查多个可能的文本键
-                                text_val = obj.get("/Contents") or obj.get("/Text") or obj.get("/Value")
-                                if text_val:
-                                    snippet = str(text_val)[:200]
-                                elif "/Desc" in obj:
-                                    snippet = str(obj["/Desc"])[:200]
-                                elif "/Name" in obj:
-                                    snippet = str(obj["/Name"])[:200]
-                                elif "/F" in obj:
-                                    snippet = str(obj["/F"])[:200]
+                                # ✅ 增强：遍历所有键，提取字符串值
+                                text_values = []
+                                for key, val in obj.items():
+                                    if isinstance(val, str):
+                                        text_values.append(f"{key}: {val[:50]}")
+                                    elif isinstance(val, bytes):
+                                        try:
+                                            text_values.append(f"{key}: {val.decode('utf-8', errors='ignore')[:50]}")
+                                        except Exception:
+                                            pass
+                                if text_values:
+                                    snippet = " | ".join(text_values)[:300]
                             orphan_objects.append({
                                 "xref": str(obj_id),
                                 "type": "stream" if isinstance(obj, Stream) else "dictionary",

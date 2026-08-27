@@ -195,6 +195,62 @@ def main():
 
     print("\n📦 Container Debug:")
     print(f"  fonts_per_page: {container.fonts_per_page}")
+    
+    # ===== 新增：颜色分布 =====
+    if hasattr(container, 'color_distribution') and container.color_distribution:
+        print(f"  color_distribution: {len(container.color_distribution)} colors")
+        low_colors = [c for c in container.color_distribution if c.get('coverage_percent', 0) < 1.0 and c.get('coverage_percent', 0) > 0]
+        if low_colors:
+            print(f"    ⚠️ Low coverage colors (<1%): {[c['color'] for c in low_colors]}")
+        # 显示前5个
+        for c in container.color_distribution[:5]:
+            marker = "⚠️ " if c.get('coverage_percent', 0) < 1.0 and c.get('coverage_percent', 0) > 0 else "  "
+            print(f"    {marker}{c['color']}: {c['coverage_percent']}%")
+        if len(container.color_distribution) > 5:
+            print(f"    ... and {len(container.color_distribution)-5} more")
+    else:
+        print(f"  color_distribution: None")
+    
+    # ===== 新增：字号分布 =====
+    if hasattr(container, 'size_distribution') and container.size_distribution:
+        print(f"  size_distribution: {len(container.size_distribution)} sizes")
+        low_sizes = [s for s in container.size_distribution if s.get('coverage_percent', 0) < 1.0 and s.get('coverage_percent', 0) > 0]
+        if low_sizes:
+            print(f"    ⚠️ Low coverage sizes (<1%): {[s['size'] for s in low_sizes]}")
+        for s in container.size_distribution[:5]:
+            marker = "⚠️ " if s.get('coverage_percent', 0) < 1.0 and s.get('coverage_percent', 0) > 0 else "  "
+            print(f"    {marker}{s['size']}pt: {s['coverage_percent']}%")
+        if len(container.size_distribution) > 5:
+            print(f"    ... and {len(container.size_distribution)-5} more")
+    else:
+        print(f"  size_distribution: None")
+    
+    # ===== 新增：替换字符 =====
+    if hasattr(container, 'replacement_chars') and container.replacement_chars:
+        print(f"  replacement_chars: {len(container.replacement_chars)} found")
+        for item in container.replacement_chars[:3]:
+            print(f"    Page {item.get('page')}: '{item.get('text', '')[:50]}'")
+        if len(container.replacement_chars) > 3:
+            print(f"    ... and {len(container.replacement_chars)-3} more")
+    else:
+        print(f"  replacement_chars: None")
+    
+    # ===== 新增：文本重叠 =====
+    if hasattr(container, 'text_overlaps') and container.text_overlaps:
+        print(f"  text_overlaps: {len(container.text_overlaps)} found")
+        for item in container.text_overlaps[:3]:
+            print(f"    Page {item.get('page')}: '{item.get('text1', '')[:20]}' overlaps '{item.get('text2', '')[:20]}' (overlap: {item.get('overlap_ratio')})")
+        if len(container.text_overlaps) > 3:
+            print(f"    ... and {len(container.text_overlaps)-3} more")
+    else:
+        print(f"  text_overlaps: None")
+    
+    # ===== 新增：图像 DPI =====
+    if hasattr(container, 'image_dpi') and container.image_dpi:
+        print(f"  image_dpi: {container.image_dpi}")
+    else:
+        print(f"  image_dpi: None")
+
     print(f"\n{'='*70}")
     print("✅ L1 Test Complete")
     print(f"{'='*70}\n")
@@ -312,6 +368,38 @@ def main():
                     print(f"    {font.font}: {font.coverage_percent}% on pages {font.page_distribution}")
                 if layout.image_summary:
                     print(f"  Images: {layout.image_summary.count} total, dimensions: {layout.image_summary.dimensions[:5]}")
+
+            # ===== 新增：颜色分布详情 =====
+            if hasattr(forensic_context, 'color_distribution') and forensic_context.color_distribution:
+                print(f"\n[Color Distribution] ({len(forensic_context.color_distribution)} colors)")
+                for color in forensic_context.color_distribution[:10]:  # 最多显示10个
+                    marker = "⚠️ " if color.get('coverage_percent', 0) < 1.0 and color.get('coverage_percent', 0) > 0 else "  "
+                    print(f"  {marker}{color.get('color')}: {color.get('coverage_percent')}%")
+            
+            # ===== 新增：字号分布详情 =====
+            if hasattr(forensic_context, 'size_distribution') and forensic_context.size_distribution:
+                print(f"\n[Size Distribution] ({len(forensic_context.size_distribution)} sizes)")
+                for size in forensic_context.size_distribution[:10]:
+                    marker = "⚠️ " if size.get('coverage_percent', 0) < 1.0 and size.get('coverage_percent', 0) > 0 else "  "
+                    print(f"  {marker}{size.get('size')}pt: {size.get('coverage_percent')}%")
+            
+            # ===== 新增：替换字符 =====
+            if forensic_context.replacement_chars:
+                print(f"\n[Replacement Characters] ({len(forensic_context.replacement_chars)} found)")
+                for item in forensic_context.replacement_chars[:5]:
+                    print(f"  Page {item.get('page')}: '{item.get('text', '')[:50]}'")
+            
+            # ===== 新增：文本重叠 =====
+            if forensic_context.text_overlaps:
+                print(f"\n[Text Overlaps] ({len(forensic_context.text_overlaps)} found)")
+                for item in forensic_context.text_overlaps[:5]:
+                    print(f"  Page {item.get('page')}: '{item.get('text1', '')[:20]}' overlaps '{item.get('text2', '')[:20]}' (overlap: {item.get('overlap_ratio')})")
+            
+            # ===== 新增：图像 DPI =====
+            if forensic_context.image_dpi:
+                print(f"\n[Image DPI]")
+                for page, dpi in forensic_context.image_dpi.items():
+                    print(f"  Page {page}: {dpi} DPI")
             
             # 10. Anomalous Regions
             print(f"\n[Anomalous Regions] ({len(forensic_context.anomalous_regions)} items)")

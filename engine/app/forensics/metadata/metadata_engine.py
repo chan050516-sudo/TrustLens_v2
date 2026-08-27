@@ -447,6 +447,13 @@ class MetadataEngine:
             # 这些字段在第三轮清洗中会用到，暂不映射到 container
             # 第三轮会从 fonts_per_page 和 images_per_page 重新计算
 
+            # ===== 新增：颜色/字号/替换字符/重叠/DPI =====
+            container.color_distribution = pymupdf_result.get("color_distribution", [])
+            container.size_distribution = pymupdf_result.get("size_distribution", [])
+            container.replacement_chars = pymupdf_result.get("replacement_chars", [])
+            container.text_overlaps = pymupdf_result.get("text_overlaps", [])
+            container.image_dpi = pymupdf_result.get("image_dpi", {})
+
         # ============================================
         # 5. Signature 结果映射
         # ============================================

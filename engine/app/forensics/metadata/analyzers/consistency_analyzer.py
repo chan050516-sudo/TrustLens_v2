@@ -161,6 +161,26 @@ class ConsistencyAnalyzer(BaseAnalyzer):
                     )
                 )
 
+        # ===== 新增：隐藏文本检测 =====
+        # 检测白色或接近白色的文本（需要从 color_distribution 中推断）
+        # 实际上，更精确的方式是检测白色文本，但需要知道背景色
+        # 简单启发式：检测颜色为 #FFFFFF 或 #FFFFFE 的文本
+        if parsed_data.get("color_distribution"):
+            for item in parsed_data["color_distribution"]:
+                color = item.get("color", "").upper()
+                if color in ["#FFFFFF", "#FFFFFE", "#FFFEFE", "#FEFEFE"]:
+                    if item.get("coverage_percent", 0) > 0:
+                        evidences.append(
+                            Evidence(
+                                type=EvidenceType.HIDDEN_TEXT_DETECTED,
+                                value=f"White text detected ({color})",
+                                confidence=0.92,
+                                source="consistency_analyzer",
+                                description=f"White text detected in document. Coverage: {item['coverage_percent']}%. May indicate hidden/forged text.",
+                                raw_data={"color": color, "coverage": item["coverage_percent"]}
+                            )
+                        )
+
         # ===== 图片专用检测 =====
         # 仅在图片文件时执行
         image_type = parsed_data.get("image_type")
