@@ -96,18 +96,181 @@ class PikepdfParser(BaseParser):
                         if action_s == "/Launch":
                             launch_refs.append(str(obj_id))
 
-                # ✅ 修复 3：全局属性检测（Root 级别）
-                if "/OpenAction" in pdf.Root:
-                    open_action_ref = str(pdf.Root["/OpenAction"])
-                if "/AcroForm" in pdf.Root:
-                    has_acroform = True
-                if "/OCProperties" in pdf.Root:
-                    has_layers = True
+                # ===== 新增：注释提取 (指南 §3.10, §4.5) =====
+                annotations_pikepdf = []
+                for page_num, page in enumerate(pdf.pages, start=1):
+                    if "/Annots" in page:
+                        annots = page["/Annots"]
+                        if isinstance(annots, Array) and len(annots) > 0:
+                            for annot_ref in annots:
+                                try:
+                                    annot_obj = annot_ref  # 直接使用
+                                    subtype = str(annot_obj.get("/Subtype", ""))
+                                    rect = annot_obj.get("/Rect")
+                                    bbox = [rect[0], rect[1], rect[2], rect[3]] if rect else None
+                                    
+                                    # 提取 URI (如果是 Link)
+                                    uri = None
+                                    action = None
+                                    if subtype == "/Link":
+                                        action_dict = annot_obj.get("/A")
+                                        if action_dict:
+                                            action = dict(action_dict)
+                                            if "/URI" in action_dict:
+                                                uri = str(action_dict["/URI"])
+                                    # 提取文本内容 (如果是 Text)
+                                    content = None
+                                    if subtype == "/Text":
+                                        content = str(annot_obj.get("/Contents", ""))
+                                    # 提取表单字段 (如果是 Widget)
+                                    field_name = None
+                                    if subtype == "/Widget":
+                                        field_name = str(annot_obj.get("/T", ""))
+                                    
+                                    annotations_pikepdf.append({
+                                        "page": page_num,
+                                        "type": subtype.replace("/", ""),
+                                        "uri": uri,
+                                        "action": action,
+                                        "content": content[:500] if content else None,
+                                        "bbox": bbox,
+                                        "field_name": field_name,
+                                        "source": "pikepdf",
+                                    })
+                                except Exception as e:
+                                    logger.debug(f"Error extracting pikepdf annotation: {e}")
 
-                graph.embedded_files = embedded_files
-                graph.javascript_present = len(js_refs) > 0
-                graph.launch_actions_present = len(launch_refs) > 0
-                graph.open_action_present = open_action_ref is not None
+                # ===== 新增：附加动作 (指南 §4.3) =====
+                additional_actions = []
+                if "/AA" in pdf.Root:
+                    aa_dict = pdf.Root["/AA"]
+                    if isinstance(aa_dict, Dictionary):
+                        for action_key, action_ref in aa_dict.items():
+                            try:
+                                action_obj = action_ref  # 直接使用
+                                action_type = str(action_key)
+                                action_s = str(action_obj.get("/S", ""))
+                                additional_actions.append({
+                                    "trigger": action_type,
+                                    "action_type": action_s,
+                                    "detail": dict(action_obj) if isinstance(action_obj, Dictionary) else None,
+                                })
+                            except Exception as e:
+                                logger.debug(f"Error extracting additional action: {e}")
+
+                # ===== 新增：嵌入文件提取 (指南 §4.4) =====
+                embedded_files_detail = []
+                if "/Names" in pdf.Root and "/EmbeddedFiles" in pdf.Root["/Names"]:
+                    try:
+                        names_dict = pdf.Root["/Names"]["/EmbeddedFiles"]
+                        if "/Names" in names_dict:
+                            names_list = names_dict["/Names"]
+                            for i in range(0, len(names_list), 2):
+                                name = str(names_list[i])
+                                ref = names_list[i+1]
+                                # 解析文件规格
+                                if hasattr(ref, "get"):
+                                    filespec = ref
+                                    ef = filespec.get("/EF", {})
+                                    if "/F" in ef:
+                                        file_ref = ef["/F"]
+                                        # 尝试获取大小
+                                        size = len(file_ref.get_bytes()) if hasattr(file_ref, "get_bytes") else None
+                                        embedded_files_detail.append({
+                                            "name": name,
+                                            "size": size,
+                                            "mime": str(filespec.get("/MIMEType", "unknown")),
+                                            "xref": str(file_ref.objgen[0]) if hasattr(file_ref, "objgen") else None,
+                                        })
+                    except Exception as e:
+                        logger.warning(f"Error extracting embedded files: {e}")
+
+                # ===== 新增：活跃内容提取 (指南 §4.3) =====
+                active_content_detail = {
+                    "javascript": False,
+                    "open_action": False,
+                    "launch_action": False,
+                    "script_hash": None,
+                    "script_snippet": None,
+                }
+                # 检查 OpenAction
+                if "/OpenAction" in pdf.Root:
+                    active_content_detail["open_action"] = True
+                # 检查 JavaScript
+                js_objects = []
+                for obj in pdf.objects:
+                    if isinstance(obj, (Dictionary, Stream)):
+                        if "/JavaScript" in obj or "/JS" in obj:
+                            js_objects.append(obj)
+                if js_objects:
+                    active_content_detail["javascript"] = True
+                    # 尝试提取脚本片段
+                    for js_obj in js_objects[:3]:  # 最多处理3个
+                        try:
+                            if isinstance(js_obj, Stream):
+                                script = js_obj.get_bytes().decode("utf-8", errors="ignore")
+                                if len(script) < 1000:
+                                    active_content_detail["script_snippet"] = script[:500]
+                                else:
+                                    import hashlib
+                                    active_content_detail["script_hash"] = hashlib.sha256(script.encode()).hexdigest()[:16]
+                        except Exception:
+                            pass
+                # 检查 Launch
+                for obj in pdf.objects:
+                    if isinstance(obj, (Dictionary, Stream)):
+                        if "/Launch" in obj:
+                            active_content_detail["launch_action"] = True
+                            break
+
+                # ===== 新增：孤立对象提取 (指南 §4.6, §4.7) =====
+                orphan_objects = []
+                # 构建 Root 可达对象集合
+                reachable = set()
+                def mark_reachable(obj):
+                    if obj is None:
+                        return
+                    if id(obj) in reachable:
+                        return
+                    reachable.add(id(obj))
+                    if isinstance(obj, (Dictionary, Stream)):
+                        for key, val in obj.items():
+                            if isinstance(val, (Dictionary, Stream, Array)):
+                                mark_reachable(val)
+                            elif hasattr(val, "objgen") and val.is_indirect:
+                                mark_reachable(val)
+                    elif isinstance(obj, Array):
+                        for item in obj:
+                            if isinstance(item, (Dictionary, Stream, Array)):
+                                mark_reachable(item)
+                            elif hasattr(item, "objgen") and item.is_indirect:
+                                mark_reachable(item)
+                try:
+                    mark_reachable(pdf.Root)
+                    # 检查所有对象
+                    for obj in pdf.objects:
+                        if id(obj) not in reachable:
+                            obj_id = obj.objgen[0] if hasattr(obj, "objgen") else "unknown"
+                            # 尝试提取语义片段
+                            snippet = None
+                            if isinstance(obj, Stream):
+                                try:
+                                    snippet = obj.get_bytes().decode("utf-8", errors="ignore")[:200]
+                                except Exception:
+                                    snippet = "[binary data]"
+                            elif isinstance(obj, Dictionary):
+                                # 检查是否有文本内容
+                                text_val = obj.get("/Contents") or obj.get("/Text") or obj.get("/Value")
+                                if text_val:
+                                    snippet = str(text_val)[:200]
+                            orphan_objects.append({
+                                "xref": str(obj_id),
+                                "type": "stream" if isinstance(obj, Stream) else "dictionary",
+                                "size": len(obj.get_bytes()) if isinstance(obj, Stream) else len(str(obj)),
+                                "semantic_snippet": snippet,
+                            })
+                except Exception as e:
+                    logger.warning(f"Error detecting orphan objects: {e}")
 
                 # ✅ 修复 4：页面维度的遍历（XObjects + 注释）
                 for page_num, page in enumerate(pdf.pages, start=1):
@@ -152,5 +315,10 @@ class PikepdfParser(BaseParser):
             "has_layers": has_layers,
             "has_annotations": has_annotations,
             "object_stream_count": object_stream_count,
-            "total_objects": graph.total_objects
+            "total_objects": graph.total_objects,
+            "embedded_files_detail": embedded_files_detail,
+            "active_content_detail": active_content_detail,
+            "orphan_objects": orphan_objects,
+            "annotations_pikepdf": annotations_pikepdf,
+            "additional_actions": additional_actions,
         }

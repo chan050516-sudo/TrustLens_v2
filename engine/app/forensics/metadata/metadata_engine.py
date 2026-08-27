@@ -203,15 +203,44 @@ class MetadataEngine:
         for key, value in results.items():
             if value is not None:
                 logger.debug(f"  {key}: {type(value).__name__} - keys: {list(value.keys()) if isinstance(value, dict) else 'N/A'}")
-        
-        # ExifTool 结果
+
+        # ============================================
+        # 1. ExifTool 结果映射
+        # ============================================
         exiftool_result = results.get("exiftool")
         if exiftool_result and isinstance(exiftool_result, dict):
             metadata = exiftool_result.get("metadata")
-            logger.debug(f"exiftool metadata type: {type(metadata)}")
             if metadata and isinstance(metadata, ExifToolMetadata):
                 container.exiftool = metadata
                 logger.debug(f"exiftool producer: {metadata.producer}")
+
+                # ---- 文档身份 (指南 §1.2) ----
+                container.document_ids = {
+                    "document_id": metadata.document_id,
+                    "instance_id": metadata.instance_id,
+                    "original_document_id": metadata.original_document_id,
+                    "derived_from": metadata.derived_from,
+                }
+
+                # ---- XMP History 完整参数 (指南 §1.8) ----
+                container.xmp_history_raw = metadata.xmp_history_items
+
+                # ---- EXIF 详细数据 (指南 §1.10) ----
+                container.image_exif = {
+                    "make": metadata.exif_make,
+                    "model": metadata.exif_model,
+                    "software": metadata.exif_software,
+                    "datetime_original": metadata.exif_datetime_original,
+                    "gps": metadata.exif_gps,
+                    "color_space": metadata.exif_color_space,
+                    "icc_profile": metadata.exif_icc_profile,
+                }
+
+                # ---- 文件系统时间 (指南 §1.6) ----
+                # 注意：这些字段已在 ExifToolMetadata 中定义，但当前 forensic_context 中
+                # 没有专门的容器字段，可以用 timeline 构建器消费
+                # 暂时不映射到 container，留给第三轮清洗
+
             elif metadata:
                 try:
                     container.exiftool = ExifToolMetadata(**metadata)
@@ -222,9 +251,12 @@ class MetadataEngine:
         else:
             logger.warning("exiftool result is None or not a dict")
 
-        # qpdf 结果 (PDF only)
+        # ============================================
+        # 2. qpdf 结果映射 (PDF only)
+        # ============================================
         qpdf_result = results.get("qpdf")
         if qpdf_result and isinstance(qpdf_result, dict):
+            # ---- 结构报告 ----
             structure = qpdf_result.get("structure")
             if structure:
                 try:
@@ -237,12 +269,25 @@ class MetadataEngine:
                 except Exception as e:
                     logger.warning(f"Failed to parse qpdf report: {e}")
                     self._errors.append({"module": "qpdf", "error": str(e)})
+
+            # ---- 加密信息 (指南 §2.8) ----
+            encryption_info = qpdf_result.get("encryption_info")
+            if encryption_info:
+                container.encryption_info = encryption_info
+
+            # ---- 修订详情 (指南 §2.4) ----
+            revision_details = qpdf_result.get("revision_details")
+            if revision_details:
+                container.revision_details = revision_details
         else:
             logger.warning("qpdf result is None or not a dict")
-        
-        # pikepdf 结果
+
+        # ============================================
+        # 3. pikepdf 结果映射
+        # ============================================
         pikepdf_result = results.get("pikepdf")
         if pikepdf_result and isinstance(pikepdf_result, dict):
+            # ---- 对象图 ----
             object_graph = pikepdf_result.get("object_graph")
             if object_graph:
                 try:
@@ -253,26 +298,82 @@ class MetadataEngine:
                 except Exception as e:
                     logger.warning(f"Failed to parse object graph: {e}")
                     self._errors.append({"module": "pikepdf", "error": str(e)})
+
+            # ---- 基础标志 ----
             container.has_acroform = pikepdf_result.get("has_acroform", False)
             container.has_layers = pikepdf_result.get("has_layers", False)
             container.has_annotations = pikepdf_result.get("has_annotations", False)
             container.object_stream_count = pikepdf_result.get("object_stream_count", 0)
 
-        # PyMuPDF 结果
+            # ---- 嵌入文件详情 (指南 §4.4) ----
+            embedded_files = pikepdf_result.get("embedded_files_detail")
+            if embedded_files:
+                container.embedded_files_detail = embedded_files
+
+            # ---- 活跃内容详情 (指南 §4.3) ----
+            active_content = pikepdf_result.get("active_content_detail")
+            if active_content:
+                container.active_content_detail = active_content
+
+            # ---- 孤立对象 (指南 §4.6, §4.7) ----
+            orphan_objects = pikepdf_result.get("orphan_objects")
+            if orphan_objects:
+                container.orphan_objects = orphan_objects
+
+            # ---- 注释 (pikepdf) (指南 §3.10, §4.5) ----
+            # 注意：与 PyMuPDF 注释合并由第三轮清洗处理
+            # 暂不直接映射到 container.annotations_detail，而是保留在原始字典中
+            # 实际上我们直接存入 container.annotations_detail 后续可以合并
+            # 但为防止覆盖，我们稍后处理
+
+        # ============================================
+        # 4. PyMuPDF 结果映射
+        # ============================================
         pymupdf_result = results.get("pymupdf")
         if pymupdf_result and isinstance(pymupdf_result, dict):
+            # ---- 字体和图像 (原有) ----
             fonts_per_page = pymupdf_result.get("fonts_per_page")
             if fonts_per_page:
                 container.fonts_per_page = fonts_per_page
-                container.images_per_page = pymupdf_result.get("images_per_page", {})
-        
-        # Signature 结果
+            images_per_page = pymupdf_result.get("images_per_page")
+            if images_per_page:
+                container.images_per_page = images_per_page
+
+            # ---- 全文语义文本 (指南 §3.1) ----
+            semantic_text = pymupdf_result.get("semantic_text_pages")
+            if semantic_text:
+                container.semantic_text_pages = semantic_text
+
+            # ---- 注释详情 (指南 §3.10) ----
+            annotations = pymupdf_result.get("annotations_detail")
+            if annotations:
+                container.annotations_detail = annotations
+
+            # ---- 表单字段详情 (指南 §3.11) ----
+            forms = pymupdf_result.get("forms_detail")
+            if forms:
+                container.forms_detail = forms
+
+            # ---- 页面阅读顺序置信度 (指南 §3.2) ----
+            page_confidence = pymupdf_result.get("page_order_confidence")
+            if page_confidence:
+                container.page_order_confidence = page_confidence
+
+            # ---- 字体分布 (指南 §3.5) 和 图像摘要 (指南 §3.8) ----
+            # 这些字段在第三轮清洗中会用到，暂不映射到 container
+            # 第三轮会从 fonts_per_page 和 images_per_page 重新计算
+
+        # ============================================
+        # 5. Signature 结果映射
+        # ============================================
         signature_result = results.get("signature")
         if signature_result and isinstance(signature_result, dict):
             container.signature_fields = signature_result.get("signature_fields", [])
             container.signatures = signature_result.get("signatures", [])
 
-        # ===== 新增: 图片结构解析结果 =====
+        # ============================================
+        # 6. Image Structural 结果映射
+        # ============================================
         image_result = results.get("image_structural")
         if image_result and isinstance(image_result, dict):
             container.image_type = image_result.get("image_type")
@@ -287,18 +388,23 @@ class MetadataEngine:
                 "png": image_result.get("png"),
             }
 
-        container.document_ids = {}
-        container.xmp_history_raw = []
-        container.image_exif = {}
-        container.revision_details = []
-        container.encryption_info = {}
-        container.annotations_detail = []
-        container.forms_detail = []
-        container.embedded_files_detail = []
-        container.active_content_detail = {}
-        container.orphan_objects = []
-        container.semantic_text_pages = {}
-        container.page_order_confidence = {}
+        # ============================================
+        # 7. 合并 PyMuPDF 和 pikepdf 的注释 (第三轮预处理)
+        # ============================================
+        # 将 pikepdf 的注释追加到 container.annotations_detail
+        # 这样第三轮清洗时可以合并去重
+        pikepdf_annotations = pikepdf_result.get("annotations_pikepdf") if pikepdf_result else []
+        if pikepdf_annotations:
+            # 保留所有，第三轮去重
+            container.annotations_detail.extend(pikepdf_annotations)
+
+        # ============================================
+        # 8. 附加动作 (指南 §4.3)
+        # ============================================
+        additional_actions = pikepdf_result.get("additional_actions") if pikepdf_result else []
+        if additional_actions:
+            # 追加到 active_content_detail 中
+            container.active_content_detail["additional_actions"] = additional_actions
 
 
     def _run_analyzers(self, context: DocumentContext) -> List[Evidence]:

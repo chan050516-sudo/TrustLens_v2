@@ -14,6 +14,31 @@ class ExifToolMetadata(BaseModel):
     software: Optional[str] = None          # 软件历史
     raw_json: Dict[str, Any] = Field(default_factory=dict)  # 完整原始输出
 
+    # 文档身份 (指南 §1.2)
+    document_id: Optional[str] = None
+    instance_id: Optional[str] = None
+    original_document_id: Optional[str] = None
+    derived_from: Optional[str] = None
+
+    # ===== 新增：文件系统时间 =====
+    file_modify_date: Optional[datetime] = None
+    file_access_date: Optional[datetime] = None
+    file_create_date: Optional[datetime] = None
+    
+    # XMP History 完整参数 (指南 §1.8)
+    xmp_history_items: List[Dict[str, Any]] = Field(default_factory=list)
+    
+    # EXIF 详细数据 (指南 §1.10)
+    exif_make: Optional[str] = None
+    exif_model: Optional[str] = None
+    exif_software: Optional[str] = None
+    exif_datetime_original: Optional[str] = None
+    exif_gps: Optional[Dict[str, Any]] = None
+    exif_color_space: Optional[str] = None
+    exif_icc_profile: Optional[str] = None
+    
+    raw_json: Dict[str, Any] = Field(default_factory=dict)
+
 
 class PDFStructureReport(BaseModel):
     """qpdf --check 解析后的结构报告"""
@@ -143,3 +168,5 @@ class MetadataContainer(BaseModel):
         default_factory=dict,
         description="页码 -> 阅读顺序置信度"
     )
+
+    

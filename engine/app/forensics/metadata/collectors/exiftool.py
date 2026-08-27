@@ -116,6 +116,60 @@ class ExifToolCollector(BaseCollector):
         modify_date_str = raw.get("PDF:ModifyDate") or raw.get("XMP-xmp:ModifyDate") or raw.get("ModifyDate")
         software = raw.get("PDF:Software") or raw.get("XMP-pdf:Producer") or raw.get("Software")
 
+        # ===== 新增：文档身份 (指南 §1.2) =====
+        document_id = raw.get("PDF:DocumentID") or raw.get("XMP-xmpMM:DocumentID") or raw.get("DocumentID")
+        instance_id = raw.get("PDF:InstanceID") or raw.get("XMP-xmpMM:InstanceID") or raw.get("InstanceID")
+        original_document_id = raw.get("PDF:OriginalDocumentID") or raw.get("XMP-xmpMM:OriginalDocumentID") or raw.get("OriginalDocumentID")
+        derived_from = raw.get("XMP-xmpMM:DerivedFrom") or raw.get("DerivedFrom")
+
+        # ===== 新增：文件系统时间 (指南 §1.6) =====
+        file_modify_date = raw.get("System:FileModifyDate") or raw.get("FileModifyDate")
+        file_access_date = raw.get("System:FileAccessDate") or raw.get("FileAccessDate")
+        file_create_date = raw.get("System:FileCreateDate") or raw.get("FileCreateDate")
+
+        # ===== 新增：XMP History 完整参数 (指南 §1.8) =====
+        xmp_history_items = []
+        history_raw = raw.get("XMP-xmpMM:History") or raw.get("XMP:History") or raw.get("History")
+        if history_raw:
+            if isinstance(history_raw, list):
+                history_list = history_raw
+            else:
+                history_list = [str(history_raw)]
+            for item in history_list:
+                if not item:
+                    continue
+                # 解析更完整的参数
+                import re
+                action_match = re.search(r'action\s*=\s*([^,;]+)', item, re.IGNORECASE)
+                software_match = re.search(r'softwareAgent\s*=\s*([^,;]+)', item, re.IGNORECASE)
+                when_match = re.search(r'when\s*=\s*([^,;]+)', item, re.IGNORECASE)
+                # 提取额外参数 (如 parameters)
+                params_match = re.search(r'parameters\s*=\s*([^,;]+)', item, re.IGNORECASE)
+                instance_id_match = re.search(r'instanceID\s*=\s*([^,;]+)', item, re.IGNORECASE)
+                
+                entry = {
+                    "action": action_match.group(1).strip() if action_match else None,
+                    "software_agent": software_match.group(1).strip() if software_match else None,
+                    "when": when_match.group(1).strip() if when_match else None,
+                    "parameters": params_match.group(1).strip() if params_match else None,
+                    "instance_id": instance_id_match.group(1).strip() if instance_id_match else None,
+                }
+                if entry.get("action"):
+                    xmp_history_items.append(entry)
+
+        # ===== 新增：EXIF 详细数据 (指南 §1.10) =====
+        exif_make = raw.get("EXIF:Make") or raw.get("Make")
+        exif_model = raw.get("EXIF:Model") or raw.get("Model")
+        exif_software = raw.get("EXIF:Software") or raw.get("Software")
+        exif_datetime_original = raw.get("EXIF:DateTimeOriginal") or raw.get("DateTimeOriginal")
+        exif_gps = {}
+        for key in ["GPSLatitude", "GPSLongitude", "GPSAltitude", "GPSPosition"]:
+            val = raw.get(f"EXIF:{key}") or raw.get(key)
+            if val:
+                exif_gps[key] = val
+        exif_color_space = raw.get("EXIF:ColorSpace") or raw.get("ColorSpace")
+        exif_icc_profile = raw.get("ICC_Profile:ProfileDescription") or raw.get("ProfileDescription")
+
         return ExifToolMetadata(
             producer=producer,
             creator=creator,
@@ -124,5 +178,21 @@ class ExifToolCollector(BaseCollector):
             software=software,
             xmp={k: v for k, v in raw.items() if k.startswith("XMP-") or k.startswith("XMP:")},
             exif={k: v for k, v in raw.items() if k.startswith("EXIF:") or k.startswith("GPS:")},
-            raw_json=raw
+            raw_json=raw,
+            # 新增字段
+            document_id=document_id,
+            instance_id=instance_id,
+            original_document_id=original_document_id,
+            derived_from=derived_from,
+            xmp_history_items=xmp_history_items,
+            exif_make=exif_make,
+            exif_model=exif_model,
+            exif_software=exif_software,
+            exif_datetime_original=exif_datetime_original,
+            exif_gps=exif_gps if exif_gps else None,
+            exif_color_space=exif_color_space,
+            exif_icc_profile=exif_icc_profile,
+            file_modify_date=parse_date_safe(file_modify_date),
+            file_access_date=parse_date_safe(file_access_date),
+            file_create_date=parse_date_safe(file_create_date),
         )
