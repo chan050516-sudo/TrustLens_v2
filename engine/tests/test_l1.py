@@ -425,6 +425,24 @@ def main():
                 for orphan in og.orphan_objects:
                     print(f"    xref: {orphan.xref}, type: {orphan.type}, snippet: {orphan.semantic_snippet}")
                 print(f"  relationships: {len(og.relationships)}")
+
+            if forensic_context.image_structural_fingerprint:
+                fp = forensic_context.image_structural_fingerprint
+                print(f"\n[Image Structural Fingerprint]")
+                if fp.jpeg_estimated_quality is not None:
+                    print(f"  JPEG Quality: {fp.jpeg_estimated_quality}%")
+                if fp.jpeg_app_segments:
+                    print(f"  JPEG APP segments: {fp.jpeg_app_segments}")
+                if fp.jpeg_dqt_fingerprint_prefix:
+                    print(f"  JPEG DQT prefix: {fp.jpeg_dqt_fingerprint_prefix}")
+                if fp.jpeg_has_photoshop:
+                    print(f"  🖥️  Photoshop痕迹: 存在 APP13")
+                if fp.png_text_keywords:
+                    print(f"  PNG Text Keywords: {fp.png_text_keywords}")
+                if fp.png_phys_density:
+                    print(f"  PNG Physical Density: {fp.png_phys_density}")
+                if fp.png_color_type:
+                    print(f"  PNG Color Type: {fp.png_color_type}")
             
             print("=" * 70)
         else:

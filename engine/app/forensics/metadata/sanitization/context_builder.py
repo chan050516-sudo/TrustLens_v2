@@ -13,6 +13,7 @@ from app.forensics.metadata.models.forensic_context import (
     MetadataIdentity,
     DocumentLineage,
     ImageMetadata,
+    ImageStructuralFingerprint,
     PDFIntegrity,
     RevisionHistory,
     RevisionDetail,
@@ -114,6 +115,60 @@ class ContextBuilder:
                 color_space=exiftool.exif_color_space,
                 icc_profile=exiftool.exif_icc_profile,
             )
+
+        # ============================================
+        # 6.5 图像结构指纹 (纯观察)
+        # ============================================
+        image_fingerprint = None
+        if container.image_structural_details:
+            jpeg_data = container.image_structural_details.get("jpeg", {})
+            png_data = container.image_structural_details.get("png", {})
+            
+            # JPEG 指纹
+            jpeg_quality = jpeg_data.get("estimated_quality")
+            jpeg_apps = jpeg_data.get("app_segments", [])
+            dqt_fingerprint = jpeg_data.get("dqt_tables", [None])[0] if jpeg_data.get("dqt_tables") else None
+            dqt_prefix = dqt_fingerprint[:16] if dqt_fingerprint else None  # 取前 16 字符
+            
+            # PNG 指纹
+            png_text_kws = []
+            for chunk in png_data.get("text_chunks", []):
+                if chunk.get("keyword"):
+                    png_text_kws.append(chunk["keyword"])
+            
+            phys = png_data.get("phys")
+            png_density = None
+            if phys:
+                x = phys.get("pixels_per_unit_x")
+                y = phys.get("pixels_per_unit_y")
+                unit = "DPI" if phys.get("unit") == 1 else "unknown"
+                if x and y:
+                    png_density = f"{x}x{y} {unit}"
+            
+            png_color_type_map = {
+                0: "Grayscale",
+                2: "RGB",
+                3: "Palette",
+                4: "Grayscale+Alpha",
+                6: "RGBA"
+            }
+            png_color = png_color_type_map.get(png_data.get("ihdr", {}).get("color_type"))
+            png_bit_depth = png_data.get("ihdr", {}).get("bit_depth")
+
+            # 组装指纹对象 (只要有任何数据就不为 None)
+            if any([jpeg_quality, jpeg_apps, dqt_prefix, png_text_kws, png_density, png_color]):
+                image_fingerprint = ImageStructuralFingerprint(
+                    jpeg_estimated_quality=jpeg_quality,
+                    jpeg_app_segments=jpeg_apps,
+                    jpeg_dqt_fingerprint_prefix=dqt_prefix,
+                    jpeg_has_exif=jpeg_data.get("has_exif", False),
+                    jpeg_has_jfif=jpeg_data.get("has_jfif", False),
+                    jpeg_has_photoshop=jpeg_data.get("has_photoshop", False),
+                    png_text_keywords=png_text_kws,
+                    png_phys_density=png_density,
+                    png_color_type=png_color,
+                    png_bit_depth=png_bit_depth,
+                )
 
         # ============================================
         # 7. PDF Integrity (指南 §2.2)
@@ -325,4 +380,5 @@ class ContextBuilder:
             replacement_chars=getattr(container, 'replacement_chars', []),
             text_overlaps=getattr(container, 'text_overlaps', []),
             image_dpi=getattr(container, 'image_dpi', {}),
+            image_structural_fingerprint=image_fingerprint,
         )

@@ -77,6 +77,43 @@ class ImageMetadata(BaseModel):
     color_space: Optional[str] = None
     icc_profile: Optional[str] = None   # 简要描述，非原始数据
 
+class ImageStructuralFingerprint(BaseModel):
+    """图像底层结构指纹（纯观察数据，无风险判断）"""
+    # JPEG 相关
+    jpeg_estimated_quality: Optional[int] = Field(
+        default=None,
+        description="根据 DQT 量化表估算的 JPEG 质量 (0-100)"
+    )
+    jpeg_app_segments: List[str] = Field(
+        default_factory=list,
+        description="存在的 JPEG APP 段，如 APP0_JFIF, APP1_EXIF, APP13_Photoshop"
+    )
+    jpeg_dqt_fingerprint_prefix: Optional[str] = Field(
+        default=None,
+        description="量化表前 8 个值的十六进制指纹，用于识别生成软件"
+    )
+    jpeg_has_exif: bool = False
+    jpeg_has_jfif: bool = False
+    jpeg_has_photoshop: bool = False
+
+    # PNG 相关
+    png_text_keywords: List[str] = Field(
+        default_factory=list,
+        description="PNG 文本块中的关键字列表 (如 Software, Creation Time)"
+    )
+    png_phys_density: Optional[str] = Field(
+        default=None,
+        description="物理像素密度，如 72x72 DPI 或 300x300 DPI"
+    )
+    png_color_type: Optional[str] = Field(
+        default=None,
+        description="颜色类型: RGB, RGBA, Grayscale, Palette"
+    )
+    png_bit_depth: Optional[int] = Field(
+        default=None,
+        description="位深度: 8, 16 等"
+    )
+
 
 # ============= 7. PDF Integrity =============
 
@@ -325,6 +362,8 @@ class ForensicContext(BaseModel):
         default_factory=dict,
         description="页面 -> DPI 值"
     )
+
+    image_structural_fingerprint: Optional[ImageStructuralFingerprint] = None
     
     class Config:
         json_encoders = {
