@@ -122,48 +122,53 @@ class ContextBuilder:
         image_fingerprint = None
         if container.image_structural_details:
             jpeg_data = container.image_structural_details.get("jpeg", {})
-            png_data = container.image_structural_details.get("png", {})
+            png_data = container.image_structural_details.get("png")  # 可能是 None
             
             # JPEG 指纹
-            jpeg_quality = jpeg_data.get("estimated_quality")
-            jpeg_apps = jpeg_data.get("app_segments", [])
-            dqt_fingerprint = jpeg_data.get("dqt_tables", [None])[0] if jpeg_data.get("dqt_tables") else None
-            dqt_prefix = dqt_fingerprint[:16] if dqt_fingerprint else None  # 取前 16 字符
+            jpeg_quality = jpeg_data.get("estimated_quality") if jpeg_data else None
+            jpeg_apps = jpeg_data.get("app_segments", []) if jpeg_data else []
+            dqt_fingerprint = jpeg_data.get("dqt_tables", [None])[0] if jpeg_data and jpeg_data.get("dqt_tables") else None
+            dqt_prefix = dqt_fingerprint[:16] if dqt_fingerprint else None
             
-            # PNG 指纹
+            # PNG 指纹 — 增加空值检查
             png_text_kws = []
-            for chunk in png_data.get("text_chunks", []):
-                if chunk.get("keyword"):
-                    png_text_kws.append(chunk["keyword"])
-            
-            phys = png_data.get("phys")
             png_density = None
-            if phys:
-                x = phys.get("pixels_per_unit_x")
-                y = phys.get("pixels_per_unit_y")
-                unit = "DPI" if phys.get("unit") == 1 else "unknown"
-                if x and y:
-                    png_density = f"{x}x{y} {unit}"
+            png_color = None
+            png_bit_depth = None
             
-            png_color_type_map = {
-                0: "Grayscale",
-                2: "RGB",
-                3: "Palette",
-                4: "Grayscale+Alpha",
-                6: "RGBA"
-            }
-            png_color = png_color_type_map.get(png_data.get("ihdr", {}).get("color_type"))
-            png_bit_depth = png_data.get("ihdr", {}).get("bit_depth")
+            if png_data is not None:  # ✅ 关键修复
+                for chunk in png_data.get("text_chunks", []):
+                    if chunk.get("keyword"):
+                        png_text_kws.append(chunk["keyword"])
+                
+                phys = png_data.get("phys")
+                if phys:
+                    x = phys.get("pixels_per_unit_x")
+                    y = phys.get("pixels_per_unit_y")
+                    unit = "DPI" if phys.get("unit") == 1 else "unknown"
+                    if x and y:
+                        png_density = f"{x}x{y} {unit}"
+                
+                png_color_type_map = {
+                    0: "Grayscale",
+                    2: "RGB",
+                    3: "Palette",
+                    4: "Grayscale+Alpha",
+                    6: "RGBA"
+                }
+                png_color = png_color_type_map.get(png_data.get("ihdr", {}).get("color_type"))
+                png_bit_depth = png_data.get("ihdr", {}).get("bit_depth")
 
-            # 组装指纹对象 (只要有任何数据就不为 None)
+            # 组装指纹对象
             if any([jpeg_quality, jpeg_apps, dqt_prefix, png_text_kws, png_density, png_color]):
+                from app.forensics.metadata.models.forensic_context import ImageStructuralFingerprint
                 image_fingerprint = ImageStructuralFingerprint(
                     jpeg_estimated_quality=jpeg_quality,
                     jpeg_app_segments=jpeg_apps,
                     jpeg_dqt_fingerprint_prefix=dqt_prefix,
-                    jpeg_has_exif=jpeg_data.get("has_exif", False),
-                    jpeg_has_jfif=jpeg_data.get("has_jfif", False),
-                    jpeg_has_photoshop=jpeg_data.get("has_photoshop", False),
+                    jpeg_has_exif=jpeg_data.get("has_exif", False) if jpeg_data else False,
+                    jpeg_has_jfif=jpeg_data.get("has_jfif", False) if jpeg_data else False,
+                    jpeg_has_photoshop=jpeg_data.get("has_photoshop", False) if jpeg_data else False,
                     png_text_keywords=png_text_kws,
                     png_phys_density=png_density,
                     png_color_type=png_color,
