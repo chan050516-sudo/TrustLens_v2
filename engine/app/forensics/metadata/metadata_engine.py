@@ -2,7 +2,7 @@
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import time
 
@@ -17,6 +17,8 @@ from app.forensics.metadata.models.metadata_ir import (
     PDFStructureReport,
     ObjectGraph,
 )
+from app.forensics.metadata.models.forensic_context import ForensicContext
+from app.forensics.metadata.sanitization import ContextBuilder
 from app.forensics.metadata.registry.fingerprint_matcher import get_fingerprint_registry
 from app.forensics.metadata.exceptions import CollectorError, ParserError, AnalyzerError
 
@@ -76,6 +78,7 @@ class MetadataEngine:
         # 用于存储中间数据
         self._container: Optional[MetadataContainer] = None
         self._errors: List[Dict[str, Any]] = []
+        self._last_context: Optional[ForensicContext] = None
     
     def analyze(self, context: DocumentContext) -> List[Evidence]:
         """
@@ -97,12 +100,20 @@ class MetadataEngine:
         results = self._run_parallel_tasks(context)
         
         # 2. 组装 MetadataContainer
-        self._assemble_container(results)
+        self._assemble_container(results, context)
         
         # 3. 运行所有分析器
         evidences = self._run_analyzers(context)
+
+        # 4. 构建 Forensic Context (存入 _last_context 供后续调用)
+        try:
+            self._last_context = self._build_forensic_context()
+        except Exception as e:
+            logger.warning(f"Failed to build Forensic Context: {e}")
+            self._errors.append({"module": "context_builder", "error": str(e)})
+            self._last_context = None
         
-        # 4. 添加错误证据（如果有）
+        # 5. 添加错误证据（如果有）
         if self._errors:
             evidences.append(
                 Evidence(
@@ -119,6 +130,60 @@ class MetadataEngine:
         logger.info(f"MetadataEngine completed in {elapsed:.2f}s, produced {len(evidences)} evidences")
         
         return evidences
+
+    def analyze_with_context(self, context: DocumentContext) -> Tuple[List[Evidence], Optional[ForensicContext]]:
+        """
+        执行完整的 L1 元数据分析，同时返回证据和法证上下文 (双轨)
+
+        Returns:
+            Tuple[List[Evidence], Optional[ForensicContext]]: 
+                - 证据列表 (保证返回)
+                - 法证上下文 (可能为 None，如果构建失败)
+        """
+        # 调用 analyze 执行核心分析
+        evidences = self.analyze(context)
+        
+        # 返回证据和上下文
+        return evidences, self._last_context
+
+    def build_forensic_context(self, context: Optional[DocumentContext] = None) -> Optional[ForensicContext]:
+        """
+        单独构建 Forensic Context
+
+        如果传入 context，则重新分析；否则使用最近一次分析的结果。
+
+        Args:
+            context: 文档上下文 (可选)
+
+        Returns:
+            Optional[ForensicContext]: 清洗后的法证上下文
+        """
+        if context is not None:
+            # 重新分析
+            self.analyze(context)
+        
+        if self._container is None:
+            logger.warning("No container available. Run analyze() first or provide context.")
+            return None
+        
+        return self._build_forensic_context()
+
+    def _build_forensic_context(self) -> Optional[ForensicContext]:
+        """
+        内部方法：从当前 container 构建 Forensic Context
+        """
+        if self._container is None:
+            return None
+        
+        try:
+            # 调用 ContextBuilder
+            forensic_context = ContextBuilder.build(self._container)
+            return forensic_context
+        except Exception as e:
+            logger.exception(f"ContextBuilder failed: {e}")
+            self._errors.append({"module": "context_builder", "error": str(e)})
+            return None
+
     
     def _run_parallel_tasks(self, context: DocumentContext) -> Dict[str, Any]:
         """使用线程池并行执行所有 I/O 密集型任务"""
@@ -192,7 +257,7 @@ class MetadataEngine:
             logger.warning(f"Parser {parser.name()} failed: {e}")
             raise
     
-    def _assemble_container(self, results: Dict[str, Any]):
+    def _assemble_container(self, results: Dict[str, Any], context: DocumentContext):
         """将各模块结果组装到 MetadataContainer"""
         container = self._container
         if not container:
@@ -236,10 +301,15 @@ class MetadataEngine:
                     "icc_profile": metadata.exif_icc_profile,
                 }
 
-                # ---- 文件系统时间 (指南 §1.6) ----
-                # 注意：这些字段已在 ExifToolMetadata 中定义，但当前 forensic_context 中
-                # 没有专门的容器字段，可以用 timeline 构建器消费
-                # 暂时不映射到 container，留给第三轮清洗
+                # ===== 新增：文件系统时间映射 =====
+                # 用于 ContextBuilder 构建 timeline
+                container._filesystem_timestamps = {
+                    "file_modify_date": metadata.file_modify_date,
+                    "file_access_date": metadata.file_access_date,
+                    "file_create_date": metadata.file_create_date,
+                }
+                # 如果有文件名，也存一份
+                container._file_name = context.file_name if hasattr(context, "file_name") else None
 
             elif metadata:
                 try:
@@ -509,3 +579,7 @@ class MetadataEngine:
     def get_errors(self) -> List[Dict[str, Any]]:
         """返回执行过程中的错误列表"""
         return self._errors
+
+    def get_last_forensic_context(self) -> Optional[ForensicContext]:
+        """返回最近一次构建的 Forensic Context"""
+        return self._last_context

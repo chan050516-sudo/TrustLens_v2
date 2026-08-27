@@ -58,7 +58,7 @@ class ContextBuilder:
                 file_type=raw.get("File:FileType") or raw.get("FileType"),
                 mime_type=raw.get("File:MIMEType") or raw.get("MIMEType"),
                 file_size_bytes=container._filesystem_timestamps.get("size") if hasattr(container, "_filesystem_timestamps") else None,
-                file_name=container._file_name if hasattr(container, "_file_name") else None,
+                file_name=getattr(container, "_file_name", None),
                 document_id=exiftool.document_id,
                 instance_id=exiftool.instance_id,
                 original_document_id=exiftool.original_document_id,

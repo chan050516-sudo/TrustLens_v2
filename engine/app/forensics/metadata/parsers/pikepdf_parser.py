@@ -223,35 +223,49 @@ class PikepdfParser(BaseParser):
                             active_content_detail["launch_action"] = True
                             break
 
-                # ===== 新增：孤立对象提取 (指南 §4.6, §4.7) =====
+                # ===== 修复：使用迭代式栈遍历替代递归 =====
                 orphan_objects = []
                 # 构建 Root 可达对象集合
                 reachable = set()
-                def mark_reachable(obj):
+                stack = [pdf.Root]
+                
+                while stack:
+                    obj = stack.pop()
                     if obj is None:
-                        return
-                    if id(obj) in reachable:
-                        return
-                    reachable.add(id(obj))
+                        continue
+                    obj_id = id(obj)
+                    if obj_id in reachable:
+                        continue
+                    reachable.add(obj_id)
+                    
+                    # 遍历子对象
                     if isinstance(obj, (Dictionary, Stream)):
-                        for key, val in obj.items():
+                        for val in obj.values():
                             if isinstance(val, (Dictionary, Stream, Array)):
-                                mark_reachable(val)
+                                stack.append(val)
                             elif hasattr(val, "objgen") and val.is_indirect:
-                                mark_reachable(val)
+                                stack.append(val)
                     elif isinstance(obj, Array):
                         for item in obj:
                             if isinstance(item, (Dictionary, Stream, Array)):
-                                mark_reachable(item)
+                                stack.append(item)
                             elif hasattr(item, "objgen") and item.is_indirect:
-                                mark_reachable(item)
+                                stack.append(item)
+                    # 注意：某些对象可能是直接间接引用，需要额外处理
+                    elif hasattr(obj, "objgen") and obj.is_indirect:
+                        # 如果是间接对象，尝试解析它
+                        try:
+                            resolved = obj()
+                            if resolved is not None:
+                                stack.append(resolved)
+                        except Exception:
+                            pass
+
+                # 然后检查所有对象
                 try:
-                    mark_reachable(pdf.Root)
-                    # 检查所有对象
                     for obj in pdf.objects:
                         if id(obj) not in reachable:
                             obj_id = obj.objgen[0] if hasattr(obj, "objgen") else "unknown"
-                            # 尝试提取语义片段
                             snippet = None
                             if isinstance(obj, Stream):
                                 try:
@@ -259,10 +273,16 @@ class PikepdfParser(BaseParser):
                                 except Exception:
                                     snippet = "[binary data]"
                             elif isinstance(obj, Dictionary):
-                                # 检查是否有文本内容
+                                # 检查多个可能的文本键
                                 text_val = obj.get("/Contents") or obj.get("/Text") or obj.get("/Value")
                                 if text_val:
                                     snippet = str(text_val)[:200]
+                                elif "/Desc" in obj:
+                                    snippet = str(obj["/Desc"])[:200]
+                                elif "/Name" in obj:
+                                    snippet = str(obj["/Name"])[:200]
+                                elif "/F" in obj:
+                                    snippet = str(obj["/F"])[:200]
                             orphan_objects.append({
                                 "xref": str(obj_id),
                                 "type": "stream" if isinstance(obj, Stream) else "dictionary",
@@ -270,7 +290,7 @@ class PikepdfParser(BaseParser):
                                 "semantic_snippet": snippet,
                             })
                 except Exception as e:
-                    logger.warning(f"Error detecting orphan objects: {e}")
+                    logger.warning(f"Error during orphan object detection: {e}")
 
                 # ✅ 修复 4：页面维度的遍历（XObjects + 注释）
                 for page_num, page in enumerate(pdf.pages, start=1):

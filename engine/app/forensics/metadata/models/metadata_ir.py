@@ -186,3 +186,13 @@ class MetadataContainer(BaseModel):
         default_factory=list,
         description="异常区域: page, bbox, type, reason, text, font, font_size"
     )
+
+    # ---- 内部使用字段 (不直接暴露) ----
+    filesystem_timestamps: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="内部使用：文件系统时间"
+    )
+    file_name: Optional[str] = Field(
+        default=None,
+        description="内部使用：文件名"
+    )

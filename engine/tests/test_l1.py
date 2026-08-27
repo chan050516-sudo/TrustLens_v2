@@ -239,6 +239,111 @@ def main():
     except Exception as e:
         print(f"⚠️  Error: {e}")
 
+    # ===== 新增：测试 Forensic Context 构建 =====
+    print("\n📦 Forensic Context Test:")
+    print("=" * 70)
+    try:
+        from app.forensics.metadata.sanitization import ContextBuilder
+        forensic_context = ContextBuilder.build(container)
+    
+        if forensic_context:
+            print("\n📦 Forensic Context Details:")
+            print("=" * 70)
+            
+            # 1. Identity
+            if forensic_context.metadata_identity:
+                ident = forensic_context.metadata_identity
+                print(f"\n[Identity]")
+                print(f"  file_type: {ident.file_type}")
+                print(f"  mime_type: {ident.mime_type}")
+                print(f"  file_name: {ident.file_name}")
+                print(f"  document_id: {ident.document_id}")
+                print(f"  instance_id: {ident.instance_id}")
+            
+            # 2. Software Provenance
+            print(f"\n[Software Provenance] ({len(forensic_context.software_provenance)} items)")
+            for item in forensic_context.software_provenance:
+                print(f"  {item.source} -> {item.value}")
+            
+            # 3. Timeline
+            print(f"\n[Timeline] ({len(forensic_context.timeline)} items)")
+            for item in forensic_context.timeline:
+                print(f"  {item.time} [{item.source}]")
+            
+            # 4. XMP History
+            print(f"\n[XMP History] ({len(forensic_context.xmp_history)} items)")
+            for item in forensic_context.xmp_history:
+                print(f"  {item.get('action')} by {item.get('software_agent')} at {item.get('when')}")
+            
+            # 5. Document Lineage
+            if forensic_context.document_lineage:
+                lineage = forensic_context.document_lineage
+                print(f"\n[Document Lineage]")
+                print(f"  derived_from: {lineage.derived_from}")
+                print(f"  document_id: {lineage.document_id}")
+            
+            # 6. PDF Integrity
+            if forensic_context.pdf_integrity:
+                integrity = forensic_context.pdf_integrity
+                print(f"\n[PDF Integrity]")
+                print(f"  structural_validity: {integrity.structural_validity}")
+                if integrity.warnings:
+                    print(f"  warnings: {integrity.warnings}")
+                if integrity.errors:
+                    print(f"  errors: {integrity.errors}")
+            
+            # 7. Semantic Text
+            print(f"\n[Semantic Text] ({len(forensic_context.semantic_text.pages)} pages)")
+            for page in forensic_context.semantic_text.pages:
+                preview = page.text[:200].replace('\n', ' ')
+                print(f"  Page {page.page}: {preview}...")
+            
+            # 8. Annotations
+            print(f"\n[Annotations] ({len(forensic_context.annotations)} items)")
+            for ann in forensic_context.annotations:
+                print(f"  Page {ann.page}: {ann.type} -> {ann.uri or ann.content or 'No content'}")
+            
+            # 9. Layout Summary
+            if forensic_context.layout_summary:
+                layout = forensic_context.layout_summary
+                print(f"\n[Layout Summary]")
+                print(f"  Fonts: {len(layout.font_distribution)}")
+                for font in layout.font_distribution[:5]:
+                    print(f"    {font.font}: {font.coverage_percent}% on pages {font.page_distribution}")
+                if layout.image_summary:
+                    print(f"  Images: {layout.image_summary.count} total, dimensions: {layout.image_summary.dimensions[:5]}")
+            
+            # 10. Anomalous Regions
+            print(f"\n[Anomalous Regions] ({len(forensic_context.anomalous_regions)} items)")
+            for region in forensic_context.anomalous_regions:
+                print(f"  Page {region.page}: {region.type} - {region.reason}")
+            
+            # 11. Active Content
+            print(f"\n[Active Content]")
+            print(f"  javascript: {forensic_context.active_content.javascript}")
+            print(f"  open_action: {forensic_context.active_content.open_action}")
+            print(f"  launch_action: {forensic_context.active_content.launch_action}")
+            
+            # 12. Embedded Files
+            print(f"\n[Embedded Files] ({len(forensic_context.embedded_files)} items)")
+            for ef in forensic_context.embedded_files:
+                print(f"  {ef.name} ({ef.mime_type}) - {ef.size_bytes} bytes")
+            
+            # 13. Object Graph
+            if forensic_context.object_graph:
+                og = forensic_context.object_graph
+                print(f"\n[Object Graph]")
+                print(f"  orphan_objects: {len(og.orphan_objects)}")
+                for orphan in og.orphan_objects:
+                    print(f"    xref: {orphan.xref}, type: {orphan.type}, snippet: {orphan.semantic_snippet}")
+                print(f"  relationships: {len(og.relationships)}")
+            
+            print("=" * 70)
+        else:
+            print("⚠️  Forensic Context is None")
+    except Exception as e:
+        print(f"❌ Forensic Context build failed: {e}")
+
 
 if __name__ == "__main__":
     main()
