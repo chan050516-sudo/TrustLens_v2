@@ -36,6 +36,13 @@ class ExifToolMetadata(BaseModel):
     exif_gps: Optional[Dict[str, Any]] = None
     exif_color_space: Optional[str] = None
     exif_icc_profile: Optional[str] = None
+
+    # ===== EXIF 三时间戳 (指南 §1.10 / 阶段 1.2) =====
+    exif_datetime_digitized: Optional[str] = None   # EXIF:DateTimeDigitized
+    exif_datetime: Optional[str] = None             # EXIF:DateTime / ModifyDate
+
+    # ===== MakerNotes 完整性 (阶段 1.4) =====
+    makernotes_present: bool = False
     
     raw_json: Dict[str, Any] = Field(default_factory=dict)
 

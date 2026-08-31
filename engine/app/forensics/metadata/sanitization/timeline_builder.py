@@ -105,6 +105,23 @@ class TimelineBuilder:
                     raw=exiftool.exif_datetime_original,
                 ))
 
+        if exiftool.exif_datetime_digitized:
+            parsed = cls._parse_date(exiftool.exif_datetime_digitized)
+            if parsed:
+                items.append(TimelineItem(
+                    time=parsed.isoformat(),
+                    source="EXIF:DateTimeDigitized",
+                    raw=exiftool.exif_datetime_digitized,
+                ))
+        if exiftool.exif_datetime:
+            parsed = cls._parse_date(exiftool.exif_datetime)
+            if parsed:
+                items.append(TimelineItem(
+                    time=parsed.isoformat(),
+                    source="EXIF:ModifyDate",
+                    raw=exiftool.exif_datetime,
+                ))
+
         # ---- 6. 去重（基于 time + source 组合） ----
         seen = set()
         unique_items = []

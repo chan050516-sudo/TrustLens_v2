@@ -360,6 +360,50 @@ class ContextBuilder:
                 text=item.get("text1", "") + " | " + item.get("text2", ""),
             ))
 
+                # ============================================
+        # 新增：图片观察摘要生成 (阶段 1.1 - 1.5)
+        # ============================================
+        observations = []
+
+        # ---- 1. 缩略图尺寸对比 (阶段 1.1) ----
+        if container.image_type in ["jpeg", "png"]:
+            main_w, main_h = container.image_width, container.image_height
+            thumb_w, thumb_h = container.image_thumbnail_width, container.image_thumbnail_height
+            has_thumb = container.image_has_thumbnail
+
+            if main_w and main_h and has_thumb and thumb_w and thumb_h and thumb_w > 0 and thumb_h > 0:
+                main_ratio = main_w / main_h
+                thumb_ratio = thumb_w / thumb_h
+                diff = abs(main_ratio - thumb_ratio) / main_ratio
+                if diff > 0.15:  # 差异超过 15%
+                    observations.append(
+                        f"Thumbnail aspect ratio ({thumb_ratio:.2f}) differs from main image ({main_ratio:.2f}) by {diff:.1%}"
+                    )
+
+        # ---- 2. 尾部游离数据 (阶段 1.3) ----
+        if image_fingerprint and image_fingerprint.trailing_bytes > 0:
+            observations.append(
+                f"Trailing data ({image_fingerprint.trailing_bytes} bytes) found after file end marker"
+            )
+
+        # ---- 3. Photoshop 资源块 (阶段 1.5) ----
+        if image_fingerprint and image_fingerprint.has_photoshop_resources:
+            observations.append(
+                "Photoshop 8BIM resource block detected (APP13 segment)"
+            )
+
+        # ---- 4. MakerNotes 完整性 (阶段 1.4) ----
+        # 注意：需要在 ImageMetadata 中补充 makernotes_present 字段（见下方）
+        if image_meta and image_meta.makernotes_present is not None:
+            if not image_meta.makernotes_present:
+                observations.append(
+                    "Camera MakerNotes is missing despite camera Make/Model being present"
+                )
+
+        # 更新 image_meta 中的 makernotes_present
+        if exiftool and image_meta:
+            image_meta.makernotes_present = exiftool.makernotes_present
+
         # ============================================
         # 组装 ForensicContext
         # ============================================
@@ -386,4 +430,6 @@ class ContextBuilder:
             text_overlaps=getattr(container, 'text_overlaps', []),
             image_dpi=getattr(container, 'image_dpi', {}),
             image_structural_fingerprint=image_fingerprint,
+            image_structural_fingerprint=image_fingerprint,
+            image_observations=observations,
         )

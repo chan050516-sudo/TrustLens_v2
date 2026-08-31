@@ -443,7 +443,24 @@ def main():
                     print(f"  PNG Physical Density: {fp.png_phys_density}")
                 if fp.png_color_type:
                     print(f"  PNG Color Type: {fp.png_color_type}")
-            
+
+            if forensic_context.image_observations:
+                print(f"\n[Image Observations]")
+                for obs in forensic_context.image_observations:
+                    print(f"  • {obs}")
+
+            if forensic_context.image_structural_fingerprint:
+                fp = forensic_context.image_structural_fingerprint
+                # ... 原有打印 ...
+                if fp.trailing_bytes > 0:
+                    print(f"  ⚠️ Trailing Data: {fp.trailing_bytes} bytes")
+                if fp.has_photoshop_resources:
+                    print(f"  🖥️  Photoshop 8BIM Resources: Present")
+
+            if forensic_context.image_metadata and forensic_context.image_metadata.makernotes_present is not None:
+                print(f"\n[Image MakerNotes]")
+                print(f"  Present: {forensic_context.image_metadata.makernotes_present}")
+
             print("=" * 70)
         else:
             print("⚠️  Forensic Context is None")

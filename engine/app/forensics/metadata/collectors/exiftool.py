@@ -170,6 +170,14 @@ class ExifToolCollector(BaseCollector):
         exif_color_space = raw.get("EXIF:ColorSpace") or raw.get("ColorSpace")
         exif_icc_profile = raw.get("ICC_Profile:ProfileDescription") or raw.get("ProfileDescription")
 
+        # ===== 新增：EXIF 三时间戳 (阶段 1.2) =====
+        exif_datetime_digitized = raw.get("EXIF:DateTimeDigitized") or raw.get("DateTimeDigitized")
+        exif_datetime = raw.get("EXIF:DateTime") or raw.get("EXIF:ModifyDate") or raw.get("DateTime")
+
+        # ===== 新增：MakerNotes 完整性 (阶段 1.4) =====
+        # 检测 MakerNotes 是否存在（ExifTool 可能返回 "MakerNotes" 或 "EXIF:MakerNotes"）
+        makernotes_present = "MakerNotes" in raw or "EXIF:MakerNotes" in raw
+
         return ExifToolMetadata(
             producer=producer,
             creator=creator,
@@ -178,7 +186,6 @@ class ExifToolCollector(BaseCollector):
             software=software,
             xmp={k: v for k, v in raw.items() if k.startswith("XMP-") or k.startswith("XMP:")},
             exif={k: v for k, v in raw.items() if k.startswith("EXIF:") or k.startswith("GPS:")},
-            raw_json=raw,
             # 新增字段
             document_id=document_id,
             instance_id=instance_id,
@@ -195,4 +202,8 @@ class ExifToolCollector(BaseCollector):
             file_modify_date=parse_date_safe(file_modify_date),
             file_access_date=parse_date_safe(file_access_date),
             file_create_date=parse_date_safe(file_create_date),
+            exif_datetime_digitized=exif_datetime_digitized,
+            exif_datetime=exif_datetime,
+            makernotes_present=makernotes_present,
+            raw_json=raw,
         )

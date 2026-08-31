@@ -76,6 +76,7 @@ class ImageMetadata(BaseModel):
     gps: Optional[Dict[str, Any]] = None
     color_space: Optional[str] = None
     icc_profile: Optional[str] = None   # 简要描述，非原始数据
+    makernotes_present: bool = False
 
 class ImageStructuralFingerprint(BaseModel):
     """图像底层结构指纹（纯观察数据，无风险判断）"""
@@ -112,6 +113,24 @@ class ImageStructuralFingerprint(BaseModel):
     png_bit_depth: Optional[int] = Field(
         default=None,
         description="位深度: 8, 16 等"
+    )
+
+    # 阶段 1.3
+    trailing_bytes: int = Field(
+        default=0,
+        description="JPEG EOI 或 PNG IEND 块之后的附加字节数"
+    )
+    
+    # 阶段 1.5
+    has_photoshop_resources: bool = Field(
+        default=False,
+        description="是否存在 Photoshop 8BIM 资源块"
+    )
+    
+    # 阶段 2.1 预留
+    jpeg_encoding_type: Optional[str] = Field(
+        default=None,
+        description="Baseline, Progressive, 或 Extended Sequential"
     )
 
 
@@ -364,7 +383,12 @@ class ForensicContext(BaseModel):
     )
 
     image_structural_fingerprint: Optional[ImageStructuralFingerprint] = None
-    
+
+    image_observations: List[str] = Field(
+        default_factory=list,
+        description="根据多个维度生成的中性观察文本（纯事实，无风险判断）"
+    )
+
     class Config:
         json_encoders = {
             datetime: lambda v: v.isoformat()
