@@ -1,0 +1,112 @@
+trustlens/engine/
+app/
+│
+├── core/
+│   ├── document_ir.py
+│   ├── evidence.py
+│   ├── evidence_graph.py
+│   ├── risk.py
+│   └── interfaces.py
+│
+├── ingestion/
+│   ├── pdf/
+│   ├── image/
+│   ├── ocr/
+│   ├── renderer/
+│   ├── detector.py
+│   └── loader.py
+│
+├── forensics/
+│   │
+│   ├── metadata/
+│   │   │
+│   │   ├── collectors
+│   │   │   ├── __init__.py
+│   │   │   ├── exiftool.py
+│   │   │   └── qpdf.py
+│   │   │
+│   │   ├── parsers
+│   │   │   ├── __init__.py
+│   │   │   ├── image_structural_parser.py
+│   │   │   ├── pikepdf_parser.py
+│   │   │   ├── pymupdf_parser.py
+│   │   │   └── signature_parser.py
+│   │   │
+│   │   ├── analyzers
+│   │   │   ├── __init__.py
+│   │   │   ├── consistency_analyzer.py
+│   │   │   ├── fingerprint_analyzer.py
+│   │   │   ├── signature_analyzer.py
+│   │   │   └── xmp_analyzer.py
+│   │   │
+│   │   ├── registry
+│   │   │   ├── fingerprint_matcher.py
+│   │   │   └── fingerprints.yaml
+│   │   │
+│   │   ├── models
+│   │   │   ├── forensic_context.py
+│   │   │   └── metadata_ir.py
+│   │   │
+│   │   ├── sanitization
+│   │   │   ├── __init__.py
+│   │   │   ├── annotation_deduplication.py
+│   │   │   ├── software_aggregator.py
+│   │   │   ├── layout_compressor.py
+│   │   │   ├── timeline_builder.py
+│   │   │   └── context_builder.py
+│   │   │ 
+│   │   ├── __init_.py
+│   │   ├── exceptions.py
+│   │   ├── interfaces.py
+│   │   └── metadata_engine.py
+│   │
+│   ├── visual/
+│   │   ├── trufor.py
+│   │   ├── mantra.py
+│   │   ├── logo.py
+│   │   └── seal.py
+│   │
+│   ├── semantic/
+│   │   ├── layoutlm.py
+│   │   ├── classifier.py
+│   │   └── extractor.py
+│   │
+│   ├── template/
+│   │   ├── matcher.py
+│   │   ├── registry.py
+│   │   └── validator.py
+│   │
+│   ├── graph.py
+│   ├── nodes.py
+│   └── state.py
+│
+├── verification/
+│   ├── math/
+│   ├── date/
+│   ├── qr/
+│   ├── barcode/
+│   ├── regex/
+│   ├── checksum/
+│   └── external/
+│
+├── agents/
+│   ├── verification_agent.py
+│   ├── template_agent.py
+│   └── query_agent.py
+│
+├── orchestration/
+│   └── graph.py
+│
+├── storage/
+│   ├── postgres/
+│   ├── vector/
+│   └── object_store/
+│
+├── api/
+│   └── routes/
+│
+│
+tests/
+└── test_l1.py
+│
+test_doc/
