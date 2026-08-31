@@ -175,6 +175,19 @@ class MetadataEngine:
         if self._container is None:
             return None
         
+        # ✅ 修复：检查容器是否包含有效数据
+        container = self._container
+        has_data = (
+            container.exiftool is not None or
+            container.structure is not None or
+            container.object_graph is not None or
+            container.semantic_text_pages or
+            container.image_type is not None
+        )
+        if not has_data:
+            logger.debug("Container has no data, skipping Forensic Context build")
+            return None
+        
         try:
             # 调用 ContextBuilder
             forensic_context = ContextBuilder.build(self._container)
@@ -236,15 +249,13 @@ class MetadataEngine:
         return results
     
     def _safe_collect(self, collector, context: DocumentContext) -> Optional[Dict[str, Any]]:
-        """安全执行收集器（返回证据或 None）"""
+        """安全执行收集器（返回结构化数据或 None）"""
         try:
             return collector.collect(context)
-        # except (CollectorError, FileNotFoundError) as e:
-        #     logger.warning(f"Collector {collector.name()} failed: {e}")
-        #     raise
         except Exception as e:
+            # 不重新抛出异常，直接返回 None
             logger.warning(f"Collector {collector.name()} failed: {e}")
-            raise
+            return None
     
     def _safe_parse(self, parser, context: DocumentContext) -> Optional[Dict[str, Any]]:
         """安全执行解析器（返回解析结果或 None）"""
@@ -254,8 +265,9 @@ class MetadataEngine:
             logger.warning(f"Parser {parser.name()} failed: {e}")
             raise
         except Exception as e:
+            # 不重新抛出异常，直接返回 None
             logger.warning(f"Parser {parser.name()} failed: {e}")
-            raise
+            return None
     
     def _assemble_container(self, results: Dict[str, Any], context: DocumentContext):
         """将各模块结果组装到 MetadataContainer"""

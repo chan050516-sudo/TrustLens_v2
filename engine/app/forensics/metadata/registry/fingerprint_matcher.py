@@ -172,13 +172,22 @@ class FingerprintRegistry:
     @staticmethod
     def _sanitize_for_match(text: Any) -> str:
         """
-        文本降噪：将所有非字母、非数字的字符（包括标点、商标符号、乱码）替换为空格。
+        文本降噪：将所有非字母、非数字的字符替换为空格。
+        保留 Unicode 字符（如中文、日文等），但移除标点符号和商标符号。
         例如 "Microsoft┬« Word 2024" -> "Microsoft   Word 2024"
         """
         if not text:
             return ""
-        # 替换非单词字符（\w 包含字母数字下划线，支持多语言字母）为空格
-        return re.sub(r'[^\w]', ' ', str(text))
+        text_str = str(text)
+        # ✅ 优化：保留 Unicode 字母和数字，移除其他字符
+        # \w 在 Python 3 中已经支持 Unicode 字母，但为了更精确控制，使用更具体的模式
+        import re
+        # 移除控制字符和特殊符号，但保留字母数字和空格
+        # 此模式匹配任何不是字母、数字或空格的字符
+        sanitized = re.sub(r'[^\w\s]', ' ', text_str, flags=re.UNICODE)
+        # 将多个空格合并为一个
+        sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+        return sanitized
     
     def match(
         self,

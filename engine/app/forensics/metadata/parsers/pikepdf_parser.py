@@ -273,16 +273,22 @@ class PikepdfParser(BaseParser):
                                 except Exception:
                                     snippet = "[binary data]"
                             elif isinstance(obj, Dictionary):
-                                # ✅ 增强：遍历所有键，提取字符串值
+                                # ✅ 修复：简化 snippet 提取，只查关键文本字段
+                                text_keys = ["/Contents", "/Text", "/Value", "/Desc", "/Name", "/Title", "/Subject"]
                                 text_values = []
-                                for key, val in obj.items():
-                                    if isinstance(val, str):
-                                        text_values.append(f"{key}: {val[:50]}")
-                                    elif isinstance(val, bytes):
-                                        try:
-                                            text_values.append(f"{key}: {val.decode('utf-8', errors='ignore')[:50]}")
-                                        except Exception:
-                                            pass
+                                for key in text_keys:
+                                    if key in obj:
+                                        val = obj[key]
+                                        if isinstance(val, str):
+                                            text_values.append(f"{key}: {val[:80]}")
+                                        elif isinstance(val, bytes):
+                                            try:
+                                                text_values.append(f"{key}: {val.decode('utf-8', errors='ignore')[:80]}")
+                                            except Exception:
+                                                pass
+                                        # 限制最多提取 3 个键值对
+                                        if len(text_values) >= 3:
+                                            break
                                 if text_values:
                                     snippet = " | ".join(text_values)[:300]
                             orphan_objects.append({

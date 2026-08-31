@@ -43,7 +43,6 @@ class PyMuPDFParser(BaseParser):
         # ===== 新增：颜色、字号、替换字符、重叠、DPI =====
         color_counts = {}           # color_hex -> count
         size_counts = {}            # size -> count
-        total_spans = 0
         replacement_chars = []      # [(page, text, bbox)]
         text_overlaps = []          # [(page, bbox1, bbox2, text1, text2)]
         image_dpi = {}              # page -> dpi_value
@@ -179,7 +178,6 @@ class PyMuPDFParser(BaseParser):
                 for block in text_blocks.get("blocks", []):
                     for line in block.get("lines", []):
                         for span in line.get("spans", []):
-                            total_spans += 1
                             text = span.get("text", "")
                             size = span.get("size", 0)
                             color_int = span.get("color", 0)
@@ -187,10 +185,11 @@ class PyMuPDFParser(BaseParser):
                             bbox = span.get("bbox")
                             
                             # 统计颜色
-                            color_counts[color_hex] = color_counts.get(color_hex, 0) + 1
+                            text_len = len(text)
+                            color_counts[color_hex] = color_counts.get(color_hex, 0) + text_len
                             # 统计字号
                             if size > 0:
-                                size_counts[size] = size_counts.get(size, 0) + 1
+                                size_counts[size] = size_counts.get(size, 0) + text_len
                             
                             # ---- 替换字符检测 (U+FFFD) ----
                             if "\ufffd" in text or "�" in text:
@@ -228,15 +227,44 @@ class PyMuPDFParser(BaseParser):
                                 "overlap_ratio": round(overlap, 2),
                             })
 
-                # --- 图像 DPI 计算 ---
+                # --- 图像 DPI 计算 (修复 P4) ---
                 # 获取页面中的图像，计算 DPI
+                # 方法：从 page.get_images() 获取图像引用，然后查找 XObject 获取 bbox
                 images = page.get_images(full=True)
                 for img in images:
                     img_width = img.get("width", 0)
                     img_height = img.get("height", 0)
-                    # 获取图像在页面上的 bbox（需要从资源中获取，简化处理）
-                    # 用 page.get_images() 只能获取引用，获取 bbox 需要遍历 XObject
-                    pass  # 见下方详细实现
+                    if img_width == 0 or img_height == 0:
+                        continue
+                    
+                    # 尝试获取图像的 bbox（在页面上的位置和大小）
+                    # 通过 XObject 引用获取
+                    xref = img.get("xref", 0)
+                    if xref:
+                        try:
+                            # 获取该 XObject 在页面上的位置信息
+                            # 简单方法：通过 resources 中的 XObject 查找
+                            resources = page.get("resources", {})
+                            xobjects = resources.get("xobject", {})
+                            for xobj_name, xobj_ref in xobjects.items():
+                                if hasattr(xobj_ref, "xref") and xobj_ref.xref == xref:
+                                    # 获取 bbox (通过矩阵或直接获取)
+                                    if hasattr(xobj_ref, "rect"):
+                                        rect = xobj_ref.rect
+                                        if rect and len(rect) >= 4:
+                                            # 计算 DPI = 像素尺寸 / (物理尺寸 / 72)
+                                            width_inch = (rect[2] - rect[0]) / 72
+                                            height_inch = (rect[3] - rect[1]) / 72
+                                            if width_inch > 0 and height_inch > 0:
+                                                dpi_x = img_width / width_inch
+                                                dpi_y = img_height / height_inch
+                                                # 取平均值作为 DPI
+                                                dpi = round((dpi_x + dpi_y) / 2)
+                                                image_dpi[page_num + 1] = dpi
+                                                break
+                        except Exception as e:
+                            logger.debug(f"DPI calculation failed for page {page_num + 1}: {e}")
+                            continue
 
             doc.close()
         except Exception as e:
@@ -257,18 +285,18 @@ class PyMuPDFParser(BaseParser):
         # 计算颜色/字号覆盖率
         color_distribution = []
         size_distribution = []
-        if total_spans > 0:
+        if total_chars > 0:
             for color, count in color_counts.items():
                 color_distribution.append({
                     "color": color,
                     "count": count,
-                    "coverage_percent": round((count / total_spans) * 100, 2),
+                    "coverage_percent": round((count / total_chars) * 100, 2),
                 })
             for size, count in size_counts.items():
                 size_distribution.append({
                     "size": size,
                     "count": count,
-                    "coverage_percent": round((count / total_spans) * 100, 2),
+                    "coverage_percent": round((count / total_chars) * 100, 2),
                 })
         # 按覆盖率降序排列
         color_distribution.sort(key=lambda x: x["coverage_percent"], reverse=True)

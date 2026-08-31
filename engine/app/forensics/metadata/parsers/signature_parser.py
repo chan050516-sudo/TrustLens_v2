@@ -64,12 +64,16 @@ class SignatureParser(BaseParser):
             doc = pymupdf.open(file_path)
             
             signature_widgets = []
+            # ✅ 修复：从 pymupdf 模块动态获取常量，带 fallback
+            sig_type = getattr(pymupdf, "PDF_WIDGET_TYPE_SIGNATURE", None)
+            # 如果模块中没有定义常量，尝试从 widget 的 field_type 属性判断
+            # 通常签名字段的 field_type 为 3（在 PyMuPDF 中）
+            if sig_type is None:
+                sig_type = 3  # 硬编码 fallback，并记录警告
+                logger.warning("PDF_WIDGET_TYPE_SIGNATURE constant not found in pymupdf, using fallback value 3")
+            
             for page in doc:
                 for widget in page.widgets():
-                    # PyMuPDF 的 field_type 是 int，需要与常量比较
-                    # PDF_WIDGET_TYPE_SIGNATURE 在 pymupdf 中通常为 3
-                    # 但为了兼容不同版本，使用 getattr 安全获取
-                    sig_type = getattr(pymupdf, "PDF_WIDGET_TYPE_SIGNATURE", 3)
                     if widget.field_type == sig_type:
                         signature_widgets.append({
                             "field_name": widget.field_name,
@@ -81,8 +85,7 @@ class SignatureParser(BaseParser):
             if signature_widgets:
                 result["has_signatures"] = True
                 result["signature_fields"] = [w["field_name"] for w in signature_widgets]
-                result["signature_status"] = "HAS_SIGNATURE"  # 会被 pdfsig 覆盖
-                # 存储原始物理信息，供后续分析
+                result["signature_status"] = "HAS_SIGNATURE"
                 result["signature_widgets"] = signature_widgets
             
             doc.close()

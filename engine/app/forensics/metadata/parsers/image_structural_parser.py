@@ -246,6 +246,10 @@ class ImageStructuralParser(BaseParser):
                     break
 
                 segment_len = struct.unpack(">H", data[pos:pos + 2])[0]
+                if segment_len < 2 or segment_len > 65535:
+                    # 无效段长度，跳过
+                    pos += 1
+                    continue
                 segment_data = data[pos + 2:pos + segment_len] if segment_len > 2 else b""
                 pos += segment_len
 
