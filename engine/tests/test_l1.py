@@ -443,6 +443,19 @@ def main():
                     print(f"  PNG Physical Density: {fp.png_phys_density}")
                 if fp.png_color_type:
                     print(f"  PNG Color Type: {fp.png_color_type}")
+                if fp.jpeg_encoding_type:
+                    print(f"  JPEG Encoding: {fp.jpeg_encoding_type}")
+                if fp.marker_sequence:
+                    seq_preview = fp.marker_sequence[:15]
+                    if len(fp.marker_sequence) > 15:
+                        seq_preview.append("...")
+                    print(f"  Marker Sequence: {' -> '.join(seq_preview)}")
+                if fp.dht_type:
+                    print(f"  DHT Type: {fp.dht_type}")
+                if fp.trailing_bytes > 0:
+                    print(f"  ⚠️ Trailing Data: {fp.trailing_bytes} bytes")
+                if fp.has_photoshop_resources:
+                    print(f"  🖥️  Photoshop 8BIM Resources: Present")
 
             if forensic_context.image_observations:
                 print(f"\n[Image Observations]")

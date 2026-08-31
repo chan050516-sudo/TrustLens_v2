@@ -160,7 +160,12 @@ class ContextBuilder:
                 png_bit_depth = png_data.get("ihdr", {}).get("bit_depth")
 
             # 组装指纹对象
-            if any([jpeg_quality, jpeg_apps, dqt_prefix, png_text_kws, png_density, png_color]):
+            if any([jpeg_quality, jpeg_apps, dqt_prefix, png_text_kws, png_density, png_color,
+                    jpeg_data.get("trailing_bytes", 0) > 0,
+                    jpeg_data.get("has_photoshop_resources", False),
+                    jpeg_data.get("encoding_type"),
+                    jpeg_data.get("marker_sequence"),
+                    jpeg_data.get("dht_type")]):
                 from app.forensics.metadata.models.forensic_context import ImageStructuralFingerprint
                 image_fingerprint = ImageStructuralFingerprint(
                     jpeg_estimated_quality=jpeg_quality,
@@ -169,6 +174,11 @@ class ContextBuilder:
                     jpeg_has_exif=jpeg_data.get("has_exif", False) if jpeg_data else False,
                     jpeg_has_jfif=jpeg_data.get("has_jfif", False) if jpeg_data else False,
                     jpeg_has_photoshop=jpeg_data.get("has_photoshop", False) if jpeg_data else False,
+                    jpeg_encoding_type=jpeg_data.get("encoding_type") if jpeg_data else None,
+                    marker_sequence=jpeg_data.get("marker_sequence", []) if jpeg_data else [],
+                    dht_type=jpeg_data.get("dht_type") if jpeg_data else None,
+                    trailing_bytes=jpeg_data.get("trailing_bytes", 0) if jpeg_data else 0,
+                    has_photoshop_resources=jpeg_data.get("has_photoshop_resources", False) if jpeg_data else False,
                     png_text_keywords=png_text_kws,
                     png_phys_density=png_density,
                     png_color_type=png_color,
@@ -360,7 +370,7 @@ class ContextBuilder:
                 text=item.get("text1", "") + " | " + item.get("text2", ""),
             ))
 
-                # ============================================
+        # ============================================
         # 新增：图片观察摘要生成 (阶段 1.1 - 1.5)
         # ============================================
         observations = []
@@ -429,7 +439,6 @@ class ContextBuilder:
             replacement_chars=getattr(container, 'replacement_chars', []),
             text_overlaps=getattr(container, 'text_overlaps', []),
             image_dpi=getattr(container, 'image_dpi', {}),
-            image_structural_fingerprint=image_fingerprint,
             image_structural_fingerprint=image_fingerprint,
             image_observations=observations,
         )

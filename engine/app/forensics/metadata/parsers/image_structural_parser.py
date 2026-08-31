@@ -23,6 +23,79 @@ from app.forensics.metadata.exceptions import ParserError
 logger = logging.getLogger(__name__)
 
 
+# ===== ITU-T T.81 Annex K 标准霍夫曼表 (BITS + HUFFVAL) =====
+# 格式: (table_class, table_id) -> 原始字节序列
+# table_class: 0=DC, 1=AC; table_id: 0=Luminance, 1=Chrominance
+ANNEX_K_STANDARD_TABLES = {
+    # DC Luminance (0, 0): 16 BITS + 12 HUFFVAL = 28 bytes
+    (0, 0): bytes([
+        0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0A, 0x0B
+    ]),
+    # DC Chrominance (0, 1): 16 BITS + 12 HUFFVAL = 28 bytes
+    (0, 1): bytes([
+        0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0A, 0x0B
+    ]),
+    # AC Luminance (1, 0): 16 BITS + 162 HUFFVAL = 178 bytes
+    (1, 0): bytes([
+        0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03,
+        0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D,
+        0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
+        0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+        0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08,
+        0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
+        0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16,
+        0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
+        0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+        0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+        0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+        0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+        0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+        0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+        0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+        0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+        0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6,
+        0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
+        0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4,
+        0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
+        0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA,
+        0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+        0xF9, 0xFA
+    ]),
+    # AC Chrominance (1, 1): 16 BITS + 162 HUFFVAL = 178 bytes
+    (1, 1): bytes([
+        0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04,
+        0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77,
+        0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21,
+        0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
+        0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91,
+        0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0,
+        0x15, 0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34,
+        0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26,
+        0x27, 0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38,
+        0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+        0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+        0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+        0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
+        0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+        0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96,
+        0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
+        0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4,
+        0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3,
+        0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2,
+        0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA,
+        0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9,
+        0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+        0xF9, 0xFA
+    ]),
+}
+
+
 @dataclass
 class JPEGStructure:
     """JPEG 结构信息"""
@@ -31,7 +104,7 @@ class JPEGStructure:
     has_photoshop: bool = False     # APP13 Photoshop 标记
     app_segments: List[str] = field(default_factory=list)  # 存在的 APP 段列表
     dqt_tables: List[str] = field(default_factory=list)    # 量化表十六进制指纹
-    dht_tables: List[str] = field(default_factory=list)    # 霍夫曼表十六进制指纹
+    dht_tables: List[Dict[str, Any]] = field(default_factory=list)  # 完整 DHT 表数据
     estimated_quality: Optional[int] = None                # 估计质量 (0-100)
     width: Optional[int] = None
     height: Optional[int] = None
@@ -39,6 +112,12 @@ class JPEGStructure:
     thumbnail_width: Optional[int] = None
     thumbnail_height: Optional[int] = None
     structural_errors: List[str] = field(default_factory=list)
+    trailing_bytes: int = 0
+    has_photoshop_resources: bool = False
+    # ===== 第二阶段新增 =====
+    encoding_type: Optional[str] = None          # "Baseline", "Extended Sequential", "Progressive"
+    marker_sequence: List[str] = field(default_factory=list)  # 完整标记顺序
+    dht_type: Optional[str] = None               # "standard", "optimized", "mixed"
 
 
 @dataclass
@@ -100,6 +179,11 @@ class ImageStructuralParser(BaseParser):
                     "dqt_tables": jpeg_struct.dqt_tables,
                     "dht_tables": jpeg_struct.dht_tables,
                     "estimated_quality": jpeg_struct.estimated_quality,
+                    "encoding_type": jpeg_struct.encoding_type,
+                    "marker_sequence": jpeg_struct.marker_sequence,
+                    "dht_type": jpeg_struct.dht_type,
+                    "trailing_bytes": jpeg_struct.trailing_bytes,
+                    "has_photoshop_resources": jpeg_struct.has_photoshop_resources,
                 }
 
             elif mime_type in ["image/png"]:
@@ -133,34 +217,31 @@ class ImageStructuralParser(BaseParser):
     def _parse_jpeg(self, file_path: Path) -> JPEGStructure:
         """解析 JPEG 二进制结构"""
         jpeg_struct = JPEGStructure()
+        jpeg_struct.marker_sequence = ["SOI"]
 
         try:
             with open(file_path, "rb") as f:
                 data = f.read()
 
-            # JPEG 必须以 FF D8 开头
             if len(data) < 2 or data[0] != 0xFF or data[1] != 0xD8:
                 jpeg_struct.structural_errors.append("Invalid JPEG header (missing SOI)")
                 return jpeg_struct
 
-            # 遍历 JPEG 标记段
-            pos = 2  # 跳过 SOI
+            pos = 2
             while pos < len(data) - 1:
                 if data[pos] != 0xFF:
-                    # 可能是填充字节，跳过
                     pos += 1
                     continue
 
                 marker = data[pos + 1]
                 pos += 2
 
-                # 标记类型: 0xD0-0xD7 = RST (重启), 0x01 = TEM, 0xD9 = EOI
-                if marker == 0xD9:  # EOI (End of Image)
+                if marker == 0xD9:  # EOI
+                    jpeg_struct.marker_sequence.append("EOI")
                     break
                 if 0xD0 <= marker <= 0xD7 or marker == 0x01:
                     continue
 
-                # 读取段长度 (2 bytes)
                 if pos + 1 >= len(data):
                     break
 
@@ -168,7 +249,10 @@ class ImageStructuralParser(BaseParser):
                 segment_data = data[pos + 2:pos + segment_len] if segment_len > 2 else b""
                 pos += segment_len
 
-                # 处理特定的 APP 段
+                marker_name = self._get_marker_name(marker)
+                jpeg_struct.marker_sequence.append(marker_name)
+
+                # APP 段处理
                 if 0xE0 <= marker <= 0xEF:
                     app_name = self._get_app_name(marker)
                     jpeg_struct.app_segments.append(app_name)
@@ -177,7 +261,6 @@ class ImageStructuralParser(BaseParser):
                         jpeg_struct.has_jfif = True
                     elif marker == 0xE1 and segment_data.startswith(b"Exif"):
                         jpeg_struct.has_exif = True
-                        # 尝试提取缩略图信息
                         thumb_info = self._extract_thumbnail_info(segment_data)
                         if thumb_info:
                             jpeg_struct.has_thumbnail = True
@@ -185,35 +268,74 @@ class ImageStructuralParser(BaseParser):
                             jpeg_struct.thumbnail_height = thumb_info.get("height")
                     elif marker == 0xED and segment_data.startswith(b"Photoshop"):
                         jpeg_struct.has_photoshop = True
+                        if segment_data.startswith(b"Photoshop 3.0"):
+                            jpeg_struct.has_photoshop_resources = True
 
-                # 处理 DQT (Define Quantization Table) - 量化表指纹
+                # DQT 处理
                 elif marker == 0xDB:
                     dqt_fingerprint = self._extract_dqt_fingerprint(segment_data)
                     if dqt_fingerprint:
                         jpeg_struct.dqt_tables.append(dqt_fingerprint)
 
-                # 处理 DHT (Define Huffman Table) - 霍夫曼表指纹
+                # ===== DHT 处理：存储完整表数据 =====
                 elif marker == 0xC4:
-                    dht_fingerprint = self._extract_dht_fingerprint(segment_data)
-                    if dht_fingerprint:
-                        jpeg_struct.dht_tables.append(dht_fingerprint)
+                    if len(segment_data) < 17:
+                        continue
+                    table_class = (segment_data[0] >> 4) & 0x0F
+                    table_id = segment_data[0] & 0x0F
+                    bits = segment_data[1:17]
+                    huffval_len = sum(bits)
+                    if len(segment_data) < 17 + huffval_len:
+                        continue
+                    huffval = segment_data[17:17 + huffval_len]
+                    table_bytes = bits + huffval
+                    jpeg_struct.dht_tables.append({
+                        "class": table_class,
+                        "id": table_id,
+                        "bits": bits,
+                        "huffval": huffval,
+                        "raw_bytes": table_bytes,
+                    })
 
-                # 处理 SOF (Start of Frame) - 提取尺寸
+                # ===== SOF 处理：提取尺寸和编码类型 =====
                 elif 0xC0 <= marker <= 0xCF and marker not in [0xC4, 0xC8, 0xCC]:
-                    # SOF0, SOF1, SOF2 等
                     if len(segment_data) >= 7:
                         jpeg_struct.height = struct.unpack(">H", segment_data[1:3])[0]
                         jpeg_struct.width = struct.unpack(">H", segment_data[3:5])[0]
+                        # 确定编码类型
+                        if marker == 0xC0:
+                            jpeg_struct.encoding_type = "Baseline"
+                        elif marker == 0xC1:
+                            jpeg_struct.encoding_type = "Extended Sequential"
+                        elif marker == 0xC2:
+                            jpeg_struct.encoding_type = "Progressive"
+                        elif marker == 0xC3:
+                            jpeg_struct.encoding_type = "Lossless"
+                        elif marker in (0xC5, 0xC6, 0xC7):
+                            jpeg_struct.encoding_type = "Extended Sequential (Differential)"
+                        elif marker in (0xC9, 0xCA, 0xCB):
+                            jpeg_struct.encoding_type = "Progressive (Differential)"
+                        else:
+                            jpeg_struct.encoding_type = f"SOF_{marker:x}"
 
                 # 提取 DQT 估算质量
                 if jpeg_struct.dqt_tables:
                     jpeg_struct.estimated_quality = self._estimate_quality_from_dqt(jpeg_struct.dqt_tables[0])
+
+            # 尾部游离数据
+            last_eoi = data.rfind(b'\xff\xd9')
+            if last_eoi != -1:
+                jpeg_struct.trailing_bytes = len(data) - (last_eoi + 2)
+
+            # ===== DHT 类型检测 =====
+            jpeg_struct.dht_type = self._classify_dht_tables(jpeg_struct.dht_tables)
 
         except Exception as e:
             logger.exception(f"JPEG parse error: {e}")
             jpeg_struct.structural_errors.append(f"Parse error: {str(e)}")
 
         return jpeg_struct
+
 
     def _get_app_name(self, marker: int) -> str:
         """获取 APP 段名称"""
@@ -236,6 +358,47 @@ class ImageStructuralParser(BaseParser):
             0xEF: "APP15",
         }
         return app_names.get(marker, f"APP{marker-0xE0}")
+
+    def _get_marker_name(self, marker: int) -> str:
+        """返回标记的标准化名称"""
+        if marker == 0xD8:
+            return "SOI"
+        elif marker == 0xD9:
+            return "EOI"
+        elif 0xE0 <= marker <= 0xEF:
+            return self._get_app_name(marker)
+        elif marker == 0xDB:
+            return "DQT"
+        elif marker == 0xC4:
+            return "DHT"
+        elif marker == 0xC0:
+            return "SOF0"
+        elif marker == 0xC1:
+            return "SOF1"
+        elif marker == 0xC2:
+            return "SOF2"
+        elif marker == 0xC3:
+            return "SOF3"
+        elif marker == 0xC5:
+            return "SOF5"
+        elif marker == 0xC6:
+            return "SOF6"
+        elif marker == 0xC7:
+            return "SOF7"
+        elif marker == 0xC9:
+            return "SOF9"
+        elif marker == 0xCA:
+            return "SOF10"
+        elif marker == 0xCB:
+            return "SOF11"
+        elif marker == 0xDA:
+            return "SOS"
+        elif marker == 0xDD:
+            return "DRI"
+        elif marker == 0xFE:
+            return "COM"
+        else:
+            return f"0x{marker:02X}"
 
     def _extract_dqt_fingerprint(self, data: bytes) -> Optional[str]:
         """
@@ -262,6 +425,27 @@ class ImageStructuralParser(BaseParser):
         if not values:
             return None
         return "".join(f"{v:02x}" for v in values[:8])
+
+    def _classify_dht_tables(self, dht_tables: List[Dict[str, Any]]) -> Optional[str]:
+        """根据 ITU-T Annex K 标准表判定 DHT 类型"""
+        if not dht_tables:
+            return None
+
+        matches = []
+        for tbl in dht_tables:
+            key = (tbl["class"], tbl["id"])
+            standard_data = ANNEX_K_STANDARD_TABLES.get(key)
+            if standard_data and tbl["raw_bytes"] == standard_data:
+                matches.append(True)
+            else:
+                matches.append(False)
+
+        if all(matches):
+            return "standard"
+        elif not any(matches):
+            return "optimized"
+        else:
+            return "mixed"
 
     def _extract_dht_fingerprint(self, data: bytes) -> Optional[str]:
         """提取霍夫曼表指纹 (前 16 字节)"""

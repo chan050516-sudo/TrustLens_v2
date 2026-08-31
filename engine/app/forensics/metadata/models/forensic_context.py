@@ -97,6 +97,20 @@ class ImageStructuralFingerprint(BaseModel):
     jpeg_has_jfif: bool = False
     jpeg_has_photoshop: bool = False
 
+    # ===== 第二阶段新增 =====
+    jpeg_encoding_type: Optional[str] = Field(
+        default=None,
+        description="Baseline, Extended Sequential, Progressive 等"
+    )
+    marker_sequence: List[str] = Field(
+        default_factory=list,
+        description="JPEG 标记段出现的完整顺序（含非 APP 段）"
+    )
+    dht_type: Optional[str] = Field(
+        default=None,
+        description="standard, optimized, 或 mixed (基于 ITU-T Annex K 比对)"
+    )
+
     # PNG 相关
     png_text_keywords: List[str] = Field(
         default_factory=list,
