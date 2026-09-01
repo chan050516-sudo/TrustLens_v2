@@ -23,40 +23,22 @@ def get_engine_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent.parent.parent
 
 def get_external_model_path(model_name: str) -> Path:
-    """仅返回外部仓库的根目录路径（用于物理存在性检查）"""
+    """获取外部仓库直接可用的 Python 导入根路径"""
     engine_root = get_engine_root()
     external_dir = engine_root / "external"
     
     model_map = {
         "trufor": external_dir / "TruFor" / "test_docker" / "src",
-        "catnet": external_dir / "CAT-Net",
+        "catnet": external_dir / "CAT-Net" / "lib",
         "mvss": external_dir / "MVSS-Net",
     }
     path = model_map.get(model_name)
     if not path or not path.exists():
         raise FileNotFoundError(
             f"Missing external repo for {model_name} at {path}. "
-            f"Please clone it into engine/external/"
+            f"Please ensure it is correctly cloned."
         )
     return path
-
-def get_import_root(model_name: str) -> Path:
-    """
-    获取需要加入 sys.path 的具体 Python 包根目录。
-    不同仓库的代码入口不一致，这里做精确映射。
-    """
-    engine_root = get_engine_root()
-    external_dir = engine_root / "external"
-    
-    if model_name == "trufor":
-        return external_dir / "TruFor" / "test_docker" / "src"
-    elif model_name == "catnet":
-        return external_dir / "CAT-Net" / "lib"
-    elif model_name == "mvss":
-        # MVSS-Net 通常直接放在根目录
-        return external_dir / "MVSS-Net"
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
 
 @contextmanager
 def isolated_import(model_path: Path):

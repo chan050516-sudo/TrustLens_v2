@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 
-from .base import BaseVisualAdapter, get_external_model_path, isolated_import, get_import_root
+from .base import BaseVisualAdapter, get_external_model_path, isolated_import
 from app.forensics.visual.visual_ir import VisualModelOutput
 from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, InferenceError
 
@@ -73,10 +73,6 @@ class TruForAdapter(BaseVisualAdapter):
             self._model.eval()
             logger.info("TruFor (myEncoderDecoder) loaded successfully.")
 
-        except ImportError as e:
-            raise ModelLoadError(
-                f"TruFor import failed. Ensure the file exists at {trufor_root}/models/cmx/builder_np_conf.py"
-            ) from e
         except Exception as e:
             raise ModelLoadError(f"TruFor load failed: {e}") from e
 

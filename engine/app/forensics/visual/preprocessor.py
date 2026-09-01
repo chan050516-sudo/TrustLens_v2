@@ -84,30 +84,6 @@ class VisualPreprocessor:
         return visual_inputs
 
     @classmethod
-    def _from_jpeg(cls, jpeg_path: Path) -> VisualInput:
-        """
-        解码 JPEG，提取 DCT 系数（占位），构建 VisualInput
-        """
-        img = Image.open(jpeg_path)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        img_array = np.array(img)
-        # 提取 DCT 系数（目前占位，留待 CAT-Net 适配器实现）
-        # 可以调用外部库如 jpeg4py 来提取，这里我们只记录元信息
-        dct_coeffs = None  # 实际将在适配器中获取
-        # 尝试从 EXIF 或其他途径获取 DCT，但暂时忽略
-        visual_input = VisualInput(
-            source_type=ImageSourceType.JPEG,
-            page_id=None,
-            image_array=img_array,
-            original_size=img.size,
-            render_dpi=None,
-            pixel_to_user_transform=None,  # 无坐标变换
-            dct_coefficients=dct_coeffs,
-        )
-        return visual_input
-
-    @classmethod
     def _from_png(cls, png_path: Path) -> VisualInput:
         """
         解码 PNG，构建 VisualInput
