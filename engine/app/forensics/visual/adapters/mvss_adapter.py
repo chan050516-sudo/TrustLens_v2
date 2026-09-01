@@ -7,12 +7,13 @@ Reference: https://github.com/dong03/MVSS-Net
 import logging
 import time
 import numpy as np
+from pathlib import Path
 from typing import Optional
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
 
-from app.forensics.visual.adapters.base import BaseVisualAdapter
+from .base import BaseVisualAdapter, get_external_model_path, isolated_import
 from app.forensics.visual.visual_ir import VisualModelOutput
 from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, InferenceError
 
@@ -46,22 +47,20 @@ class MVSSAdapter(BaseVisualAdapter):
             self.weight_path = weight_path
 
         try:
-            # MVSS-Net 结构
-            try:
-                from models.mvss import MVSSNet
-            except ImportError:
-                from pathlib import Path
-                external_path = Path(__file__).parent.parent.parent.parent / "external" / "MVSS-Net"
-                if external_path.exists():
-                    import sys
-                    sys.path.insert(0, str(external_path))
-                    from models.mvss import MVSSNet
-                else:
-                    raise ImportError("MVSS-Net model code not found. Please clone https://github.com/dong03/MVSS-Net into external/MVSS-Net")
+# 1. 获取 MVSS-Net 外部仓库路径
+            mvss_root = get_external_model_path("mvss")
+            
+            # ===== 核心修正：沙箱导入 =====
+            with isolated_import(mvss_root):
+                # 注意：MVSS-Net 官方文件名可能是 mvssnet.py 或 MVSSNet.py
+                # 如果报错，请检查 external/MVSS-Net/models/ 下的实际文件名
+                from models.mvssnet import MVSSNet
 
+            # 2. 初始化模型
             logger.info(f"Initializing MVSS-Net++ model on {self._device}...")
             self._model = MVSSNet(pretrained=False)
             
+            # 3. 加载权重
             if not Path(self.weight_path).exists():
                 raise ModelNotFoundError("MVSS-Net", self.weight_path)
             
@@ -72,6 +71,7 @@ class MVSSAdapter(BaseVisualAdapter):
             logger.info("MVSS-Net model loaded successfully.")
 
         except ImportError as e:
+            logger.error(f"Import failed. Check if file exists at {mvss_root}/models/mvssnet.py")
             raise ModelLoadError(f"MVSS-Net import failed: {e}") from e
         except Exception as e:
             raise ModelLoadError(f"MVSS-Net load failed: {e}") from e

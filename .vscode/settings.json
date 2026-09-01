@@ -1,3 +1,8 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:venv"
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python.analysis.extraPaths": [
+        "./engine/external/TruFor/test_docker/src",
+        "./engine/external/CAT-Net/lib",
+        "./engine/external/MVSS-Net"
+    ]
 }

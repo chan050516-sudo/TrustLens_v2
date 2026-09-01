@@ -129,9 +129,43 @@ class VisualPreprocessor:
     @classmethod
     def extract_dct_from_jpeg(cls, jpeg_path: Path) -> Optional[np.ndarray]:
         """
-        从 JPEG 文件中提取 DCT 系数（供 CAT-Net 使用）
-        实际实现可以使用 jpeg4py 或自定义解析
-        这里留空，将在适配器阶段实现
+        使用 jpegio 从原始 JPEG 文件解析 Y 通道的 8x8 DCT 块系数。
+        若未安装 jpegio 或读取失败，返回 None 以触发降级占位。
         """
-        # 占位
-        return None
+        try:
+            import jpegio as jio
+            jpeg_obj = jio.read(str(jpeg_path))
+            # 提取 Y 通道 DCT 系数 (coef_arrays[0])
+            dct_y = jpeg_obj.coef_arrays[0].astype(np.float32)
+            
+            # 将 (H_blocks*8, W_blocks*8) 转换为 (H_blocks, W_blocks, 64)
+            h, w = dct_y.shape
+            n_h, n_w = h // 8, w // 8
+            # 裁剪多余边缘以确保能被 8 整除
+            dct_y = dct_y[:n_h*8, :n_w*8]
+            
+            # 重新组织为 8x8 块并展平为 64 维
+            dct_blocks = dct_y.reshape(n_h, 8, n_w, 8).transpose(0, 2, 1, 3).reshape(n_h, n_w, 64)
+            return dct_blocks
+        except ImportError:
+            return None
+        except Exception:
+            return None
+
+    @classmethod
+    def _from_jpeg(cls, jpeg_path: Path) -> VisualInput:
+        img = Image.open(jpeg_path).convert("RGB")
+        img_array = np.array(img)
+        
+        # 尝试提取真实 DCT 系数
+        dct_coeffs = cls.extract_dct_from_jpeg(jpeg_path)
+
+        return VisualInput(
+            source_type=ImageSourceType.JPEG,
+            page_id=None,
+            image_array=img_array,
+            original_size=img.size,
+            render_dpi=None,
+            pixel_to_user_transform=None,
+            dct_coefficients=dct_coeffs,
+        )
