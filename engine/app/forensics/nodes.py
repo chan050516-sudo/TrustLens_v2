@@ -3,6 +3,8 @@
 LangGraph 节点函数
 每个节点对应一个 Layer 或一个处理步骤
 """
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -10,6 +12,12 @@ from pathlib import Path
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
 from app.forensics.state import ForensicState
+from app.forensics.visual import (
+    VisualPreprocessor,
+    VisualInferenceEngine,
+    EvidenceExtractor,
+    ContextSerializer
+)
 
 # 导入各层引擎
 from app.forensics.metadata.metadata_engine import MetadataEngine, ResolverSet
@@ -127,30 +135,65 @@ class ForensicNodes:
     @staticmethod
     async def l2_visual(state: ForensicState) -> ForensicState:
         """
-        L2 视觉取证节点
-        检测像素级篡改痕迹 (TruFor, ManTra-Net, etc.)
+        L2 视觉取证节点（真实实现）
+        并行执行 TruFor + CAT-Net + MVSS 推理，提取视觉证据
         """
-        logger.info(f"Node: l2_visual")
+        logger.info(f"Node: l2_visual - {state.context.file_path}")
         state.current_stage = "l2_visual"
-        
-        # TODO: 实现 L2 Visual Engine
-        # from app.forensics.visual.visual_engine import VisualEngine
-        # engine = VisualEngine()
-        # evidences = await engine.analyze(state.context)
-        # state.add_evidences("L2", evidences)
-        
-        # 占位: 产出占位证据，表示 L2 已执行
-        from app.core.evidence import Evidence, EvidenceType
-        state.add_evidences("L2", [
-            Evidence(
-                type=EvidenceType.GENERIC_OBSERVATION,
-                value="L2_PLACEHOLDER",
-                confidence=1.0,
-                source="l2_visual",
-                description="L2 Visual Engine not yet implemented. Placeholder node."
+
+        try:
+            # 1. 预处理：将文档转换为 VisualInput 列表
+            visual_inputs = VisualPreprocessor.from_context(state.context)
+            if not visual_inputs:
+                logger.info("No visual inputs generated (unsupported format or empty).")
+                state.add_evidences("L2", [])
+                return state
+
+            logger.info(f"Generated {len(visual_inputs)} visual inputs (pages/images).")
+
+            # 2. 初始化推理引擎（在 executor 中加载模型，避免阻塞事件循环）
+            # 注意：模型加载是同步且耗时的，我们用线程池隔离
+            loop = asyncio.get_event_loop()
+            engine = await loop.run_in_executor(None, VisualInferenceEngine)
+
+            if not engine.is_available():
+                logger.warning("No visual models available. Skipping L2.")
+                state.add_evidences("L2", [])
+                state.add_error("l2_visual", "No visual models loaded.")
+                return state
+
+            # 3. 执行推理（同样放入线程池，因为涉及 GPU/CPU 密集计算）
+            logger.info("Starting visual inference...")
+            inference_results = await loop.run_in_executor(
+                None, engine.run, visual_inputs
             )
-        ])
-        
+            logger.info(f"Inference completed for {len(inference_results)} items.")
+
+            # 4. 证据提取（从 Mask 到 BBox 和共识）
+            extractor = EvidenceExtractor()
+            evidences, visual_context = await loop.run_in_executor(
+                None, extractor.extract, visual_inputs, inference_results
+            )
+
+            # 5. 存储证据与上下文
+            state.add_evidences("L2", evidences)
+            # 序列化上下文（供 LLM 侦探和最终报告使用）
+            state.visual_context = ContextSerializer.to_dict(visual_context)
+            # 同时把观察摘要放入 custom_metadata，方便下游快速访问
+            state.context.custom_metadata["visual_observations"] = visual_context.observations
+            state.context.custom_metadata["visual_model_scores"] = visual_context.raw_scores
+
+            logger.info(f"L2 produced {len(evidences)} evidences.")
+            if visual_context.observations:
+                for obs in visual_context.observations:
+                    logger.debug(f"  [L2 Obs] {obs}")
+
+        except Exception as e:
+            logger.exception(f"L2 visual analysis failed: {e}")
+            state.add_error("l2_visual", str(e))
+            # 优雅降级：添加空证据，不中断流程
+            state.add_evidences("L2", [])
+
         return state
     
     # ============= 节点 5: L3 语义分析 =============

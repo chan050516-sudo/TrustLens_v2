@@ -49,24 +49,23 @@ class ForensicGraph:
         # ingest -> route_by_type
         builder.add_edge("ingest", "route_by_type")
         
-        # route_by_type -> l1_metadata (无论什么格式都跑 L1)
+        # ===== 并行分派：L1, L2, L3 同时启动 =====
+        # 注意：LangGraph 中，当一个节点有多个出边指向不同节点时，
+        # 这些目标节点会并行执行（如果资源允许）。
         builder.add_edge("route_by_type", "l1_metadata")
-        
-        # L1 -> 并行 L2/L3 (LangGraph 支持并行)
-        builder.add_edge("l1_metadata", "l2_visual")
-        builder.add_edge("l1_metadata", "l3_semantic")
-        
-        # L2+L3 完成后 -> L4 (使用条件边确保两者都完成)
+        builder.add_edge("route_by_type", "l2_visual")
+        builder.add_edge("route_by_type", "l3_semantic")
+
+        # ===== 汇聚到 L4：等待所有并行任务完成 =====
+        # 当 L1, L2, L3 都执行完毕后，L4 才会启动。
+        # 这是因为 L4 入边来自这三个节点，LangGraph 会等待所有上游完成。
+        builder.add_edge("l1_metadata", "l4_verification")
         builder.add_edge("l2_visual", "l4_verification")
         builder.add_edge("l3_semantic", "l4_verification")
-        
-        # L4 -> Evidence Graph
+
+        # L4 -> Evidence Graph -> Risk -> Finalize -> END
         builder.add_edge("l4_verification", "build_evidence_graph")
-        
-        # Evidence Graph -> Risk Engine
         builder.add_edge("build_evidence_graph", "risk_engine")
-        
-        # Risk Engine -> Finalize -> END
         builder.add_edge("risk_engine", "finalize")
         builder.add_edge("finalize", END)
         

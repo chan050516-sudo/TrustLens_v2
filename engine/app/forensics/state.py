@@ -36,7 +36,10 @@ class ForensicState(BaseModel):
     
     # 验证结果
     verification_results: List[Dict[str, Any]] = field(default_factory=list)
-    
+
+    # ===== 新增：L2 视觉上下文（供 LLM 侦探使用）=====
+    visual_context: Optional[Dict[str, Any]] = None
+
     # 运行时状态
     current_stage: str = "init"
     errors: List[Dict[str, Any]] = field(default_factory=list)
