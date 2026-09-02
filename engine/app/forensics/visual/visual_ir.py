@@ -5,7 +5,7 @@ L2 Visual Layer 数据契约
 """
 
 from typing import Optional, List, Dict, Any, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 import numpy as np
 from enum import Enum
@@ -38,8 +38,7 @@ class VisualInput(BaseModel):
     # 额外元数据
     extra: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class VisualModelOutput(BaseModel):
@@ -57,8 +56,7 @@ class VisualModelOutput(BaseModel):
     # 模型运行耗时（秒）
     inference_time: float = 0.0
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class VisualForensicContext(BaseModel):
@@ -81,5 +79,4 @@ class VisualForensicContext(BaseModel):
     # 时间戳
     generated_at: datetime = Field(default_factory=datetime.now)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)

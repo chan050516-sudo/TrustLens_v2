@@ -5,7 +5,7 @@ LangGraph 状态定义
 """
 from typing import Optional, List, Dict, Any, Annotated
 from dataclasses import dataclass, field
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
@@ -49,8 +49,7 @@ class ForensicState(BaseModel):
     risk_level: str = "LOW"
     final_report: Optional[Dict[str, Any]] = None
     
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     
     def add_evidences(self, source: str, evidences: List[Evidence]) -> None:
         """添加证据到对应的层级"""

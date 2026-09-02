@@ -105,27 +105,46 @@ class VisualPreprocessor:
     @classmethod
     def extract_dct_from_jpeg(cls, jpeg_path: Path) -> Optional[np.ndarray]:
         """
-        使用 jpegio 从原始 JPEG 文件解析 Y 通道的 8x8 DCT 块系数。
-        若未安装 jpegio 或读取失败，返回 None 以触发降级占位。
+        使用 jpeglib 从原始 JPEG 文件解析 Y 通道的 8x8 DCT 块系数。
+        返回形状为 (H_blocks, W_blocks, 64) 的 float32 数组。
+        若未安装 jpeglib、文件损坏或读取失败，返回 None 以触发优雅降级。
         """
         try:
-            import jpegio as jio
-            jpeg_obj = jio.read(str(jpeg_path))
-            # 提取 Y 通道 DCT 系数 (coef_arrays[0])
-            dct_y = jpeg_obj.coef_arrays[0].astype(np.float32)
+            import jpeglib
+
+            # 读取 JPEG 频域系数对象
+            im = jpeglib.read_dct(str(jpeg_path))
             
-            # 将 (H_blocks*8, W_blocks*8) 转换为 (H_blocks, W_blocks, 64)
-            h, w = dct_y.shape
-            n_h, n_w = h // 8, w // 8
-            # 裁剪多余边缘以确保能被 8 整除
-            dct_y = dct_y[:n_h*8, :n_w*8]
-            
-            # 重新组织为 8x8 块并展平为 64 维
-            dct_blocks = dct_y.reshape(n_h, 8, n_w, 8).transpose(0, 2, 1, 3).reshape(n_h, n_w, 64)
-            return dct_blocks
+            # 提取亮度通道 (Y 通道) DCT 块：形状通常为 (H_blocks, W_blocks, 8, 8)
+            # 部分色彩空间下 Y 通道位于索引 0 或属性 Y
+            if hasattr(im, "Y"):
+                dct_y = im.Y
+            elif hasattr(im, "coef_arrays") and len(im.coef_arrays) > 0:
+                dct_y = im.coef_arrays[0]
+            else:
+                return None
+
+            # 统一维度展平为 CAT-Net 期望的 (H_blocks, W_blocks, 64)
+            if dct_y.ndim == 4 and dct_y.shape[2:] == (8, 8):
+                h_b, w_b = dct_y.shape[:2]
+                return dct_y.reshape(h_b, w_b, 64).astype(np.float32)
+            elif dct_y.ndim == 2:
+                # 兼容部分直接返回 (H, W) 拼接大图的情况
+                h, w = dct_y.shape
+                n_h, n_w = h // 8, w // 8
+                dct_y = dct_y[:n_h * 8, :n_w * 8]
+                return (
+                    dct_y.reshape(n_h, 8, n_w, 8)
+                    .transpose(0, 2, 1, 3)
+                    .reshape(n_h, n_w, 64)
+                    .astype(np.float32)
+                )
+
+            return None
         except ImportError:
             return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"jpeglib extraction failed for {jpeg_path}: {e}")
             return None
 
     @classmethod

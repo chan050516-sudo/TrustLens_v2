@@ -60,12 +60,12 @@ class SignatureParser(BaseParser):
         注意：PyMuPDF 无法读取 PKCS#7 证书内容，此处仅做物理结构检测。
         """
         try:
-            import pymupdf
-            doc = pymupdf.open(file_path)
+            import fitz
+            doc = fitz.open(file_path)
             
             signature_widgets = []
             # ✅ 修复：从 pymupdf 模块动态获取常量，带 fallback
-            sig_type = getattr(pymupdf, "PDF_WIDGET_TYPE_SIGNATURE", None)
+            sig_type = getattr(fitz, "PDF_WIDGET_TYPE_SIGNATURE", None)
             # 如果模块中没有定义常量，尝试从 widget 的 field_type 属性判断
             # 通常签名字段的 field_type 为 3（在 PyMuPDF 中）
             if sig_type is None:

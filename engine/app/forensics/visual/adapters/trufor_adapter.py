@@ -54,9 +54,11 @@ class TruForAdapter(BaseVisualAdapter):
             
             # ===== 沙箱导入 =====
             with isolated_import(trufor_root):
-                from config import config
+                import config as trufor_cfg
+                # 若源码中声明的是 config.config，则使用 getattr 兼容
+                cfg_obj = getattr(trufor_cfg, "config", getattr(trufor_cfg, "cfg", None))
                 from models.cmx.builder_np_conf import myEncoderDecoder
-                self._model = myEncoderDecoder(cfg=config)
+                self._model = myEncoderDecoder(cfg=cfg_obj)
             
             # 加载权重
             if not Path(self.weight_path).exists():

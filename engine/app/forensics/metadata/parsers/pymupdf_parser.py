@@ -2,7 +2,7 @@
 import logging
 from typing import Dict, Any
 
-import pymupdf
+import fitz
 
 from app.core.document_ir import DocumentContext
 from app.forensics.metadata.interfaces import BaseParser
@@ -48,7 +48,7 @@ class PyMuPDFParser(BaseParser):
         image_dpi = {}              # page -> dpi_value
         
         try:
-            doc = pymupdf.open(file_path)
+            doc = fitz.open(file_path)
             for page_num in range(len(doc)):
                 page = doc[page_num]
                 page_rect = page.rect

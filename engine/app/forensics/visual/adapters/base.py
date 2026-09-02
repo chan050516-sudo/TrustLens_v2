@@ -49,6 +49,8 @@ def isolated_import(model_path: Path):
     """
     path_str = str(model_path)
     inserted = False
+
+    initial_modules = set(sys.modules.keys())
     
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
@@ -60,8 +62,8 @@ def isolated_import(model_path: Path):
         if inserted:
             sys.path.remove(path_str)
         # 必须清理 sys.modules 中的 'models' 缓存
-        to_remove = [k for k in sys.modules if k == 'models' or k.startswith('models.')]
-        for k in to_remove:
+        new_modules = set(sys.modules.keys()) - initial_modules
+        for k in new_modules:
             del sys.modules[k]
 
 

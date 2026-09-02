@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class DocumentContext(BaseModel):
@@ -23,5 +23,4 @@ class DocumentContext(BaseModel):
                 data["file_size_bytes"] = 0
         super().__init__(**data)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)

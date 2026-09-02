@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional, Any, Dict, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 
 
@@ -89,5 +89,4 @@ class Evidence(BaseModel):
         # 基于内容去重（避免多个模块产生相同证据）
         return hash((self.type, str(self.value), self.source, self.description))
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)

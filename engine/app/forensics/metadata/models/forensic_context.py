@@ -10,7 +10,7 @@ Forensic Context 数据模型 (LLM Context 清洗后结构)
 """
 
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 
 
@@ -403,7 +403,4 @@ class ForensicContext(BaseModel):
         description="根据多个维度生成的中性观察文本（纯事实，无风险判断）"
     )
 
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
