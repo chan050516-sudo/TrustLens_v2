@@ -76,7 +76,7 @@ class TruForAdapter(BaseVisualAdapter):
         except Exception as e:
             raise ModelLoadError(f"TruFor load failed: {e}") from e
 
-def infer(self, image_array: np.ndarray) -> VisualModelOutput:
+    def infer(self, image_array: np.ndarray) -> VisualModelOutput:
         if self._model is None:
             raise InferenceError("TruFor model not loaded. Call load_model() first.")
 

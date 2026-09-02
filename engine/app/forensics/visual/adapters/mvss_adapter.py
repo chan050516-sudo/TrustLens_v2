@@ -19,7 +19,7 @@ from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, 
 
 logger = logging.getLogger(__name__)
 
-MVSS_WEIGHT_PATH = "models/mvss.pth"
+MVSS_WEIGHT_PATH = "weights/mvss.pth"
 
 
 class MVSSAdapter(BaseVisualAdapter):
