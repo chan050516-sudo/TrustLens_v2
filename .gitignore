@@ -219,3 +219,11 @@ __marimo__/
 .streamlit/secrets.toml
 
 test_doc/
+
+weights/
+*.pth
+*.pth.tar
+*.pt
+*.tar
+*.ckpt
+*.bin

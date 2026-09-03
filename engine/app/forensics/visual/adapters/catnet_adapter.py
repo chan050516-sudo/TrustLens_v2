@@ -18,7 +18,7 @@ from app.forensics.visual.visual_ir import VisualModelOutput
 from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, InferenceError
 
 logger = logging.getLogger(__name__)
-CATNET_WEIGHT_PATH = "weights/CAT_full_v2.pth.tar"
+CATNET_WEIGHT_PATH = "weights/CAT_full_v2.pth"
 
 class CATNetAdapter(BaseVisualAdapter):
     def __init__(self, weight_path: Optional[str] = None):
@@ -44,22 +44,23 @@ class CATNetAdapter(BaseVisualAdapter):
 
         try:
             catnet_root = get_external_model_path("catnet")
+            lib_path = catnet_root / "lib"
             
+            # 同时将 catnet_root 和 lib 加入隔离沙箱
             with isolated_import(catnet_root):
-                # 官方依赖路径通常指向 lib 目录
-                lib_path = catnet_root
-                if not lib_path.exists():
-                     raise FileNotFoundError(f"CAT-Net 'lib' dir missing at {lib_path}")
-                
-                with isolated_import(lib_path):
-                    from config.default import _C as config, update_config
-                    import models
-                    
-                    # 载入官方配置 (需确保 yaml 文件存在)
-                    update_config(config, str(catnet_root / 'experiments/CAT_full.yaml'))
-                    
-                    # 通过 builder 实例化
-                    self._model = models.get_net(config)
+                import sys
+                if str(lib_path) not in sys.path:
+                    sys.path.insert(0, str(lib_path))
+
+                from config.default import _C as config
+                from lib.models.network_CAT import get_seg_model
+
+                yaml_path = catnet_root / 'experiments' / 'CAT_full.yaml'
+                config.defrost()
+                config.merge_from_file(str(yaml_path))
+                config.freeze()
+
+                self._model = get_seg_model(config)
 
             if not Path(self.weight_path).exists():
                 raise ModelNotFoundError("CAT-Net", self.weight_path)
@@ -80,10 +81,11 @@ class CATNetAdapter(BaseVisualAdapter):
             raise InferenceError("CAT-Net model not loaded. Call load_model() first.")
 
         try:
+            catnet_root = get_external_model_path("catnet")
             start_time = time.time()
             h, w = image_array.shape[:2]
 
-            # 1. 边缘填充确保长宽为 8 的倍数（坚决不做破坏网格的 Resize）
+            # 1. 边缘填充确保为 8 的倍数
             pad_h = (8 - h % 8) % 8
             pad_w = (8 - w % 8) % 8
             if pad_h > 0 or pad_w > 0:
@@ -91,50 +93,61 @@ class CATNetAdapter(BaseVisualAdapter):
             else:
                 padded_img = image_array
 
-            img_tensor = self._transform_rgb(padded_img).unsqueeze(0).to(self._device)
+            cur_h, cur_w = padded_img.shape[:2]
+            rgb_tensor = self._transform_rgb(padded_img).unsqueeze(0).to(self._device)
 
-            # 2. 处理 DCT 信号（真实提取 vs 静默填零降级）
-            target_nh = padded_img.shape[0] // 8
-            target_nw = padded_img.shape[1] // 8
-            
+            # 2. 构造 21 通道的 DCT 特征输入
             if dct_coeffs is not None:
-                # 调整 dct 数组形状以匹配当前 padding 后的图像
-                cur_nh, cur_nw = dct_coeffs.shape[:2]
-                if cur_nh < target_nh or cur_nw < target_nw:
-                    dct_padded = np.pad(
-                        dct_coeffs, 
-                        ((0, target_nh - cur_nh), (0, target_nw - cur_nw), (0, 0)), 
-                        mode='constant', 
-                        constant_values=0
-                    )
-                else:
-                    dct_padded = dct_coeffs[:target_nh, :target_nw, :]
-
-                # 转换为 torch.Tensor -> (1, 1, n_h, n_w, 64)
-                dct_tensor = torch.from_numpy(dct_padded).float().unsqueeze(0).unsqueeze(0).to(self._device)
+                # dct_coeffs 形状: (H_b, W_b, 64) -> 截取前 21 个频域分量
+                dct_21 = dct_coeffs[:, :, :21]
+                
+                # 转换为 PyTorch 格式 (1, 21, H_b, W_b)
+                dct_tensor = torch.from_numpy(dct_21).permute(2, 0, 1).unsqueeze(0).float().to(self._device)
+                
+                # 最近邻插值放大 8 倍，以对齐原图 (H, W) 尺寸，供 dilation=8 的卷积核抓取
+                dct_tensor = F.interpolate(dct_tensor, size=(cur_h, cur_w), mode='nearest')
+                
                 dct_used = True
-                dct_mean = float(np.mean(np.abs(dct_coeffs)))
-                dct_std = float(np.std(dct_coeffs))
+                dct_mean = float(np.mean(np.abs(dct_21)))
+                dct_std = float(np.std(dct_21))
             else:
-                # 输入为非 JPEG（PDF/PNG）或 jpegio 缺失，静默使用零张量占位
-                dct_tensor = torch.zeros((1, 1, target_nh, target_nw, 64), dtype=torch.float32, device=self._device)
+                # 非 JPEG 文件或提取失败时的优雅降级
+                dct_tensor = torch.zeros((1, 21, cur_h, cur_w), dtype=torch.float32, device=self._device)
                 dct_used = False
                 dct_mean = 0.0
                 dct_std = 0.0
 
-            # 3. 推理
-            with torch.no_grad():
-                output = self._model(img_tensor, dct_tensor)
-                if isinstance(output, (tuple, list)):
-                    mask_tensor = output[0]
-                elif isinstance(output, dict):
-                    mask_tensor = output.get('anomaly_map', output.get('pred'))
-                else:
-                    mask_tensor = output
+            # 3. 拼接为 24 通道张量 (3 通道 RGB + 21 通道 DCT)
+            x_input = torch.cat([rgb_tensor, dct_tensor], dim=1)
+            
+            # 4. 构造 8x8 全1量化表矩阵
+            qtable = torch.ones((1, 8, 8), dtype=torch.float32, device=self._device)
+
+            # 5. 推理 (置于沙箱中保证符号解析安全)
+            with isolated_import(catnet_root):
+                with torch.no_grad():
+                    output = self._model(x_input, qtable)
+                    if isinstance(output, (tuple, list)):
+                        mask_tensor = output[0]
+                    elif isinstance(output, dict):
+                        mask_tensor = output.get('anomaly_map', output.get('pred'))
+                    else:
+                        mask_tensor = output
 
             # 4. 后处理：插值回原图尺寸并裁切掉 padding 区域
-            mask_resized = F.interpolate(mask_tensor, size=(padded_img.shape[0], padded_img.shape[1]), mode='bilinear', align_corners=False)
+            # ================= 统一鲁棒后处理 =================
+            if mask_tensor.ndim == 4 and mask_tensor.shape[1] > 1:
+                mask_tensor = F.softmax(mask_tensor, dim=1)[:, 1:2, :, :]
+            elif mask_tensor.ndim == 3 and mask_tensor.shape[0] > 1:
+                mask_tensor = F.softmax(mask_tensor.unsqueeze(0), dim=1)[:, 1:2, :, :]
+
+            mask_resized = F.interpolate(mask_tensor, size=(cur_h, cur_w), mode='bilinear', align_corners=False)
             mask_np = mask_resized.squeeze().cpu().numpy()
+            
+            # 终极兜底：确保提取的是 2D 张量
+            if mask_np.ndim == 3:
+                mask_np = mask_np[1] if mask_np.shape[0] > 1 else mask_np[0]
+                
             mask_np = mask_np[:h, :w]
             mask_np = np.clip(mask_np, 0.0, 1.0)
 

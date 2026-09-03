@@ -102,7 +102,10 @@ class VisualInferenceEngine:
                 try:
                     # 每个模型推理加入超时保护 (通过信号或简单时间监控，此处用起止时间)
                     start = time.time()
-                    output = adapter.infer(vinput.image_array)
+                    if model_name == "catnet":
+                        output = adapter.infer(vinput.image_array, dct_coeffs=vinput.dct_coefficients)
+                    else:
+                        output = adapter.infer(vinput.image_array)
                     elapsed = time.time() - start
                     if elapsed > 60:  # 单页单模型超过60秒告警
                         logger.warning(f"Model {model_name} inference took {elapsed:.2f}s on page {page_id}")

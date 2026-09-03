@@ -20,7 +20,7 @@ from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, 
 logger = logging.getLogger(__name__)
 
 # TruFor 模型权重路径（可通过环境变量覆盖，如 TRUFOR_WEIGHTS=/path/to/model.pth）
-TRUFOR_WEIGHT_PATH = "weights/trufor.pth"
+TRUFOR_WEIGHT_PATH = "weights/trufor.pth.tar"
 
 
 class TruForAdapter(BaseVisualAdapter):
@@ -54,11 +54,18 @@ class TruForAdapter(BaseVisualAdapter):
             
             # ===== 沙箱导入 =====
             with isolated_import(trufor_root):
-                import config as trufor_cfg
-                # 若源码中声明的是 config.config，则使用 getattr 兼容
-                cfg_obj = getattr(trufor_cfg, "config", getattr(trufor_cfg, "cfg", None))
+                import config as trufor_cfg_mod
+                cfg = trufor_cfg_mod._C.clone()
+                
+                # 合并 TruFor 核心配置文件
+                yaml_path = trufor_root / "trufor.yaml"
+                cfg.defrost()
+                if yaml_path.exists():
+                    cfg.merge_from_file(str(yaml_path))
+                cfg.freeze()
+                
                 from models.cmx.builder_np_conf import myEncoderDecoder
-                self._model = myEncoderDecoder(cfg=cfg_obj)
+                self._model = myEncoderDecoder(cfg=cfg)
             
             # 加载权重
             if not Path(self.weight_path).exists():
@@ -83,6 +90,7 @@ class TruForAdapter(BaseVisualAdapter):
             raise InferenceError("TruFor model not loaded. Call load_model() first.")
 
         try:
+            trufor_root = get_external_model_path("trufor")
             start_time = time.time()
             h, w = image_array.shape[:2]
 
@@ -93,27 +101,39 @@ class TruForAdapter(BaseVisualAdapter):
                 device=self._device
             ).unsqueeze(0) / 255.0
 
-            with torch.no_grad():
-                output = self._model(img_tensor)
-                
-                # 兼容不同包装格式
-                if isinstance(output, dict):
-                    image_score = torch.sigmoid(output.get('pred', torch.tensor(0.0))).item()
-                    mask_tensor = output.get('map', output.get('anomaly_map'))
-                elif isinstance(output, tuple):
-                    image_score = torch.sigmoid(output[0]).item()
-                    mask_tensor = output[1]
-                else:
-                    mask_tensor = output
-                    image_score = float(torch.sigmoid(mask_tensor).mean().item())
+            with isolated_import(trufor_root):
+                with torch.no_grad():
+                    output = self._model(img_tensor)
+                    
+                    if isinstance(output, dict):
+                        mask_tensor = output.get('map', output.get('anomaly_map', output.get('pred')))
+                    elif isinstance(output, tuple):
+                        mask_tensor = output[1]
+                    else:
+                        mask_tensor = output
 
             # 后处理 Mask 恢复原图大小
+            # ================= 统一鲁棒后处理 =================
             if mask_tensor is not None:
+                # 兼容 2 通道 Logits (提取通道 1 即伪造类的概率)
+                if mask_tensor.ndim == 4 and mask_tensor.shape[1] > 1:
+                    mask_tensor = F.softmax(mask_tensor, dim=1)[:, 1:2, :, :]
+                elif mask_tensor.ndim == 3 and mask_tensor.shape[0] > 1:
+                    mask_tensor = F.softmax(mask_tensor.unsqueeze(0), dim=1)[:, 1:2, :, :]
+                    
                 mask_resized = F.interpolate(mask_tensor, size=(h, w), mode='bilinear', align_corners=False)
                 mask_np = mask_resized.squeeze().cpu().numpy()
+                
+                # 终极兜底：确保 mask_np 是 2D (H, W)
+                if mask_np.ndim == 3:
+                    mask_np = mask_np[1] if mask_np.shape[0] > 1 else mask_np[0]
+                    
+                mask_np = mask_np[:h, :w]
                 mask_np = np.clip(mask_np, 0.0, 1.0)
+                image_score = float(np.max(mask_np))  # 使用图上最高伪造概率作为全局分数
             else:
                 mask_np = np.zeros((h, w), dtype=np.float32)
+                image_score = 0.0
 
             anomaly_area_ratio = float(np.mean(mask_np > 0.5))
             elapsed = time.time() - start_time

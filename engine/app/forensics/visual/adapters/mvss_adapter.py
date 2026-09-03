@@ -98,9 +98,16 @@ class MVSSAdapter(BaseVisualAdapter):
                 # 通常取 mask_pred
                 output = self._model(img_tensor)
                 if isinstance(output, tuple):
-                    # 假设输出顺序: (edge, rgb, mask)
-                    mask_tensor = output[2]  # 取 mask
-                    image_score = torch.sigmoid(output[1]).mean().item()  # 全图分数
+                    if len(output) >= 3:
+                        mask_tensor = output[2]
+                        image_score = float(torch.sigmoid(output[1]).mean().item())
+                    elif len(output) == 2:
+                        # 官方标准输出: (edge, mask)
+                        mask_tensor = output[1]
+                        image_score = float(torch.sigmoid(mask_tensor).mean().item())
+                    else:
+                        mask_tensor = output[0]
+                        image_score = float(torch.sigmoid(mask_tensor).mean().item())
                 else:
                     mask_tensor = output
                     image_score = float(torch.sigmoid(mask_tensor).mean().item())

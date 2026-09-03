@@ -29,7 +29,7 @@ def get_external_model_path(model_name: str) -> Path:
     
     model_map = {
         "trufor": external_dir / "TruFor" / "test_docker" / "src",
-        "catnet": external_dir / "CAT-Net" / "lib",
+        "catnet": external_dir / "CAT-Net",
         "mvss": external_dir / "MVSS-Net",
     }
     path = model_map.get(model_name)
@@ -43,25 +43,23 @@ def get_external_model_path(model_name: str) -> Path:
 @contextmanager
 def isolated_import(model_path: Path):
     """
-    沙箱导入：临时将外部仓库路径置于首位，
-    导入结束后立刻弹出，并清理 sys.modules 中的 'models' 缓存，
-    防止包名互相污染。
+    终极沙箱导入：快照 sys.path 和 sys.modules。
+    退出时将路径和已加载模块 100% 还原，彻底斩断跨模型污染。
     """
-    path_str = str(model_path)
-    inserted = False
-
+    # 1. 拍下快照
+    initial_sys_path = list(sys.path)
     initial_modules = set(sys.modules.keys())
     
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-        inserted = True
+    # 2. 注入当前需要的路径
+    sys.path.insert(0, str(model_path))
         
     try:
         yield
     finally:
-        if inserted:
-            sys.path.remove(path_str)
-        # 必须清理 sys.modules 中的 'models' 缓存
+        # 3. 完美还原 sys.path（清除内部任何瞎改的路径）
+        sys.path[:] = initial_sys_path
+        
+        # 4. 清除新加载的模块（防止名字冲突）
         new_modules = set(sys.modules.keys()) - initial_modules
         for k in new_modules:
             del sys.modules[k]

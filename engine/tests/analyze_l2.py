@@ -7,6 +7,8 @@ import sys
 import json
 import logging
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
 
 # 添加项目根目录到 sys.path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -25,6 +27,52 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+
+
+def draw_all_bboxes(
+    image_path: str,
+    context,
+    output_path: str = "engine/test_doc/all_bboxes_annotated.jpg",
+):
+    """读取 context.raw_bboxes，将所有模型的每一个独立检测框全部画在原图上"""
+    img = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    # 为不同模型分配不同颜色区分
+    model_colors = {
+        "trufor": "blue",
+        "catnet": "red",
+        "mvss": "green",
+    }
+
+    raw_bboxes = getattr(context, "raw_bboxes", {})
+    total_drawn = 0
+
+    for model_name, bbox_list in raw_bboxes.items():
+        color = model_colors.get(model_name.lower(), "yellow")
+
+        for idx, bbox in enumerate(bbox_list):
+            if not bbox or len(bbox) != 4:
+                continue
+
+            x1, y1, x2, y2 = bbox
+
+            # 绘制矩形框（线宽 2 像素）
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+
+            # 在框上方绘制标注文本
+            label = f"{model_name} #{idx+1}"
+            label_y = max(0, y1 - 11)
+            draw.text((x1 + 2, label_y), label, fill=color)
+
+            total_drawn += 1
+
+    out_file = Path(output_path)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_file)
+    print(f"\n🖼️  已将全部 {total_drawn} 个原始 BBox 绘制并保存至: {out_file.resolve()}")
 
 
 def analyze_file(file_path: Path, use_mock: bool = False):
@@ -105,6 +153,9 @@ def analyze_file(file_path: Path, use_mock: bool = False):
         json_out = ContextSerializer.to_json(visual_context, include_heatmaps=True)
         print("\n--- JSON 输出 ---")
         print(json_out)
+
+    output_img_path = "engine/test_doc/result_with_bboxes.jpg"
+    draw_all_bboxes(str(file_path), visual_context, output_path=output_img_path)
 
 
 if __name__ == "__main__":
