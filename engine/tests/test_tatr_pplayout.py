@@ -8,10 +8,7 @@ from rapidocr_onnxruntime import RapidOCR
 from transformers import AutoImageProcessor, TableTransformerForObjectDetection
 
 # 引入 PaddleOCR 的版面分析模块
-try:
-  from paddleocr import PPStructure
-except ImportError:
-  from paddleocr.ppstructure.predict_system import PPStructure
+from paddleocr import PPStructureV3
 
 
 def deskew_image_and_ocr(image_cv, ocr_engine):
@@ -74,12 +71,9 @@ def main():
 
     print("2. 加载 PP-DocLayoutV3 模型并在拉正图上定位主表...")
     # 初始化 PP-Structure：关闭恢复排版、表格结构提取和 OCR，仅开启版面检测
-    layout_engine = PPStructure(
-        layout=True, 
-        table=False, 
-        ocr=False, 
-        recovery=False, 
-        show_log=False
+    layout_engine = PPStructureV3(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
     )
     
     # PPStructure 接受 cv2 图像输入
