@@ -1,0 +1,37 @@
+**Document IR**
+
+1. native digital pdf -> pdfplumber/pymupdf -> filter and cleaning -> indexing
+2. non-native digital and non-pdf -> deskew -> text warpping (paddleocr module) -> rapidocr -> cv2算法让bbox更贴合文字
+
+-> 获得lines与bbox的集合 (Observation IR) -> docling/ppstructurev3
+
+1. 抓出表格区域 -> 用算法+统计方式对表格区域的bbox群进行纵横切割 -> 如果有实际上merged的格子被拆分也没关系，至少抓出了每个bbox在表格里的位置 -> 补齐到document IR的table部分
+2. 将文件的其他elements结构化 -> 基于bbox和text认领/交叉验证领取lines与bbox -> document IR 矛盾点记录下来
+
+-> 整合成Document IR
+
+**DTO IR**
+
+pdf转成图, jpeg png保持 -> 根据Text IR -> cv2在原图画出框框, 标上index号码 -> VLM -> 解析 (基于我们之前针对确定性reconciliation和grounding做出的json schema) -> DTO IR
+
+
+**Engine**
+
+Original Document -> Metadata Engine (确定性工具集成解析，已完成)
+
+Document IR ->
+1. Semantic Engine (LLM，文字逻辑+法条规则)
+2. Template Engine (维护official template library，vlm分析official template后变成template IR后收录，确定性算法比较)，
+3. Visual Engine (Digital Native做character/line profile统计算法检测，Non-digital native做physical texture检测，但若失败的话会暂时放空不做，声明在non-digital native的不足)
+
+DTO IR ->
+1. Reconciliation Engine (确定性规则+算子，处理Date and Math)
+2. Grounding Engine (LLM，联网搜索资料+数据库搜索企业内部资料)
+
+所有Engine将输出:
+- Evidence IR (需要注意的异常/可疑点)
+- Forensic Context (Engine的观察)
+最终:
+Evidence IR + Forensic Context + Document IR -> Detective LLM with harness
+
+*整套流程由langgraph编排
