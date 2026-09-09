@@ -219,6 +219,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 test_doc/
+test_results/
 
 weights/
 *.pth
