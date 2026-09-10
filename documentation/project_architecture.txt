@@ -12,7 +12,7 @@
 
 **DTO IR**
 
-pdf转成图, jpeg png保持 -> 根据Text IR -> cv2在原图画出框框, 标上index号码 -> VLM -> 解析 (基于我们之前针对确定性reconciliation和grounding做出的json schema) -> DTO IR
+pdf转成图, jpeg png保持 -> 根据Observation IR -> cv2在原图画出框框, 标上index号码 -> VLM -> 解析 (基于我们之前针对确定性reconciliation和grounding做出的json schema) -> DTO IR
 
 
 **Engine**
