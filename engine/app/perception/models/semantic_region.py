@@ -54,6 +54,15 @@ class SemanticRegion(BaseModel):
         description="Docling 原始 DocItemLabel.value（如 'key_value_region'）",
     )
 
+    # ★ 新增：Docling 辅助文本
+    # 用途：① 帮助语义分类器判定 region 类型
+    #       ② 与 Observation IR 做交叉验证，记录冲突
+    # 注意：不写入最终 DocumentIR 的 text_blocks.text，最终文本以 Observation 为准
+    docling_text: Optional[str] = Field(
+        default=None,
+        description="Docling 提取的辅助文本（不用于最终 IR，仅作交叉验证）",
+    )
+
     source: Literal["docling", "ppstructure", "pymupdf"] = Field(default="docling")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
 

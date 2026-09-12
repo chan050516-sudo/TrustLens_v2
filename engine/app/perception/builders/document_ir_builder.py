@@ -32,18 +32,21 @@ class DocumentIRBuilder:
       2. 合并 PyMuPDF 与 Docling 的表格区域（方案 C）
       3. 重建表格（认领 Observation）
       4. 认领非表格区域 → TextBlock / Picture
-      5. 记录 conflicts
-      6. 组装 DocumentIR
+      5. 交叉验证：Docling text vs Observation text
+      6. 记录 conflicts
+      7. 组装 DocumentIR
     """
 
     def __init__(
         self,
         table_merge_iou_threshold: float = 0.5,
         region_iou_threshold: float = 0.3,
+        text_similarity_threshold: float = 0.7,
     ):
         self.table_merge_iou_threshold = table_merge_iou_threshold
         self.region_assigner = RegionAssigner(iou_threshold=region_iou_threshold)
         self.table_reconstructor = TableReconstructor()
+        self.text_similarity_threshold = text_similarity_threshold
 
     # ------------------------------------------------------------------
 
@@ -76,12 +79,11 @@ class DocumentIRBuilder:
             table_obj = self.table_reconstructor.reconstruct(region, observations)
             tables.append(table_obj)
 
-            # 标记 table 内的 obs 为已消费（用中心点判定）
             for i, obs in enumerate(observations):
                 if bbox_center_in(obs.bbox, region.bbox):
                     table_consumed_indices.add(i)
 
-        # ---- 4. 非表格区域认领（排除表格已消费的 obs）----
+        # ---- 4. 非表格区域认领 ----
         available_obs = [
             obs for i, obs in enumerate(observations)
             if i not in table_consumed_indices
@@ -95,7 +97,7 @@ class DocumentIRBuilder:
             other_regions, available_obs
         )
 
-        # ---- 5. 构建 TextBlock / Picture ----
+        # ---- 5. 构建 TextBlock / Picture + 文本交叉验证 ----
         text_blocks: List[TextBlock] = []
         pictures: List[Picture] = []
         claimed_region_indices: set = set()
@@ -119,14 +121,19 @@ class DocumentIRBuilder:
                 observation_ids=[available_indices[i] for i in local_obs_indices],
             ))
 
-        # Picture 区域：来自 semantic_region 的 picture/chart
+            # ★ 新增：与 Docling text 交叉验证
+            text_conflict = self._check_text_consistency(region, obs_list)
+            if text_conflict is not None:
+                conflicts.append(text_conflict)
+
+        # Picture 区域
         for region in other_regions:
             if region.type in ("picture", "chart"):
                 pictures.append(Picture(page=region.page, bbox=region.bbox))
 
         # ---- 6. conflicts ----
 
-        # 6.1 未认领的 observation（Docling 遗漏）
+        # 6.1 未认领的 observation
         for local_i in unassigned_local:
             real_i = available_indices[local_i]
             obs = observations[real_i]
@@ -138,19 +145,32 @@ class DocumentIRBuilder:
                 "source": obs.source,
             })
 
-        # 6.2 空洞区域（Docling 幻觉：region 内无 obs）
+        # 6.2 region 无 obs：细分两种
         for idx, region in enumerate(other_regions):
             if idx in claimed_region_indices:
                 continue
             if region.type not in TEXT_BEARING_TYPES:
                 continue
-            conflicts.append({
-                "type": "empty_region",
-                "page": region.page,
-                "bbox": region.bbox.to_tuple(),
-                "region_type": region.type,
-                "docling_label": region.docling_label,
-            })
+
+            # ★ 新增：若 Docling 自身有文本但 Observation 没有，则记录更具体的冲突
+            if region.docling_text:
+                conflicts.append({
+                    "type": "docling_text_but_no_obs",
+                    "page": region.page,
+                    "bbox": region.bbox.to_tuple(),
+                    "region_type": region.type,
+                    "docling_label": region.docling_label,
+                    "docling_text": region.docling_text[:200],
+                    "note": "Docling 声称此处有文本，但 Observation IR 中没有匹配项（OCR 漏检 or Docling 幻觉）",
+                })
+            else:
+                conflicts.append({
+                    "type": "empty_region",
+                    "page": region.page,
+                    "bbox": region.bbox.to_tuple(),
+                    "region_type": region.type,
+                    "docling_label": region.docling_label,
+                })
 
         # ---- 7. 组装 ----
         return DocumentIR(
@@ -165,11 +185,75 @@ class DocumentIRBuilder:
             metadata={
                 "observation_count": len(observations),
                 "semantic_region_count": len(semantic_regions),
+                "semantic_region_with_text_count": sum(
+                    1 for r in semantic_regions if r.docling_text
+                ),
                 "pymupdf_table_count": len(pymupdf_tables),
                 "docling_table_count": len(docling_tables),
                 "merged_table_count": len(merged_tables),
             },
         )
+
+    # ------------------------------------------------------------------
+    # ★ 新增：文本交叉验证
+    # ------------------------------------------------------------------
+
+    def _check_text_consistency(
+        self,
+        region: SemanticRegion,
+        obs_list: List[ObservationIR],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        比较 region 内的 Observation 拼接文本 vs Docling 自身文本。
+        若相似度低于阈值，产出 docling_text_mismatch 冲突。
+        """
+        if not region.docling_text:
+            return None
+        if not obs_list:
+            return None
+
+        joined = " ".join(o.text for o in obs_list).strip()
+        if not joined:
+            return None
+
+        similarity = self._text_similarity(joined, region.docling_text)
+        if similarity >= self.text_similarity_threshold:
+            return None
+
+        return {
+            "type": "docling_text_mismatch",
+            "page": region.page,
+            "bbox": region.bbox.to_tuple(),
+            "region_type": region.type,
+            "docling_label": region.docling_label,
+            "similarity": round(similarity, 3),
+            "docling_text": region.docling_text[:200],
+            "obs_text": joined[:200],
+        }
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """
+        计算两段文本的相似度 (0~1)。
+        优先用 rapidfuzz；不可用时回落到 difflib。
+        使用 token_sort 与 partial 双策略取最大。
+        """
+        if not a or not b:
+            return 1.0
+
+        a = a.strip()
+        b = b.strip()
+        if not a or not b:
+            return 1.0
+
+        try:
+            from rapidfuzz import fuzz
+            r_ts = fuzz.token_sort_ratio(a, b) / 100.0
+            r_pr = fuzz.partial_ratio(a, b) / 100.0
+            return max(r_ts, r_pr)
+        except ImportError:
+            from difflib import SequenceMatcher
+            return SequenceMatcher(None, a, b).ratio()
 
     # ------------------------------------------------------------------
     # 表格区域合并（方案 C）

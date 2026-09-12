@@ -25,19 +25,40 @@ class PerceptionPipeline:
       1. 并行执行 Observation 提取 + Docling 区域解析 + PyMuPDF 表格检测
       2. 调用 DocumentIRBuilder 合并
       3. 返回 DocumentIR
+
+    Docling OCR 策略：
+      - 原生 PDF：默认 do_ocr=False（直接从文本层读）
+                   若 force_ocr_for_pdf=True，则强制 OCR（用于揪出隐藏文本）
+      - 图片/扫描件：强制 do_ocr=True（否则 Docling 无法分类语义区域）
     """
 
     def __init__(
         self,
         max_workers: int = 4,
-        docling_do_ocr: bool = False,
+        docling_do_ocr: Optional[bool] = None,
+        force_ocr_for_pdf: bool = False,
     ):
+        """
+        Args:
+            max_workers: 线程池大小
+            docling_do_ocr: 强制覆盖 Docling OCR 开关。
+                            None = 按 MIME 自动决定（推荐）
+                            True = 强制开启（不论文件类型）
+                            False = 强制关闭（不论文件类型）
+            force_ocr_for_pdf: 仅当 docling_do_ocr=None 时生效。
+                               True = 原生 PDF 也强制开启 OCR。
+        """
         self.max_workers = max_workers
+        self.docling_do_ocr_override = docling_do_ocr
+        self.force_ocr_for_pdf = force_ocr_for_pdf
+
         self.pdf_extractor = PdfObservationExtractor()
         self.image_extractor = ImageObservationExtractor()
-        self.docling_parser = DoclingRegionParser(do_ocr=docling_do_ocr)
         self.pymupdf_table_detector = PyMuPDFTableDetector()
         self.builder = DocumentIRBuilder()
+
+        # 按 do_ocr 缓存 DoclingRegionParser 实例（避免重复加载模型）
+        self._docling_parsers: Dict[bool, DoclingRegionParser] = {}
 
     # ------------------------------------------------------------------
 
@@ -50,16 +71,14 @@ class PerceptionPipeline:
             logger.warning(
                 f"Unsupported mime type: {mime_type}, proceeding with PDF path"
             )
-            is_pdf = True  # 兜底
+            is_pdf = True
 
-        # 并行执行
         results = self._run_parallel(context, is_pdf=is_pdf, is_image=is_image)
 
         observations = results.get("observations") or []
         semantic_regions = results.get("regions") or []
         pymupdf_tables = results.get("tables") or []
 
-        # 页面信息
         page_count, page_dimensions = self._get_page_info(context, observations, is_pdf)
 
         return self.builder.build(
@@ -70,6 +89,24 @@ class PerceptionPipeline:
             page_dimensions=page_dimensions,
             file_path=str(context.file_path),
         )
+
+    # ------------------------------------------------------------------
+    # ★ 动态决定 Docling 的 do_ocr
+    # ------------------------------------------------------------------
+
+    def _get_docling_parser(self, is_pdf: bool) -> DoclingRegionParser:
+        # 决定本次应该用哪个 do_ocr 配置
+        if self.docling_do_ocr_override is not None:
+            do_ocr = self.docling_do_ocr_override
+        elif is_pdf:
+            do_ocr = self.force_ocr_for_pdf
+        else:
+            do_ocr = True  # 图片/扫描件：强制开启
+
+        if do_ocr not in self._docling_parsers:
+            logger.info(f"Creating DoclingRegionParser with do_ocr={do_ocr}")
+            self._docling_parsers[do_ocr] = DoclingRegionParser(do_ocr=do_ocr)
+        return self._docling_parsers[do_ocr]
 
     # ------------------------------------------------------------------
 
@@ -85,7 +122,8 @@ class PerceptionPipeline:
             "tables": [],
         }
 
-        tasks = []
+        docling_parser = self._get_docling_parser(is_pdf)
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {}
 
@@ -94,7 +132,7 @@ class PerceptionPipeline:
             elif is_image:
                 futures[executor.submit(self.image_extractor.extract, context)] = "observations"
 
-            futures[executor.submit(self.docling_parser.parse, context)] = "regions"
+            futures[executor.submit(docling_parser.parse, context)] = "regions"
 
             if is_pdf:
                 futures[executor.submit(self.pymupdf_table_detector.detect, context)] = "tables"
@@ -135,7 +173,6 @@ class PerceptionPipeline:
             except Exception as e:
                 logger.warning(f"Failed to read PDF page dimensions: {e}")
 
-        # 图片：从 observations 推断
         if observations:
             page_count = max((o.page for o in observations), default=1)
             max_x = max((o.bbox.x1 for o in observations), default=0.0)
@@ -157,7 +194,6 @@ class PerceptionPipeline:
         if context.mime_type:
             return context.mime_type
 
-        # 尝试用 detector
         try:
             from app.ingestion.detector import MimeDetector
             mime = MimeDetector.detect(context.file_path)
@@ -167,7 +203,6 @@ class PerceptionPipeline:
         except Exception:
             pass
 
-        # 后缀兜底
         suffix = context.file_path.suffix.lower()
         mapping = {
             ".pdf": "application/pdf",

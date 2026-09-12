@@ -288,6 +288,8 @@ def print_regions(regions: List[SemanticRegion]):
     print(f"Docling Semantic Regions  ({len(regions)} items)")
     print(f"{'='*70}")
     type_counts = Counter(r.type for r in regions)
+    n_with_text = sum(1 for r in regions if r.docling_text)
+    print(f"  Total: {len(regions)}  |  With docling_text: {n_with_text}")
     print(f"  Type breakdown:")
     for t, c in type_counts.most_common():
         print(f"    {t:15s}: {c}")
@@ -297,6 +299,10 @@ def print_regions(regions: List[SemanticRegion]):
         bbox = r.bbox.to_tuple()
         print(f"  [{i:3d}] P{r.page}  type={r.type:15s}  label={r.docling_label or '-':20s}"
               f"  bbox=({bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f})")
+        if r.docling_text:
+            txt = r.docling_text[:80].replace("\n", " ")
+            print(f"          docling_text: '{txt}'")
+
 
 
 def print_pymupdf_tables(tables: List[TableRegion]):
@@ -435,6 +441,11 @@ def main():
                         help="Skip Docling region extraction (faster)")
     parser.add_argument("--skip-vis", action="store_true",
                         help="Skip visualization output")
+    # ★ 新增：Docling OCR 控制
+    parser.add_argument("--docling-ocr", action="store_true", default=None,
+                        help="Force enable Docling OCR")
+    parser.add_argument("--no-docling-ocr", action="store_true",
+                        help="Force disable Docling OCR")
     args = parser.parse_args()
 
     file_path = Path(args.file).resolve()
@@ -483,12 +494,35 @@ def main():
     if args.skip_docling:
         print("  (skipped via --skip-docling)")
     else:
+        # ★ 关键修复：按 MIME 动态决定 do_ocr
+        if args.no_docling_ocr:
+            do_ocr = False
+        elif args.docling_ocr:
+            do_ocr = True
+        elif is_pdf:
+            do_ocr = False   # 原生 PDF 默认不开（保持默认，需要揪隐藏文本时可 --docling-ocr）
+        else:
+            do_ocr = True    # 图片/扫描件：强制开启
+
+        print(f"  Docling do_ocr = {do_ocr}  (is_pdf={is_pdf}, is_image={is_image})")
         try:
-            docling_parser = DoclingRegionParser(do_ocr=False)
+            docling_parser = DoclingRegionParser(do_ocr=do_ocr)
             regions = docling_parser.parse(context)
-            print(f"  → {len(regions)} semantic regions extracted")
+            n_with_text = sum(1 for r in regions if r.docling_text)
+            print(f"  → {len(regions)} semantic regions extracted "
+                  f"({n_with_text} with docling_text)")
+
+            # ★ 新增：按 type 统计，一眼看出是否分类成功
+            if regions:
+                from collections import Counter as _C
+                tc = _C(r.type for r in regions)
+                print(f"  → Type breakdown:")
+                for t, c in tc.most_common():
+                    print(f"       {t:15s}: {c}")
         except Exception as e:
             print(f"⚠️  Docling failed: {e}")
+            import traceback
+            traceback.print_exc()
             regions = []
 
     # ---------- 3. PyMuPDF Tables ----------
@@ -517,10 +551,10 @@ def main():
             page_dimensions=page_dimensions,
             file_path=str(file_path),
         )
-        # 保留一份 semantic_regions 到 metadata 供 vis_all 使用
         doc_ir.metadata["_semantic_regions"] = [
             {"page": r.page, "type": r.type,
              "docling_label": r.docling_label,
+             "docling_text": (r.docling_text[:100] if r.docling_text else None),
              "bbox": r.bbox.model_dump()}
             for r in regions
         ]
@@ -544,6 +578,7 @@ def main():
 
     # ---------- 可视化 ----------
     if not args.skip_vis:
+        # ... 保持不变 ...
         print(f"\n{'='*70}\n[VIS] Rendering visualizations...\n{'='*70}")
         try:
             if is_pdf:
@@ -557,35 +592,25 @@ def main():
                 page_num = p_idx + 1
                 base_img = pages_img[p_idx]
 
-                # a) Observations
                 vis_obs = vis_observations(base_img, page_num, observations, scale)
                 cv2.imwrite(str(out_dir / f"vis_01_observations_p{page_num}.jpg"), vis_obs)
 
-                # b) Docling regions
                 if regions:
                     vis_reg = vis_regions(base_img, page_num, regions, scale)
                     cv2.imwrite(str(out_dir / f"vis_02_docling_p{page_num}.jpg"), vis_reg)
 
-                # c) PyMuPDF tables
                 if pymupdf_tables:
                     vis_pmt = vis_pymupdf_tables(base_img, page_num, pymupdf_tables, scale)
                     cv2.imwrite(str(out_dir / f"vis_03_pymupdf_tables_p{page_num}.jpg"), vis_pmt)
 
-                # d) Final tables
                 if doc_ir.tables:
                     vis_tbl = vis_tables(base_img, page_num, doc_ir.tables, scale)
                     cv2.imwrite(str(out_dir / f"vis_04_final_tables_p{page_num}.jpg"), vis_tbl)
 
-                # e) All overlay
                 vis_all_img = vis_all(base_img, page_num, doc_ir, pymupdf_tables, scale)
                 cv2.imwrite(str(out_dir / f"vis_05_all_p{page_num}.jpg"), vis_all_img)
 
             print(f"  ✅ {n_vis} page(s) visualized (scale={scale:.2f})")
-            print(f"     - vis_01_observations_p*.jpg   (绿框: Observation)")
-            print(f"     - vis_02_docling_p*.jpg        (区域类型着色)")
-            print(f"     - vis_03_pymupdf_tables_p*.jpg (紫框: PyMuPDF table grid)")
-            print(f"     - vis_04_final_tables_p*.jpg   (红框: 最终重建 cells)")
-            print(f"     - vis_05_all_p*.jpg            (全部叠加)")
         except Exception as e:
             print(f"⚠️  Visualization failed: {e}")
             import traceback

@@ -14,15 +14,14 @@ class DoclingRegionParser:
     """
     Docling 语义区域提取器
 
-    职责（严格按架构定义）：
-      - 只输出「区域类型 + bbox」，不输出文本内容
-      - 文本内容由后续 DocumentIRBuilder 从 Observation IR 中「认领」
+    职责：
+      - 输出「区域类型 + bbox」，作为语义提示
+      - 附带 Docling 自身提取的文本（docling_text），仅作辅助
+      - 最终文本由 DocumentIRBuilder 从 Observation IR 中「认领」
 
-    兼容 PDF 与图片，用 Docling 统一进行版面分析。
+    兼容 PDF 与图片。是否开启 OCR 由外部调用方决定。
     """
 
-    # Docling DocItemLabel.value -> SemanticRegion.type（粗粒度）
-    # None 表示"跳过该 item"
     LABEL_TO_TYPE: Dict[str, Optional[str]] = {
         # ---- 结构块 ----
         "table": "table",
@@ -67,8 +66,8 @@ class DoclingRegionParser:
         """
         Args:
             do_ocr: 是否启用 Docling 内建 OCR。
-                    默认 False：Docling 只做版面分析（基于视觉特征，
-                    不依赖文本），文本由 Observation 层负责。
+                    - 原生 PDF：默认 False（直接读文本层，速度更快）
+                    - 图片/扫描件：建议 True（否则 Docling 的语义分类器无法工作）
             use_rapid_ocr: 若启用 Docling OCR，指定使用 RapidOCR 后端。
         """
         self.do_ocr = do_ocr
@@ -142,7 +141,6 @@ class DoclingRegionParser:
         regions: List[SemanticRegion] = []
 
         try:
-            # Docling 2.126.0: iterate_items() 返回 (item, level) 元组
             for item, _level in doc.iterate_items():
                 region = self._item_to_region(item, doc)
                 if region is not None:
@@ -151,9 +149,11 @@ class DoclingRegionParser:
             logger.exception(f"Docling item iteration failed: {e}")
             raise ExtractionError(f"Docling item iteration failed: {e}") from e
 
+        n_with_text = sum(1 for r in regions if r.docling_text)
         logger.info(
-            f"Docling extracted {len(regions)} semantic regions from "
-            f"{file_path.name}"
+            f"Docling extracted {len(regions)} semantic regions "
+            f"({n_with_text} with text) from {file_path.name} "
+            f"(do_ocr={self.do_ocr})"
         )
         return regions
 
@@ -166,10 +166,10 @@ class DoclingRegionParser:
             return None
 
         region_type = self._classify_item(item)
-        if region_type is None:  # 包含 "跳过" 的类型
+        if region_type is None:
             return None
 
-        # 页码（Docling 2.126.0: prov[0].page_no）
+        # 页码
         page_num = 1
         try:
             if hasattr(item.prov[0], "page_no"):
@@ -183,11 +183,16 @@ class DoclingRegionParser:
 
         docling_label = self._get_label(item)
 
+        # ★ 新增：提取 Docling 辅助文本
+        # 仅对 TextItem 提取（TableItem/PictureItem 的 .text 通常不是纯文本）
+        docling_text = self._extract_docling_text(item)
+
         return SemanticRegion(
             page=page_num,
             bbox=bbox,
             type=region_type,  # type: ignore[arg-type]
-            docling_label=docling_label,   # ← 一等公民字段
+            docling_label=docling_label,
+            docling_text=docling_text,   # ← 新增
             source="docling",
             confidence=0.8,
             raw_meta={
@@ -195,6 +200,33 @@ class DoclingRegionParser:
                 "item_class": type(item).__name__,
             },
         )
+
+    # ------------------------------------------------------------------
+    # ★ 新增：docling_text 提取
+    # ------------------------------------------------------------------
+
+    def _extract_docling_text(self, item) -> Optional[str]:
+        """
+        从 Docling item 中提取辅助文本。
+        只对 TextItem 提取，其他类型（Table/Picture）返回 None。
+        """
+        cls_name = type(item).__name__
+        if cls_name != "TextItem":
+            # 兜底：某些 Docling 版本可能让 item 类名不同，
+            # 只要 item.text 是 str 且有内容，就采用
+            raw = getattr(item, "text", None)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+            return None
+
+        raw = getattr(item, "text", None)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        return None
+
+    # ------------------------------------------------------------------
+    # 分类
+    # ------------------------------------------------------------------
 
     def _classify_item(self, item) -> Optional[str]:
         """返回 SemanticRegion.type；返回 None 表示跳过"""
@@ -205,22 +237,19 @@ class DoclingRegionParser:
             if isinstance(item, TableItem):
                 return "table"
             if isinstance(item, PictureItem):
-                # 若原始 label 是 chart，返回 chart
                 label = self._get_label(item)
                 if label == "chart":
                     return "chart"
                 return "picture"
             if isinstance(item, TextItem):
                 label = self._get_label(item)
-                # LABEL_TO_TYPE.get(label, "paragraph") 可能是 None
-                # 用 sentinel 判断：若 label 存在但映射为 None，则跳过
                 if label in self.LABEL_TO_TYPE:
                     return self.LABEL_TO_TYPE[label]
                 return "paragraph"
         except ImportError:
             pass
 
-        # 兜底
+        # 类名兜底
         cls_name = type(item).__name__
         if cls_name == "TableItem":
             return "table"
@@ -234,13 +263,6 @@ class DoclingRegionParser:
         return None
 
     def _get_label(self, item) -> str:
-        """
-        安全获取 item.label 并归一化为小写字符串。
-
-        注意：Docling 的 DocItemLabel 继承自 Enum，
-        str(label) 可能返回 'DocItemLabel.PARAGRAPH'，
-        必须用 .value 获取 'paragraph'。
-        """
         label = getattr(item, "label", None)
         if label is None:
             return "paragraph"
@@ -249,12 +271,10 @@ class DoclingRegionParser:
         return str(label).lower()
 
     # ------------------------------------------------------------------
-    # BBox 提取
+    # BBox
     # ------------------------------------------------------------------
 
-    def _extract_bbox(
-        self, item, doc, page_num: int
-    ) -> Optional[BBox]:
+    def _extract_bbox(self, item, doc, page_num: int) -> Optional[BBox]:
         """
         提取 item 的联合 bbox（多 prov 合并为单一轴对齐框）。
 
@@ -268,7 +288,7 @@ class DoclingRegionParser:
 
         page_height = self._get_page_height(doc, page_num)
         if page_height is None or page_height <= 0:
-            page_height = 842.0  # A4 兜底（有隐患，见对话记录）
+            page_height = 842.0  # A4 兜底
 
         xs: List[float] = []
         ys: List[float] = []
@@ -278,7 +298,6 @@ class DoclingRegionParser:
             if bbox is None:
                 continue
             try:
-                # Docling 2.126.0: to_top_left_origin(page_height) -> BoundingBox
                 bbox_tl = bbox.to_top_left_origin(page_height)
                 xs.extend([float(bbox_tl.l), float(bbox_tl.r)])
                 ys.extend([float(bbox_tl.t), float(bbox_tl.b)])
@@ -290,22 +309,14 @@ class DoclingRegionParser:
             return None
 
         result = BBox(
-            x0=min(xs),
-            y0=min(ys),
-            x1=max(xs),
-            y1=max(ys),
+            x0=min(xs), y0=min(ys),
+            x1=max(xs), y1=max(ys),
         )
         if result.width <= 0 or result.height <= 0:
             return None
         return result
 
     def _get_page_height(self, doc, page_num: int) -> Optional[float]:
-        """
-        从 doc.pages 获取指定页高度。
-
-        Docling 2.126.0: doc.pages 是 dict[int, Page]，
-        键为 page_no；Page.size 是 Size 对象，有 .width/.height。
-        """
         try:
             pages = getattr(doc, "pages", None)
             if pages is None:
@@ -320,11 +331,9 @@ class DoclingRegionParser:
 
             if page is None:
                 return None
-
             size = getattr(page, "size", None)
             if size is None:
                 return None
-
             h = getattr(size, "height", None)
             if h is not None:
                 return float(h)
