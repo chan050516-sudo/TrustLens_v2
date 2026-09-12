@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 from app.perception.models.bbox import BBox
 from app.perception.models.observation_ir import ObservationIR
@@ -115,53 +115,130 @@ class TableReconstructor:
             return [], 0, 0
 
         table_bbox = region.bbox
+        
+        # =====================================================================
+        # 1. Y 轴：基于 Center-Y 动态聚类，并安全推导单调递增的 row_edges
+        # =====================================================================
+        obs_sorted_y = sorted(observations, key=lambda o: o.bbox.center_y)
+        
+        avg_height = sum(o.bbox.height for o in observations) / len(observations)
+        y_tolerance = max(3.0, avg_height * 0.4)
+        
+        row_clusters: List[List[ObservationIR]] = []
+        current_row = [obs_sorted_y[0]]
+        
+        for obs in obs_sorted_y[1:]:
+            last_center_y = sum(o.bbox.center_y for o in current_row) / len(current_row)
+            if abs(obs.bbox.center_y - last_center_y) <= y_tolerance:
+                current_row.append(obs)
+            else:
+                row_clusters.append(current_row)
+                current_row = [obs]
+        row_clusters.append(current_row)
+        
+        num_rows = len(row_clusters)
 
-        # 1. 行边界（Y 轴空白带）
-        y_intervals = [(o.bbox.y0, o.bbox.y1) for o in observations]
-        y_min_gap = max(2.0, table_bbox.height * self.gap_ratio)
-        y_gaps = find_gaps(y_intervals, min_gap=y_min_gap)
-        row_edges = edges_from_gaps(table_bbox.y0, table_bbox.y1, y_gaps)
+        # 构建虚拟行边界 row_edges (严格保证单调递增)
+        row_edges = [table_bbox.y0]
+        for i in range(num_rows - 1):
+            curr_bottom = max(o.bbox.y1 for o in row_clusters[i])
+            next_top = min(o.bbox.y0 for o in row_clusters[i + 1])
+            curr_center = sum(o.bbox.center_y for o in row_clusters[i]) / len(row_clusters[i])
+            next_center = sum(o.bbox.center_y for o in row_clusters[i + 1]) / len(row_clusters[i + 1])
+            
+            # 若发生严重的行墨迹交错 (curr_bottom >= next_top)，改用两行中心点的中位数做分割线
+            if curr_bottom < next_top:
+                split_y = (curr_bottom + next_top) / 2.0
+            else:
+                split_y = (curr_center + next_center) / 2.0
+                
+            # 安全钳制：确保 split_y 严格处于两行中心点之间，防止边界倒挂
+            split_y = max(curr_center + 1.0, min(split_y, next_center - 1.0))
+            row_edges.append(split_y)
+        row_edges.append(table_bbox.y1)
+        row_edges = sorted(list(set(row_edges)))  # 去重排序保证严格递增
+        num_rows = len(row_edges) - 1
 
-        # 2. 列边界（X 轴空白带）
-        x_intervals = [(o.bbox.x0, o.bbox.x1) for o in observations]
+        # =====================================================================
+        # 2. X 轴：剔除超宽跨列文本后扫描垂直间隙，生成 col_edges
+        # =====================================================================
+        widths = [o.bbox.width for o in observations]
+        median_width = sorted(widths)[len(widths) // 2] if widths else 0
+        
+        # 宽文本屏蔽阈值：超过中位数 2.5 倍或表格总宽 25% 的不参与定列
+        width_threshold = max(median_width * 2.5, table_bbox.width * 0.25)
+        
+        x_intervals = [
+            (o.bbox.x0, o.bbox.x1) for o in observations 
+            if o.bbox.width < width_threshold
+        ]
+        if not x_intervals:
+            x_intervals = [(o.bbox.x0, o.bbox.x1) for o in observations]
+
         x_min_gap = max(2.0, table_bbox.width * self.gap_ratio)
         x_gaps = find_gaps(x_intervals, min_gap=x_min_gap)
         col_edges = edges_from_gaps(table_bbox.x0, table_bbox.x1, x_gaps)
-
-        num_rows = len(row_edges) - 1
         num_cols = len(col_edges) - 1
+
+        # 兜底校验：行列无法构成有效矩阵时提前退出
         if num_rows <= 0 or num_cols <= 0:
             return [], 0, 0
 
-        # 3. 构造单元格网格（每个 cell 用一个占位 bbox）
-        cells: List[TableCell] = []
+        # =====================================================================
+        # 3. 构建虚拟单元格矩阵 (带单元格文本容器)
+        # =====================================================================
+        cells_map: Dict[Tuple[int, int], List[ObservationIR]] = {}
+        cell_bboxes: Dict[Tuple[int, int], BBox] = {}
+
         for r in range(num_rows):
             for c in range(num_cols):
-                cell_bbox = BBox(
+                cb = BBox(
                     x0=col_edges[c],
                     y0=row_edges[r],
                     x1=col_edges[c + 1],
                     y1=row_edges[r + 1],
                 )
-                cells.append(TableCell(
-                    row=r, col=c, text="", bbox=cell_bbox
-                ))
+                cell_bboxes[(r, c)] = cb
+                cells_map[(r, c)] = []
 
-        # 4. 分配 observations 到 IoU 最高的 cell
+        # =====================================================================
+        # 4. Observation 归位：基于空间交并比与中心点优先匹配
+        # =====================================================================
         for obs in observations:
-            best_idx = -1
-            best_iou = 0.0
-            for i, cell in enumerate(cells):
-                v = iou(obs.bbox, cell.bbox)
-                if v > best_iou:
-                    best_iou = v
-                    best_idx = i
-            if best_idx >= 0 and best_iou >= self.cell_iou_threshold:
-                cur = cells[best_idx].text
-                new = obs.text.strip()
-                cells[best_idx].text = (cur + " " + new).strip() if cur else new
+            best_coord = None
+            best_score = 0.0
 
-        # 5. 移除完全空的 cell（保留非空，避免 Document IR 里出现大量空格）
-        cells = [c for c in cells if c.text]
+            for coord, cb in cell_bboxes.items():
+                # 优先判定中心点是否在格内 (对大格子/短文本极度稳健)
+                if bbox_center_in(obs.bbox, cb):
+                    best_coord = coord
+                    break
+                
+                # 其次判定空间 IoU (解决边缘轻微外溢的情况)
+                v = iou(obs.bbox, cb)
+                if v > best_score:
+                    best_score = v
+                    best_coord = coord
 
-        return cells, num_rows, num_cols
+            if best_coord is not None and (best_score >= self.cell_iou_threshold or bbox_center_in(obs.bbox, cell_bboxes[best_coord])):
+                cells_map[best_coord].append(obs)
+
+        # =====================================================================
+        # 5. 生成最终非空单元格，同一格内按水平坐标 (X 轴) 从左到右重排拼接
+        # =====================================================================
+        final_cells: List[TableCell] = []
+        for (r, c), obs_list in cells_map.items():
+            if not obs_list:
+                continue
+            # 严格按 X 轴坐标排序后空格拼接，杜绝乱序倒装
+            obs_list.sort(key=lambda o: (o.bbox.x0, o.bbox.center_x))
+            merged_text = " ".join(o.text.strip() for o in obs_list).strip()
+            
+            final_cells.append(TableCell(
+                row=r,
+                col=c,
+                text=merged_text,
+                bbox=cell_bboxes[(r, c)],
+            ))
+
+        return final_cells, num_rows, num_cols

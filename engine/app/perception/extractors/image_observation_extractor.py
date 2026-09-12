@@ -224,63 +224,84 @@ class ImageObservationExtractor:
         image_bgr: np.ndarray,
         ocr_bbox: BBox,
     ) -> Optional[BBox]:
-        """
-        使用 robust_ink_segmentation 收紧 OCR 给出的行级 bbox。
-
-        仅做「行级贴合」：
-          - 自适应墨迹分割（高斯背景差分）
-          - 取墨迹像素的紧密包围盒
-          - 不做连通域分析 / 字符级切割（那是 Visual Engine 的职责）
-        """
         img_h, img_w = image_bgr.shape[:2]
-
-        pad = 4
-        x0 = max(0, int(ocr_bbox.x0) - pad)
-        y0 = max(0, int(ocr_bbox.y0) - pad)
-        x1 = min(img_w, int(ocr_bbox.x1) + pad)
-        y1 = min(img_h, int(ocr_bbox.y1) + pad)
+        
+        # 1. 提取 ROI：X轴适当外扩防截断，Y轴保持或微扩 (因 RapidOCR 框本身偏大)
+        pad_x = max(2, int(ocr_bbox.width * 0.02))
+        pad_y = max(2, int(ocr_bbox.height * 0.05))
+        
+        x0 = max(0, int(ocr_bbox.x0) - pad_x)
+        y0 = max(0, int(ocr_bbox.y0) - pad_y)
+        x1 = min(img_w, int(ocr_bbox.x1) + pad_x)
+        y1 = min(img_h, int(ocr_bbox.y1) + pad_y)
+        
         if x1 - x0 < 3 or y1 - y0 < 3:
             return None
-
+            
         roi = image_bgr[y0:y1, x0:x1]
-        if roi.size == 0:
-            return None
-
-        if roi.ndim == 3:
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = roi
-
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
+        
         try:
+            # 2. 鲁棒墨迹二值化
             binary = self._robust_ink_segmentation(gray)
+            
+            # --- 核心改造：中心发散扫描 (Center-Out Projection) ---
+            # 3. Y轴一维投影 (计算每一行的非零像素量)
+            horizontal_proj = np.sum(binary, axis=1) / 255.0
+            
+            # 使用 1D 卷积微弱平滑，桥接字母内部的微小水平断层 (如 "=" 或 "i" 的点)
+            smoothed_proj = np.convolve(horizontal_proj, np.ones(3), mode='same')
+            
+            max_proj = np.max(smoothed_proj)
+            if max_proj < 1.0:  # 区域内几乎无有效墨迹
+                return None
+                
+            # 锚点 (Anchor)：锁定 ROI 内墨迹最密集、最不可能属于相邻行的绝对核心 Y 坐标
+            anchor_y = int(np.argmax(smoothed_proj))
+            
+            # 动态底噪阈值：核心密度的 5% 或 绝对值 2 像素，取较大者。
+            # 作用：无视相邻行渗透进来的极少量笔画尖端 (噪点)
+            noise_threshold = max(2.0, max_proj * 0.05)
+            
+            # 向顶部探索，遇到低于底噪的“波谷”立刻截断，剥离上一行残影
+            ink_y_min = anchor_y
+            while ink_y_min > 0 and smoothed_proj[ink_y_min] > noise_threshold:
+                ink_y_min -= 1
+                
+            # 向底部探索，剥离下一行残影
+            ink_y_max = anchor_y
+            while ink_y_max < len(smoothed_proj) - 1 and smoothed_proj[ink_y_max] > noise_threshold:
+                ink_y_max += 1
+
+            # 4. X轴投影：严格限定在刚刚确定的 Y 轴干净区间内计算
+            # 这样彻底排除了上下行墨迹在 X 轴上造成的虚假宽度
+            clean_slice = binary[ink_y_min:ink_y_max+1, :]
+            vertical_proj = np.sum(clean_slice, axis=0) / 255.0
+            
+            valid_x = np.where(vertical_proj > 0.5)[0]
+            if len(valid_x) == 0:
+                return None
+                
+            ink_x_min, ink_x_max = int(valid_x[0]), int(valid_x[-1])
+            
+            # 5. 映射回原图绝对坐标
+            refined = BBox(
+                x0=float(x0 + ink_x_min),
+                y0=float(y0 + ink_y_min),
+                x1=float(x0 + ink_x_max),
+                y1=float(y0 + ink_y_max),
+            )
+            
+            # 异常兜底：防止缩减过度 (丢字) 或是无效缩减
+            if refined.width < ocr_bbox.width * 0.2 or refined.height < ocr_bbox.height * 0.2:
+                return None
+                
+            return refined
+            
         except Exception as e:
-            logger.debug(f"robust_ink_segmentation failed: {e}")
+            import logging
+            logging.getLogger(__name__).debug(f"Ink refinement failed: {e}")
             return None
-
-        coords = cv2.findNonZero(binary)
-        if coords is None:
-            return None
-
-        rx, ry, rw, rh = cv2.boundingRect(coords)
-        if rw < 2 or rh < 2:
-            return None
-
-        refined = BBox(
-            x0=float(x0 + rx),
-            y0=float(y0 + ry),
-            x1=float(x0 + rx + rw),
-            y1=float(y0 + ry + rh),
-        )
-
-        # 合理性检查：防止劣化
-        if (refined.width > ocr_bbox.width * 1.5
-                or refined.height > ocr_bbox.height * 1.5):
-            return None
-        if (refined.width < ocr_bbox.width * 0.3
-                or refined.height < ocr_bbox.height * 0.3):
-            return None
-
-        return refined
 
     def _robust_ink_segmentation(self, gray_roi: np.ndarray) -> np.ndarray:
         """
