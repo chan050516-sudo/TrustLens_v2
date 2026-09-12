@@ -9,8 +9,11 @@ class TextBlock(BaseModel):
     page: int
     text: str  # 聚合后的完整文本
     bbox: BBox  # 整个块的包围盒
-    semantic_type: Optional[str] = Field(default=None, description="paragraph | title | list | etc")
-    # 可选：引用原始的 Observation IDs（如果后续需要溯源）
+    semantic_type: Optional[str] = Field(default=None, description="粗粒度语义类型")
+    docling_label: Optional[str] = Field(
+        default=None,
+        description="Docling 原始细粒度标签（如 'key_value_region'）"
+    )
     observation_ids: Optional[List[int]] = Field(default=None, description="引用的 Observation 索引")
 
 
