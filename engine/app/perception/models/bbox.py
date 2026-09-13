@@ -50,6 +50,21 @@ class BBox(BaseModel):
         inter_area = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
         return inter_area / self.area if self.area > 0 else 0.0
 
+    def intersection_over(self, other: "BBox") -> float:
+        """
+        交集面积 / other.area
+        即：other 被 self 覆盖的比例。
+        用于判断"other 是否几乎完全落在 self 内"。
+        """
+        if not self.intersects(other):
+            return 0.0
+        inter_x0 = max(self.x0, other.x0)
+        inter_y0 = max(self.y0, other.y0)
+        inter_x1 = min(self.x1, other.x1)
+        inter_y1 = min(self.y1, other.y1)
+        inter_area = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+        return inter_area / other.area if other.area > 0 else 0.0
+
     def to_tuple(self) -> tuple[float, float, float, float]:
         return (self.x0, self.y0, self.x1, self.y1)
 

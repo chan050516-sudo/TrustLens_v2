@@ -15,6 +15,15 @@ class TextBlock(BaseModel):
         description="Docling 原始细粒度标签（如 'key_value_region'）"
     )
     observation_ids: Optional[List[int]] = Field(default=None, description="引用的 Observation 索引")
+    # ★ 新增：容器残余片段标记
+    is_container_fragment: bool = Field(
+        default=False,
+        description="是否为容器的残余片段（父框切分出来的）"
+    )
+    container_group_id: Optional[int] = Field(
+        default=None,
+        description="所属容器组的 ID（容器自身与其所有片段共享）"
+    )
 
 
 class TableCell(BaseModel):

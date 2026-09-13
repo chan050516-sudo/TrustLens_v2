@@ -68,3 +68,13 @@ class SemanticRegion(BaseModel):
 
     # 保留原始元数据用于调试
     raw_meta: Optional[Dict[str, Any]] = Field(default=None, description="工具原始元数据")
+
+    # ★ 新增：容器语义
+    is_container: bool = Field(
+        default=False,
+        description="是否为容器（内部包含 ≥ parent_min_children 个平行子节点）"
+    )
+    container_group_id: Optional[int] = Field(
+        default=None,
+        description="容器组的稳定 ID。容器自身与其所有子节点共享此 ID"
+    )
