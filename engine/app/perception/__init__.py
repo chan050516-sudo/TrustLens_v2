@@ -6,6 +6,8 @@ from .models.document_ir import (
     DocumentIR, TextBlock, Table, TableCell, Picture,
 )
 
+from .preprocessors import ImagePreprocessor
+
 from .extractors.pdf_observation_extractor import PdfObservationExtractor
 from .extractors.image_observation_extractor import ImageObservationExtractor
 from .extractors.docling_region_parser import DoclingRegionParser
@@ -31,6 +33,8 @@ __all__ = [
     "Table",
     "TableCell",
     "Picture",
+    # Preprocessors
+    "ImagePreprocessor",
     # Extractors
     "PdfObservationExtractor",
     "ImageObservationExtractor",

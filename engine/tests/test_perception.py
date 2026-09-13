@@ -5,11 +5,13 @@ Perception Layer 完整测试与可视化
 
 用法:
     python test_perception.py <file_path> [--dpi 150] [--max-pages 10]
-                                          [--skip-docling]
+                                          [--skip-docling] [--skip-vis]
+                                          [--docling-ocr] [--no-docling-ocr]
 """
 
 import sys
 import json
+import os
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -28,6 +30,7 @@ from app.perception.models.observation_ir import ObservationIR
 from app.perception.models.semantic_region import SemanticRegion
 from app.perception.models.table_region import TableRegion
 from app.perception.models.document_ir import DocumentIR, Table, TextBlock, Picture
+from app.perception.preprocessors import ImagePreprocessor   # ★ 新增
 from app.perception.extractors import (
     PdfObservationExtractor,
     ImageObservationExtractor,
@@ -195,9 +198,7 @@ def vis_tables(img: np.ndarray, page_num: int,
     for t in tables:
         if t.page != page_num:
             continue
-        # 表格总 bbox
         _draw(out, t.bbox, COLOR_TABLE_REGION, scale, thickness=3)
-        # 单元格
         for cell in t.cells:
             _draw(out, cell.bbox, COLOR_TABLE_CELL, scale, thickness=1)
     return out
@@ -219,9 +220,7 @@ def vis_all(img: np.ndarray, page_num: int,
             doc_ir: DocumentIR,
             pymupdf_tables: List[TableRegion],
             scale: float) -> np.ndarray:
-    """叠加所有层"""
     out = img.copy()
-    # 1) Docling regions (thin)
     for r in doc_ir.metadata.get("_semantic_regions", []):
         if r["page"] != page_num:
             continue
@@ -237,21 +236,18 @@ def vis_all(img: np.ndarray, page_num: int,
             color = COLOR_TEXT_REGION
         _draw(out, bbox, color, scale, thickness=1)
 
-    # 2) PyMuPDF tables (thin)
     for t in pymupdf_tables:
         if t.page != page_num:
             continue
         _draw(out, t.bbox, COLOR_PYMUPDF_TABLE, scale, thickness=1)
 
-    # 3) Final tables (thicker)
     for t in doc_ir.tables:
         if t.page != page_num:
             continue
-        _draw(out, t.bbox, COLOR_TABLE_ORANGE := (0, 100, 255), scale, thickness=2)
+        _draw(out, t.bbox, (0, 100, 255), scale, thickness=2)
         for cell in t.cells:
             _draw(out, cell.bbox, (0, 0, 200), scale, thickness=1)
 
-    # 4) Observations on top (thicker green)
     for obs in doc_ir.observations:
         if obs.page != page_num:
             continue
@@ -289,7 +285,9 @@ def print_regions(regions: List[SemanticRegion]):
     print(f"{'='*70}")
     type_counts = Counter(r.type for r in regions)
     n_with_text = sum(1 for r in regions if r.docling_text)
-    print(f"  Total: {len(regions)}  |  With docling_text: {n_with_text}")
+    n_containers = sum(1 for r in regions if r.is_container)
+    print(f"  Total: {len(regions)}  |  With docling_text: {n_with_text}"
+          f"  |  Containers: {n_containers}")
     print(f"  Type breakdown:")
     for t, c in type_counts.most_common():
         print(f"    {t:15s}: {c}")
@@ -297,12 +295,16 @@ def print_regions(regions: List[SemanticRegion]):
     print(f"\n  --- 全部 Regions ---")
     for i, r in enumerate(regions, 1):
         bbox = r.bbox.to_tuple()
+        flags = ""
+        if r.is_container:
+            flags += f"  [CONTAINER gid={r.container_group_id}]"
+        elif r.container_group_id is not None:
+            flags += f"  [child gid={r.container_group_id}]"
         print(f"  [{i:3d}] P{r.page}  type={r.type:15s}  label={r.docling_label or '-':20s}"
-              f"  bbox=({bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f})")
+              f"  bbox=({bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f}){flags}")
         if r.docling_text:
             txt = r.docling_text[:80].replace("\n", " ")
             print(f"          docling_text: '{txt}'")
-
 
 
 def print_pymupdf_tables(tables: List[TableRegion]):
@@ -314,7 +316,6 @@ def print_pymupdf_tables(tables: List[TableRegion]):
         print(f"  [{i}] P{t.page}  {t.rows}x{t.cols}  cells={len(t.cells)}"
               f"  has_grid={t.has_grid}")
         print(f"      bbox=({bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f})")
-        # 前 5 个 cell
         for j, cell in enumerate(t.cells[:5]):
             cb = cell.bbox.to_tuple()
             print(f"        cell[{j}] r{cell.row}c{cell.col} "
@@ -340,8 +341,11 @@ def print_document_ir(doc_ir: DocumentIR):
     # TextBlocks
     print(f"\n  --- TextBlocks ({len(doc_ir.text_blocks)}) ---")
     for i, tb in enumerate(doc_ir.text_blocks, 1):
+        flags = ""
+        if tb.is_container_fragment:
+            flags = f"  [FRAGMENT gid={tb.container_group_id}]"
         print(f"  [{i:3d}] P{tb.page}  type={tb.semantic_type:15s}"
-              f"  label={tb.docling_label or '-':20s}")
+              f"  label={tb.docling_label or '-':20s}{flags}")
         print(f"        text='{tb.text[:120]}{'...' if len(tb.text) > 120 else ''}'")
 
     # Tables
@@ -381,7 +385,6 @@ def print_document_ir(doc_ir: DocumentIR):
 # ============================================================
 
 def _safe_dump(obj):
-    """递归把 pydantic / numpy / 其他类型转成 JSON 可序列化"""
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
     if isinstance(obj, dict):
@@ -404,19 +407,15 @@ def dump_json(
     pymupdf_tables: List[TableRegion],
     out_dir: Path,
 ):
-    # Document IR
     with open(out_dir / "document_ir.json", "w", encoding="utf-8") as f:
         json.dump(_safe_dump(doc_ir), f, ensure_ascii=False, indent=2, default=str)
 
-    # Observations
     with open(out_dir / "observations.json", "w", encoding="utf-8") as f:
         json.dump(_safe_dump(observations), f, ensure_ascii=False, indent=2, default=str)
 
-    # Docling regions
     with open(out_dir / "docling_regions.json", "w", encoding="utf-8") as f:
         json.dump(_safe_dump(regions), f, ensure_ascii=False, indent=2, default=str)
 
-    # PyMuPDF tables
     with open(out_dir / "pymupdf_tables.json", "w", encoding="utf-8") as f:
         json.dump(_safe_dump(pymupdf_tables), f, ensure_ascii=False, indent=2, default=str)
 
@@ -441,7 +440,6 @@ def main():
                         help="Skip Docling region extraction (faster)")
     parser.add_argument("--skip-vis", action="store_true",
                         help="Skip visualization output")
-    # ★ 新增：Docling OCR 控制
     parser.add_argument("--docling-ocr", action="store_true", default=None,
                         help="Force enable Docling OCR")
     parser.add_argument("--no-docling-ocr", action="store_true",
@@ -471,150 +469,186 @@ def main():
 
     context = DocumentContext(file_path=file_path, mime_type=mime)
 
-    # ---------- 1. Observations ----------
-    print(f"\n{'='*70}\n[1/4] Extracting Observation IR...\n{'='*70}")
-    if is_pdf:
-        obs_extractor = PdfObservationExtractor()
-    elif is_image:
-        obs_extractor = ImageObservationExtractor()
-    else:
-        print(f"❌ Unsupported MIME: {mime}")
-        sys.exit(1)
-
-    try:
-        observations = obs_extractor.extract(context)
-    except Exception as e:
-        print(f"❌ Observation extraction failed: {e}")
-        observations = []
-    print(f"  → {len(observations)} observations extracted")
-
-    # ---------- 2. Docling ----------
-    print(f"\n{'='*70}\n[2/4] Extracting Docling Semantic Regions...\n{'='*70}")
-    regions: List[SemanticRegion] = []
-    if args.skip_docling:
-        print("  (skipped via --skip-docling)")
-    else:
-        # ★ 关键修复：按 MIME 动态决定 do_ocr
-        if args.no_docling_ocr:
-            do_ocr = False
-        elif args.docling_ocr:
-            do_ocr = True
-        elif is_pdf:
-            do_ocr = False   # 原生 PDF 默认不开（保持默认，需要揪隐藏文本时可 --docling-ocr）
-        else:
-            do_ocr = True    # 图片/扫描件：强制开启
-
-        print(f"  Docling do_ocr = {do_ocr}  (is_pdf={is_pdf}, is_image={is_image})")
+    # ---------- 0. Deskew 预处理（仅图片） ----------
+    effective_path: Path = file_path
+    temp_path: Optional[Path] = None
+    if is_image:
+        print(f"\n{'='*70}\n[0/4] Image preprocessing (deskew)...\n{'='*70}")
         try:
-            docling_parser = DoclingRegionParser(do_ocr=do_ocr)
-            regions = docling_parser.parse(context)
-            n_with_text = sum(1 for r in regions if r.docling_text)
-            print(f"  → {len(regions)} semantic regions extracted "
-                  f"({n_with_text} with docling_text)")
-
-            # ★ 新增：按 type 统计，一眼看出是否分类成功
-            if regions:
-                from collections import Counter as _C
-                tc = _C(r.type for r in regions)
-                print(f"  → Type breakdown:")
-                for t, c in tc.most_common():
-                    print(f"       {t:15s}: {c}")
+            preprocessor = ImagePreprocessor()
+            effective_path, temp_path = preprocessor.preprocess(context)
+            if temp_path is not None:
+                print(f"  → Deskew applied. Effective path: {temp_path}")
+            else:
+                print(f"  → No rotation needed. Using original path.")
         except Exception as e:
-            print(f"⚠️  Docling failed: {e}")
+            print(f"⚠️  Preprocessing failed: {e}")
             import traceback
             traceback.print_exc()
-            regions = []
+            effective_path = file_path
+            temp_path = None
 
-    # ---------- 3. PyMuPDF Tables ----------
-    print(f"\n{'='*70}\n[3/4] Detecting PyMuPDF Tables...\n{'='*70}")
-    pymupdf_tables: List[TableRegion] = []
-    if is_pdf:
-        try:
-            td = PyMuPDFTableDetector()
-            pymupdf_tables = td.detect(context)
-            print(f"  → {len(pymupdf_tables)} PyMuPDF tables detected")
-        except Exception as e:
-            print(f"⚠️  PyMuPDF table detection failed: {e}")
-    else:
-        print("  (not applicable for images)")
+    # 影子 context：只把 file_path 指向 effective_path，保留其它元数据
+    downstream_context = (
+        context.model_copy(update={"file_path": effective_path})
+        if temp_path is not None
+        else context
+    )
 
-    # ---------- 4. Build DocumentIR ----------
-    print(f"\n{'='*70}\n[4/4] Building DocumentIR...\n{'='*70}")
-    page_count, page_dimensions = get_page_info(context, observations, is_pdf)
-    builder = DocumentIRBuilder()
     try:
-        doc_ir = builder.build(
-            observations=observations,
-            semantic_regions=regions,
-            pymupdf_tables=pymupdf_tables,
-            page_count=page_count,
-            page_dimensions=page_dimensions,
-            file_path=str(file_path),
-        )
-        doc_ir.metadata["_semantic_regions"] = [
-            {"page": r.page, "type": r.type,
-             "docling_label": r.docling_label,
-             "docling_text": (r.docling_text[:100] if r.docling_text else None),
-             "bbox": r.bbox.model_dump()}
-            for r in regions
-        ]
-        print(f"  → DocumentIR built successfully")
-    except Exception as e:
-        print(f"❌ DocumentIR build failed: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        # ---------- 1. Observations ----------
+        print(f"\n{'='*70}\n[1/4] Extracting Observation IR...\n{'='*70}")
+        if is_pdf:
+            obs_extractor = PdfObservationExtractor()
+        elif is_image:
+            obs_extractor = ImageObservationExtractor()
+        else:
+            print(f"❌ Unsupported MIME: {mime}")
+            sys.exit(1)
 
-    # ---------- 打印 ----------
-    print_observations(observations)
-    if regions:
-        print_regions(regions)
-    if pymupdf_tables:
-        print_pymupdf_tables(pymupdf_tables)
-    print_document_ir(doc_ir)
-
-    # ---------- Dump ----------
-    dump_json(doc_ir, observations, regions, pymupdf_tables, out_dir)
-
-    # ---------- 可视化 ----------
-    if not args.skip_vis:
-        # ... 保持不变 ...
-        print(f"\n{'='*70}\n[VIS] Rendering visualizations...\n{'='*70}")
         try:
-            if is_pdf:
-                pages_img, scale = render_pdf_pages(file_path, dpi=args.dpi)
+            observations = obs_extractor.extract(downstream_context)
+        except Exception as e:
+            print(f"❌ Observation extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+            observations = []
+        print(f"  → {len(observations)} observations extracted")
+
+        # ---------- 2. Docling ----------
+        print(f"\n{'='*70}\n[2/4] Extracting Docling Semantic Regions...\n{'='*70}")
+        regions: List[SemanticRegion] = []
+        if args.skip_docling:
+            print("  (skipped via --skip-docling)")
+        else:
+            if args.no_docling_ocr:
+                do_ocr = False
+            elif args.docling_ocr:
+                do_ocr = True
+            elif is_pdf:
+                do_ocr = False
             else:
-                pages_img = [load_image(file_path)]
-                scale = 1.0
+                do_ocr = True
 
-            n_vis = min(len(pages_img), args.max_pages)
-            for p_idx in range(n_vis):
-                page_num = p_idx + 1
-                base_img = pages_img[p_idx]
-
-                vis_obs = vis_observations(base_img, page_num, observations, scale)
-                cv2.imwrite(str(out_dir / f"vis_01_observations_p{page_num}.jpg"), vis_obs)
+            print(f"  Docling do_ocr = {do_ocr}  (is_pdf={is_pdf}, is_image={is_image})")
+            try:
+                docling_parser = DoclingRegionParser(do_ocr=do_ocr)
+                regions = docling_parser.parse(downstream_context)
+                n_with_text = sum(1 for r in regions if r.docling_text)
+                n_containers = sum(1 for r in regions if r.is_container)
+                print(f"  → {len(regions)} semantic regions extracted "
+                      f"({n_with_text} with docling_text, {n_containers} containers)")
 
                 if regions:
-                    vis_reg = vis_regions(base_img, page_num, regions, scale)
-                    cv2.imwrite(str(out_dir / f"vis_02_docling_p{page_num}.jpg"), vis_reg)
+                    tc = Counter(r.type for r in regions)
+                    print(f"  → Type breakdown:")
+                    for t, c in tc.most_common():
+                        print(f"       {t:15s}: {c}")
+            except Exception as e:
+                print(f"⚠️  Docling failed: {e}")
+                import traceback
+                traceback.print_exc()
+                regions = []
 
-                if pymupdf_tables:
-                    vis_pmt = vis_pymupdf_tables(base_img, page_num, pymupdf_tables, scale)
-                    cv2.imwrite(str(out_dir / f"vis_03_pymupdf_tables_p{page_num}.jpg"), vis_pmt)
+        # ---------- 3. PyMuPDF Tables ----------
+        print(f"\n{'='*70}\n[3/4] Detecting PyMuPDF Tables...\n{'='*70}")
+        pymupdf_tables: List[TableRegion] = []
+        if is_pdf:
+            try:
+                td = PyMuPDFTableDetector()
+                pymupdf_tables = td.detect(downstream_context)
+                print(f"  → {len(pymupdf_tables)} PyMuPDF tables detected")
+            except Exception as e:
+                print(f"⚠️  PyMuPDF table detection failed: {e}")
+        else:
+            print("  (not applicable for images)")
 
-                if doc_ir.tables:
-                    vis_tbl = vis_tables(base_img, page_num, doc_ir.tables, scale)
-                    cv2.imwrite(str(out_dir / f"vis_04_final_tables_p{page_num}.jpg"), vis_tbl)
-
-                vis_all_img = vis_all(base_img, page_num, doc_ir, pymupdf_tables, scale)
-                cv2.imwrite(str(out_dir / f"vis_05_all_p{page_num}.jpg"), vis_all_img)
-
-            print(f"  ✅ {n_vis} page(s) visualized (scale={scale:.2f})")
+        # ---------- 4. Build DocumentIR ----------
+        print(f"\n{'='*70}\n[4/4] Building DocumentIR...\n{'='*70}")
+        page_count, page_dimensions = get_page_info(downstream_context, observations, is_pdf)
+        builder = DocumentIRBuilder()
+        try:
+            doc_ir = builder.build(
+                observations=observations,
+                semantic_regions=regions,
+                pymupdf_tables=pymupdf_tables,
+                page_count=page_count,
+                page_dimensions=page_dimensions,
+                file_path=str(file_path),   # ← 用原始路径作为文档身份
+            )
+            doc_ir.metadata["_semantic_regions"] = [
+                {"page": r.page, "type": r.type,
+                 "docling_label": r.docling_label,
+                 "docling_text": (r.docling_text[:100] if r.docling_text else None),
+                 "bbox": r.bbox.model_dump()}
+                for r in regions
+            ]
+            print(f"  → DocumentIR built successfully")
         except Exception as e:
-            print(f"⚠️  Visualization failed: {e}")
+            print(f"❌ DocumentIR build failed: {e}")
             import traceback
             traceback.print_exc()
+            sys.exit(1)
+
+        # ---------- 打印 ----------
+        print_observations(observations)
+        if regions:
+            print_regions(regions)
+        if pymupdf_tables:
+            print_pymupdf_tables(pymupdf_tables)
+        print_document_ir(doc_ir)
+
+        # ---------- Dump ----------
+        dump_json(doc_ir, observations, regions, pymupdf_tables, out_dir)
+
+        # ---------- 可视化 ----------
+        if not args.skip_vis:
+            print(f"\n{'='*70}\n[VIS] Rendering visualizations...\n{'='*70}")
+            try:
+                if is_pdf:
+                    pages_img, scale = render_pdf_pages(effective_path, dpi=args.dpi)
+                else:
+                    # ★ 图片：用 deskewed 图作为可视化底图，保证 bbox 对齐
+                    pages_img = [load_image(effective_path)]
+                    scale = 1.0
+
+                n_vis = min(len(pages_img), args.max_pages)
+                for p_idx in range(n_vis):
+                    page_num = p_idx + 1
+                    base_img = pages_img[p_idx]
+
+                    vis_obs = vis_observations(base_img, page_num, observations, scale)
+                    cv2.imwrite(str(out_dir / f"vis_01_observations_p{page_num}.jpg"), vis_obs)
+
+                    if regions:
+                        vis_reg = vis_regions(base_img, page_num, regions, scale)
+                        cv2.imwrite(str(out_dir / f"vis_02_docling_p{page_num}.jpg"), vis_reg)
+
+                    if pymupdf_tables:
+                        vis_pmt = vis_pymupdf_tables(base_img, page_num, pymupdf_tables, scale)
+                        cv2.imwrite(str(out_dir / f"vis_03_pymupdf_tables_p{page_num}.jpg"), vis_pmt)
+
+                    if doc_ir.tables:
+                        vis_tbl = vis_tables(base_img, page_num, doc_ir.tables, scale)
+                        cv2.imwrite(str(out_dir / f"vis_04_final_tables_p{page_num}.jpg"), vis_tbl)
+
+                    vis_all_img = vis_all(base_img, page_num, doc_ir, pymupdf_tables, scale)
+                    cv2.imwrite(str(out_dir / f"vis_05_all_p{page_num}.jpg"), vis_all_img)
+
+                print(f"  ✅ {n_vis} page(s) visualized (scale={scale:.2f})")
+            except Exception as e:
+                print(f"⚠️  Visualization failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+    finally:
+        # ★ 清理 deskew 临时文件
+        if temp_path is not None and temp_path.exists():
+            try:
+                os.unlink(str(temp_path))
+                print(f"\n🧹 Cleaned up temp deskewed image: {temp_path}")
+            except Exception as e:
+                print(f"⚠️  Failed to cleanup temp file: {e}")
 
     print(f"\n{'#'*70}")
     print(f"# Done. Output: {out_dir}")
