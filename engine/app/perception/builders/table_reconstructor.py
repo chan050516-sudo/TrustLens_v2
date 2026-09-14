@@ -162,11 +162,7 @@ class TableReconstructor:
         num_rows = len(row_edges) - 1
 
         # =====================================================================
-        # 2. X轴：分行局部 Gap 探测 + 间隙深度扫描 + 波峰判据 (Gap Depth Peak Sweep)
-        #    关键改进：不再抽离 Gap 中心点做投票，而是保留完整 Gap 区间，
-        #    用扫描线统计 X 轴上每个位置的"Gap 覆盖深度"，
-        #    只在深度形成"局部波峰"的位置生成列割线。
-        #    这样可以免疫稀疏表格（含大量空单元格）导致的"假性中点偏移"。
+        # 2. X轴：分行局部 Gap 探测 + 间隙深度扫描 + 波峰判据
         # =====================================================================
         avg_char_w = max(4.0, sum(o.bbox.width / max(1, len(o.text)) for o in observations) / len(observations))
         x_min_gap = max(avg_char_w * 1.5, table_bbox.width * self.gap_ratio)
@@ -179,7 +175,6 @@ class TableReconstructor:
             all_gap_intervals.extend(gaps)
 
         # 2.2 扫描线：计算 depth(x) 分段常数函数
-        #     events: (x, +1) 表示进入一个 gap，(x, -1) 表示离开一个 gap
         events: List[Tuple[float, int]] = []
         for gs, ge in all_gap_intervals:
             if ge > gs:
@@ -187,23 +182,20 @@ class TableReconstructor:
                 events.append((ge, -1))
         events.sort()
 
-        # segments: [(x_start, x_end, depth), ...]
         segments: List[Tuple[float, float, int]] = []
         current_depth: int = 0
         prev_pos: Optional[float] = None
         i = 0
         while i < len(events):
             pos = events[i][0]
-            # 记录 prev_pos 到 pos 之间的段
             if prev_pos is not None and pos > prev_pos:
                 segments.append((prev_pos, pos, current_depth))
-            # 处理所有位于 pos 的事件（同位置多个事件一次性消费）
             while i < len(events) and events[i][0] == pos:
                 current_depth += events[i][1]
                 i += 1
             prev_pos = pos
 
-        # 2.3 合并相邻且 depth 相同的段（简化后续的邻居比较）
+        # 2.3 合并相邻且 depth 相同的段
         merged_segments: List[Tuple[float, float, int]] = []
         for s in segments:
             if merged_segments and merged_segments[-1][2] == s[2]:
@@ -212,33 +204,38 @@ class TableReconstructor:
                 merged_segments.append(s)
 
         # 2.4 找波峰段
-        #     - 深度阈值：至少在 25% 的行中出现（过滤稀疏行的大 gap）
-        #     - 波峰判据：depth 严格大于左右相邻段的 depth（过滤掉"大 gap 内部"的假中间区域）
         min_depth = max(2, int(num_rows * 0.25)) if num_rows > 3 else 1
 
-        peaks: List[Tuple[float, float]] = []
+        raw_peaks: List[Tuple[float, float]] = []
         for idx, (s, e, d) in enumerate(merged_segments):
             if d < min_depth:
                 continue
             left_d = merged_segments[idx - 1][2] if idx > 0 else 0
             right_d = merged_segments[idx + 1][2] if idx < len(merged_segments) - 1 else 0
             if d > left_d and d > right_d:
-                peaks.append((s, e))
+                raw_peaks.append((s, e))
 
-        # 2.5 每个波峰取中点作为列割线
-        col_dividers: List[float] = [(s + e) / 2.0 for s, e in peaks]
-
-        # 2.6 合并距离过近的割线（防止因为浮点或轻微错位产生空列）
+        # ★ 2.5 对波峰做近邻合并（同原 2.6 的语义，但改在区间层面执行）
+        #     合并后的区间会同时用于：(a) 生成 col_dividers；(b) Step 3 的切分验证
+        raw_peaks.sort(key=lambda p: (p[0] + p[1]) / 2.0)
         min_col_width = max(avg_char_w * 3.0, table_bbox.width * 0.02)
-        col_dividers.sort()
-        filtered_dividers: List[float] = []
-        for d in col_dividers:
-            if not filtered_dividers or (d - filtered_dividers[-1]) >= min_col_width:
-                filtered_dividers.append(d)
+
+        margin_intervals: List[Tuple[float, float]] = []
+        for s, e in raw_peaks:
+            mid = (s + e) / 2.0
+            if not margin_intervals:
+                margin_intervals.append((s, e))
             else:
-                # 距离过近，取两者中点合并
-                filtered_dividers[-1] = (filtered_dividers[-1] + d) / 2.0
-        col_dividers = filtered_dividers
+                last_s, last_e = margin_intervals[-1]
+                last_mid = (last_s + last_e) / 2.0
+                if mid - last_mid < min_col_width:
+                    # 距离过近：扩展上一个区间以覆盖两者
+                    margin_intervals[-1] = (min(last_s, s), max(last_e, e))
+                else:
+                    margin_intervals.append((s, e))
+
+        # ★ 2.6 从 margin_intervals 取中点作为列割线（用于构建网格）
+        col_dividers: List[float] = [(s + e) / 2.0 for s, e in margin_intervals]
 
         col_edges = sorted(list(set([table_bbox.x0] + col_dividers + [table_bbox.x1])))
         num_cols = len(col_edges) - 1
@@ -247,55 +244,106 @@ class TableReconstructor:
             return [], 0, 0
 
         # =====================================================================
-        # 3. 词距反向验证与动态拆词 (Space-Informed Word Splitting)
+        # 3. 区间感知的词距反向验证与拆词
+        #    与旧版的区别：
+        #    - 旧版：以 col_divider（点）为中心，在 ±1 字符位内搜空格
+        #    - 新版：以 margin_interval（区间）为准，把整个区间映射为字符索引范围，
+        #            在范围内搜空格。区间宽 → 搜索范围宽 → 更鲁棒。
         # =====================================================================
         processed_obs: List[ObservationIR] = []
         for obs in observations:
-            intersected_divs = [d for d in col_dividers if obs.bbox.x0 < d < obs.bbox.x1]
-            if not intersected_divs:
+            text = obs.text
+            if not text or len(text) <= 1:
                 processed_obs.append(obs)
                 continue
 
+            # 找所有"与 obs 相关"的空隙区间：
+            # 判据 = 区间的中点落在 obs 的 X 范围内
+            # （避免用 obs 边缘的间隙去切）
+            obs_x0 = obs.bbox.x0
+            obs_x1 = obs.bbox.x1
+            inner_margins: List[Tuple[float, float]] = []
+            for m_s, m_e in margin_intervals:
+                mid = (m_s + m_e) / 2.0
+                if obs_x0 < mid < obs_x1:
+                    # 只取与 obs 实际有交叠的部分
+                    overlap_s = max(m_s, obs_x0)
+                    overlap_e = min(m_e, obs_x1)
+                    if overlap_e > overlap_s:
+                        inner_margins.append((overlap_s, overlap_e))
+
+            if not inner_margins:
+                processed_obs.append(obs)
+                continue
+
+            inner_margins.sort(key=lambda p: p[0])
+
             curr_obs = obs
-            for div_x in intersected_divs:
-                char_w = curr_obs.bbox.width / max(1, len(curr_obs.text))
-                offset_x = div_x - curr_obs.bbox.x0
-                cut_idx = int(offset_x / char_w)
+            for m_s, m_e in inner_margins:
+                if curr_obs is None:
+                    break
 
-                text = curr_obs.text
+                curr_text = curr_obs.text
+                n_chars = len(curr_text)
+                if n_chars <= 1:
+                    break
+
+                curr_char_w = curr_obs.bbox.width / n_chars
+
+                # 把区间 [m_s, m_e] 映射为字符索引范围
+                idx_s = int((m_s - curr_obs.bbox.x0) / curr_char_w)
+                idx_e = int((m_e - curr_obs.bbox.x0) / curr_char_w)
+
+                # 限制在合法范围内，且至少覆盖 1 个字符位
+                idx_s = max(1, min(idx_s, n_chars - 1))
+                idx_e = max(idx_s, min(idx_e, n_chars - 1))
+
+                # 在 [idx_s, idx_e] 内搜空格
                 space_idx = -1
-
-                for idx in [cut_idx, cut_idx - 1, cut_idx + 1]:
-                    if 0 <= idx < len(text) and text[idx] == ' ':
+                for idx in range(idx_s, idx_e + 1):
+                    if 0 <= idx < n_chars and curr_text[idx] == ' ':
                         space_idx = idx
                         break
 
-                if space_idx != -1:
-                    left_text = text[:space_idx].strip()
-                    right_text = text[space_idx + 1:].strip()
-                    split_x = curr_obs.bbox.x0 + space_idx * char_w
+                if space_idx == -1:
+                    # 区间内没有空格 → 视为合法的跨列内容，不拆
+                    continue
 
-                    if left_text:
-                        left_obs = ObservationIR(
-                            page=curr_obs.page, text=left_text,
-                            bbox=BBox(x0=curr_obs.bbox.x0, y0=curr_obs.bbox.y0,
-                                      x1=split_x, y1=curr_obs.bbox.y1),
-                            source=curr_obs.source, confidence=curr_obs.confidence
-                        )
-                        processed_obs.append(left_obs)
+                # 命中：切分
+                left_text = curr_text[:space_idx].strip()
+                right_text = curr_text[space_idx + 1:].strip()
+                split_x = curr_obs.bbox.x0 + space_idx * curr_char_w
 
-                    if right_text:
-                        curr_obs = ObservationIR(
-                            page=curr_obs.page, text=right_text,
-                            bbox=BBox(x0=split_x + char_w, y0=curr_obs.bbox.y0,
-                                      x1=curr_obs.bbox.x1, y1=curr_obs.bbox.y1),
-                            source=curr_obs.source, confidence=curr_obs.confidence
-                        )
-                    else:
-                        curr_obs = None
-                        break
+                if left_text:
+                    left_obs = ObservationIR(
+                        page=curr_obs.page,
+                        text=left_text,
+                        bbox=BBox(
+                            x0=curr_obs.bbox.x0,
+                            y0=curr_obs.bbox.y0,
+                            x1=split_x,
+                            y1=curr_obs.bbox.y1,
+                        ),
+                        source=curr_obs.source,
+                        confidence=curr_obs.confidence,
+                    )
+                    processed_obs.append(left_obs)
+
+                if right_text:
+                    curr_obs = ObservationIR(
+                        page=curr_obs.page,
+                        text=right_text,
+                        bbox=BBox(
+                            x0=split_x + curr_char_w,
+                            y0=curr_obs.bbox.y0,
+                            x1=curr_obs.bbox.x1,
+                            y1=curr_obs.bbox.y1,
+                        ),
+                        source=curr_obs.source,
+                        confidence=curr_obs.confidence,
+                    )
                 else:
-                    pass
+                    curr_obs = None
 
             if curr_obs is not None:
                 processed_obs.append(curr_obs)
@@ -306,8 +354,12 @@ class TableReconstructor:
         cells_dict: Dict[Tuple[int, int], Dict[str, Any]] = {}
         for r in range(num_rows):
             for c in range(num_cols):
-                cb = BBox(x0=col_edges[c], y0=row_edges[r],
-                          x1=col_edges[c + 1], y1=row_edges[r + 1])
+                cb = BBox(
+                    x0=col_edges[c],
+                    y0=row_edges[r],
+                    x1=col_edges[c + 1],
+                    y1=row_edges[r + 1],
+                )
                 cells_dict[(r, c)] = {"bbox": cb, "obs": []}
 
         for obs in processed_obs:
@@ -359,7 +411,7 @@ class TableReconstructor:
                 text=merged_text,
                 bbox=data["bbox"],
                 colspan=max_colspan,
-                rowspan=1
+                rowspan=1,
             ))
 
         return final_cells, num_rows, num_cols
