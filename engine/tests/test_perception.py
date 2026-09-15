@@ -575,6 +575,7 @@ def main():
                 page_count=page_count,
                 page_dimensions=page_dimensions,
                 file_path=str(file_path),   # ← 用原始路径作为文档身份
+                pymupdf_enabled=is_pdf
             )
             doc_ir.metadata["_semantic_regions"] = [
                 {"page": r.page, "type": r.type,

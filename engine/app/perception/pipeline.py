@@ -116,6 +116,7 @@ class PerceptionPipeline:
                 page_count=page_count,
                 page_dimensions=page_dimensions,
                 file_path=str(context.file_path),
+                pymupdf_enabled=is_pdf,
             )
         finally:
             # 清理临时文件

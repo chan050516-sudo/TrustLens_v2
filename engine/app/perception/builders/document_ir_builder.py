@@ -68,6 +68,7 @@ class DocumentIRBuilder:
         page_count: int,
         page_dimensions: List[Dict[str, int]],
         file_path: Optional[str] = None,
+        pymupdf_enabled: bool = False,
     ) -> DocumentIR:
         conflicts: List[Dict[str, Any]] = []
 
@@ -95,8 +96,10 @@ class DocumentIRBuilder:
             other_regions.append(r)
 
         # ---- 2. 合并表格区域 ----
-        merged_tables, table_conflicts = self._merge_table_regions(
-            pymupdf_tables, docling_tables
+        merged_tables, table_conflicts, table_stats = self._merge_table_regions(
+            pymupdf_tables,
+            docling_tables,
+            pymupdf_enabled=pymupdf_enabled,
         )
         conflicts.extend(table_conflicts)
 
@@ -320,6 +323,9 @@ class DocumentIRBuilder:
                 "orphan_element_count": sum(
                     1 for e in elements if e.source == "fallback_orphan"
                 ),
+                "table_merged_both": table_stats["table_merged_both"],
+                "table_pymupdf_only": table_stats["table_pymupdf_only"],
+                "table_docling_only": table_stats["table_docling_only"],
             },
         )
 
@@ -504,11 +510,37 @@ class DocumentIRBuilder:
         self,
         pymupdf_tables: List[TableRegion],
         docling_tables: List[SemanticRegion],
-    ) -> Tuple[List[TableRegion], List[Dict[str, Any]]]:
+        pymupdf_enabled: bool = False,
+    ) -> Tuple[List[TableRegion], List[Dict[str, Any]], Dict[str, int]]:
+        """
+        合并 PyMuPDF 和 Docling 的表格区域。
+
+        Conflict 语义（修正后）：
+          - pymupdf_missed_table: **只在 PyMuPDF 真正参与分析时**记录
+            （图片场景 PyMuPDF 不跑，不记 conflict）
+          - docling_missed_table: **不再记 conflict**，因为 Docling 的
+            layout model 对表格（尤其无边框表格）识别率本就低，
+            "PyMuPDF 找到 + Docling 没找到" 是工具能力差异，不是文档问题。
+            只记 metadata 计数。
+
+        Returns:
+            (merged, conflicts, stats)
+              stats: {
+                "table_merged_both": 两者都识别到,
+                "table_pymupdf_only": 仅 PyMuPDF 识别到,
+                "table_docling_only": 仅 Docling 识别到,
+              }
+        """
         conflicts: List[Dict[str, Any]] = []
         merged: List[TableRegion] = []
         used_docling: set = set()
+        stats = {
+            "table_merged_both": 0,
+            "table_pymupdf_only": 0,
+            "table_docling_only": 0,
+        }
 
+        # ----- PyMuPDF 侧 -----
         for pt in pymupdf_tables:
             best_idx: Optional[int] = None
             best_iou = 0.0
@@ -521,21 +553,21 @@ class DocumentIRBuilder:
                     best_idx = d_idx
 
             if best_idx is not None and best_iou >= self.table_merge_iou_threshold:
+                # 两者都识别到：保留 PyMuPDF 网格 + 继承 Docling 的 order/label
                 used_docling.add(best_idx)
-                # ★ 匹配成功：把 Docling 的 order 传给 TableRegion
                 pt_ordered = pt.model_copy(update={
                     "reading_order_index": docling_tables[best_idx].reading_order_index,
                     "docling_label": docling_tables[best_idx].docling_label or pt.docling_label,
                 })
                 merged.append(pt_ordered)
+                stats["table_merged_both"] += 1
             else:
+                # PyMuPDF 独有
                 merged.append(pt)
-                conflicts.append({
-                    "type": "docling_missed_table",
-                    "page": pt.page,
-                    "bbox": pt.bbox.to_tuple(),
-                })
+                stats["table_pymupdf_only"] += 1
+                # ★ 不记 conflict（Docling 表格识别弱，这是能力差异）
 
+        # ----- Docling 侧（未被 PyMuPDF 匹配的） -----
         for d_idx, dr in enumerate(docling_tables):
             if d_idx in used_docling:
                 continue
@@ -546,12 +578,17 @@ class DocumentIRBuilder:
                 source="docling",
                 has_grid=False,
                 docling_label=dr.docling_label or "table",
-                reading_order_index=dr.reading_order_index,  # ★ 新增
+                reading_order_index=dr.reading_order_index,
             ))
-            conflicts.append({
-                "type": "pymupdf_missed_table",
-                "page": dr.page,
-                "bbox": dr.bbox.to_tuple(),
-            })
+            stats["table_docling_only"] += 1
 
-        return merged, conflicts
+            # ★ 只在 PyMuPDF 真正参与时才记 conflict
+            #    （图片场景：PyMuPDF 没跑，Docling 找到表格是正常现象）
+            if pymupdf_enabled:
+                conflicts.append({
+                    "type": "pymupdf_missed_table",
+                    "page": dr.page,
+                    "bbox": dr.bbox.to_tuple(),
+                })
+
+        return merged, conflicts, stats
