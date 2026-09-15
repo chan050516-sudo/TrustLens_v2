@@ -108,6 +108,39 @@ class DoclingRegionParser:
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = self.do_ocr
 
+        # ★ 关闭我们不需要的组件（按需保留）
+        # 表格结构：由我们的 TableReconstructor 负责，不需要 TableFormer
+        try:
+            pipeline_options.do_table_structure = False
+        except AttributeError:
+            logger.warning("do_table_structure not available in this Docling version")
+
+        # 图片分类：我们只关心 picture bbox，不需要知道是 logo 还是 photo
+        try:
+            pipeline_options.do_picture_classification = False
+        except AttributeError:
+            logger.warning("do_picture_classification not available")
+
+        # 图片描述：会跑 VLM，非常耗时
+        try:
+            pipeline_options.do_picture_description = False
+        except AttributeError:
+            pass
+
+        # 代码/公式增强：与我们的用途无关
+        for opt_name in ("do_code_enrichment", "do_formula_enrichment"):
+            try:
+                setattr(pipeline_options, opt_name, False)
+            except AttributeError:
+                pass
+
+        # 不生成页面/图片栅格（我们只取 bbox，不需要图像）
+        for opt_name in ("generate_page_images", "generate_picture_images"):
+            try:
+                setattr(pipeline_options, opt_name, False)
+            except AttributeError:
+                pass
+
         if self.do_ocr and self.use_rapid_ocr:
             try:
                 from docling.datamodel.pipeline_options import RapidOcrOptions
@@ -143,8 +176,8 @@ class DoclingRegionParser:
 
         regions: List[SemanticRegion] = []
         try:
-            for item, _level in doc.iterate_items():
-                region = self._item_to_region(item, doc)
+            for order_idx, (item, _level) in enumerate(doc.iterate_items()):
+                region = self._item_to_region(item, doc, order_idx)
                 if region is not None:
                     regions.append(region)
         except Exception as e:
@@ -248,7 +281,7 @@ class DoclingRegionParser:
 
     # ------------------------------------------------------------------
 
-    def _item_to_region(self, item, doc) -> Optional[SemanticRegion]:
+    def _item_to_region(self, item, doc, reading_order_index: int) -> Optional[SemanticRegion]:
         if not hasattr(item, "prov") or not item.prov:
             return None
 
@@ -282,6 +315,7 @@ class DoclingRegionParser:
                 "page_no": page_num,
                 "item_class": type(item).__name__,
             },
+            reading_order_index=reading_order_index,  # ★ 新增
         )
 
     def _extract_docling_text(self, item) -> Optional[str]:

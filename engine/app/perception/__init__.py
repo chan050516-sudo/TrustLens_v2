@@ -3,7 +3,7 @@ from .models.observation_ir import ObservationIR
 from .models.semantic_region import SemanticRegion, SemanticRegionType
 from .models.table_region import TableRegion, GridCell
 from .models.document_ir import (
-    DocumentIR, TextBlock, Table, TableCell, Picture,
+    DocumentIR, DocumentElement, TextBlock, Table, TableCell, Picture,
 )
 
 from .preprocessors import ImagePreprocessor
@@ -29,10 +29,11 @@ __all__ = [
     "TableRegion",
     "GridCell",
     "DocumentIR",
-    "TextBlock",
+    "DocumentElement",
+    "TextBlock",  # 兼容保留
     "Table",
     "TableCell",
-    "Picture",
+    "Picture",   # 兼容保留
     # Preprocessors
     "ImagePreprocessor",
     # Extractors

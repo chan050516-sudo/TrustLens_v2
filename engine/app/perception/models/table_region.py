@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 from .bbox import BBox
 
@@ -32,3 +32,8 @@ class TableRegion(BaseModel):
         description="是否含精确网格（PyMuPDF 为 True，Docling 为 False）"
     )
     docling_label: str = Field(default="table", description="原始 label")
+
+    reading_order_index: Optional[int] = Field(
+        default=None,
+        description="对应的 Docling region 的阅读顺序索引"
+    )

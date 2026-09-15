@@ -78,3 +78,9 @@ class SemanticRegion(BaseModel):
         default=None,
         description="容器组的稳定 ID。容器自身与其所有子节点共享此 ID"
     )
+
+    # ★ 新增：阅读顺序
+    reading_order_index: Optional[int] = Field(
+        default=None,
+        description="Docling iterate_items() 中的全局顺序索引（用于恢复阅读顺序）"
+    )

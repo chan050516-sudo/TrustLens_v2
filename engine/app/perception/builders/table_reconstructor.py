@@ -40,16 +40,28 @@ class TableReconstructor:
         self,
         region: TableRegion,
         observations: List[ObservationIR],
+        obs_indices: Optional[List[int]] = None,
     ) -> Table:
-        # 筛选落在表格范围内的 observations
-        inner_obs = [o for o in observations if self._is_inside_table(o, region.bbox)]
+        """
+        Args:
+            region: 表格区域
+            observations: 落在表格范围内的 obs
+            obs_indices: 与 observations 一一对应的原始索引（用于回填 cell.observation_ids）
+        """
+        inner_pairs = [
+            (i, o, obs_indices[i] if obs_indices else None)
+            for i, o in enumerate(observations)
+            if self._is_inside_table(o, region.bbox)
+        ]
+        inner_obs = [o for _, o, _ in inner_pairs]
+        inner_idx = [orig for _, _, orig in inner_pairs]
 
         if region.has_grid and region.cells:
-            cells = self._assign_with_grid(region, inner_obs)
+            cells = self._assign_with_grid(region, inner_obs, inner_idx)
             rows_count = region.rows
             cols_count = region.cols
         else:
-            cells, rows_count, cols_count = self._assign_with_scan(region, inner_obs)
+            cells, rows_count, cols_count = self._assign_with_scan(region, inner_obs, inner_idx)
 
         return Table(
             page=region.page,
@@ -74,11 +86,11 @@ class TableReconstructor:
         self,
         region: TableRegion,
         observations: List[ObservationIR],
+        obs_indices: List[Optional[int]],
     ) -> List[TableCell]:
-        # 用 (row, col) 索引到 obs 列表
         buckets: dict = {(c.row, c.col): [] for c in region.cells}
 
-        for obs in observations:
+        for obs_idx, obs in enumerate(observations):
             best_cell = None
             best_iou = 0.0
             for cell in region.cells:
@@ -87,18 +99,20 @@ class TableReconstructor:
                     best_iou = v
                     best_cell = cell
             if best_cell is not None and best_iou >= self.cell_iou_threshold:
-                buckets[(best_cell.row, best_cell.col)].append(obs)
+                buckets[(best_cell.row, best_cell.col)].append((obs, obs_indices[obs_idx]))
 
         result: List[TableCell] = []
         for cell in region.cells:
-            obs_list = buckets.get((cell.row, cell.col), [])
-            obs_list.sort(key=lambda o: (o.bbox.center_y, o.bbox.center_x))
-            text = " ".join(o.text for o in obs_list).strip()
+            items = buckets.get((cell.row, cell.col), [])
+            items.sort(key=lambda it: (it[0].bbox.center_y, it[0].bbox.center_x))
+            text = " ".join(it[0].text for it in items).strip()
+            obs_ids = [it[1] for it in items if it[1] is not None]
             result.append(TableCell(
                 row=cell.row,
                 col=cell.col,
                 text=text,
                 bbox=cell.bbox,
+                observation_ids=obs_ids,
             ))
         return result
 
@@ -110,6 +124,7 @@ class TableReconstructor:
         self,
         region: TableRegion,
         observations: List[ObservationIR],
+        obs_indices: List[Optional[int]],
     ) -> Tuple[List[TableCell], int, int]:
         if not observations:
             return [], 0, 0
@@ -245,28 +260,24 @@ class TableReconstructor:
 
         # =====================================================================
         # 3. 区间感知的词距反向验证与拆词
-        #    与旧版的区别：
-        #    - 旧版：以 col_divider（点）为中心，在 ±1 字符位内搜空格
-        #    - 新版：以 margin_interval（区间）为准，把整个区间映射为字符索引范围，
-        #            在范围内搜空格。区间宽 → 搜索范围宽 → 更鲁棒。
         # =====================================================================
         processed_obs: List[ObservationIR] = []
-        for obs in observations:
+        processed_indices: List[Optional[int]] = []  # ★ 新增
+
+        for obs_idx, obs in enumerate(observations):
+            orig_idx = obs_indices[obs_idx] if obs_idx < len(obs_indices) else None
             text = obs.text
             if not text or len(text) <= 1:
                 processed_obs.append(obs)
+                processed_indices.append(orig_idx)
                 continue
 
-            # 找所有"与 obs 相关"的空隙区间：
-            # 判据 = 区间的中点落在 obs 的 X 范围内
-            # （避免用 obs 边缘的间隙去切）
             obs_x0 = obs.bbox.x0
             obs_x1 = obs.bbox.x1
             inner_margins: List[Tuple[float, float]] = []
             for m_s, m_e in margin_intervals:
                 mid = (m_s + m_e) / 2.0
                 if obs_x0 < mid < obs_x1:
-                    # 只取与 obs 实际有交叠的部分
                     overlap_s = max(m_s, obs_x0)
                     overlap_e = min(m_e, obs_x1)
                     if overlap_e > overlap_s:
@@ -274,6 +285,7 @@ class TableReconstructor:
 
             if not inner_margins:
                 processed_obs.append(obs)
+                processed_indices.append(orig_idx)
                 continue
 
             inner_margins.sort(key=lambda p: p[0])
@@ -289,16 +301,11 @@ class TableReconstructor:
                     break
 
                 curr_char_w = curr_obs.bbox.width / n_chars
-
-                # 把区间 [m_s, m_e] 映射为字符索引范围
                 idx_s = int((m_s - curr_obs.bbox.x0) / curr_char_w)
                 idx_e = int((m_e - curr_obs.bbox.x0) / curr_char_w)
-
-                # 限制在合法范围内，且至少覆盖 1 个字符位
                 idx_s = max(1, min(idx_s, n_chars - 1))
                 idx_e = max(idx_s, min(idx_e, n_chars - 1))
 
-                # 在 [idx_s, idx_e] 内搜空格
                 space_idx = -1
                 for idx in range(idx_s, idx_e + 1):
                     if 0 <= idx < n_chars and curr_text[idx] == ' ':
@@ -306,10 +313,8 @@ class TableReconstructor:
                         break
 
                 if space_idx == -1:
-                    # 区间内没有空格 → 视为合法的跨列内容，不拆
                     continue
 
-                # 命中：切分
                 left_text = curr_text[:space_idx].strip()
                 right_text = curr_text[space_idx + 1:].strip()
                 split_x = curr_obs.bbox.x0 + space_idx * curr_char_w
@@ -318,27 +323,20 @@ class TableReconstructor:
                     left_obs = ObservationIR(
                         page=curr_obs.page,
                         text=left_text,
-                        bbox=BBox(
-                            x0=curr_obs.bbox.x0,
-                            y0=curr_obs.bbox.y0,
-                            x1=split_x,
-                            y1=curr_obs.bbox.y1,
-                        ),
+                        bbox=BBox(x0=curr_obs.bbox.x0, y0=curr_obs.bbox.y0,
+                                x1=split_x, y1=curr_obs.bbox.y1),
                         source=curr_obs.source,
                         confidence=curr_obs.confidence,
                     )
                     processed_obs.append(left_obs)
+                    processed_indices.append(orig_idx)
 
                 if right_text:
                     curr_obs = ObservationIR(
                         page=curr_obs.page,
                         text=right_text,
-                        bbox=BBox(
-                            x0=split_x + curr_char_w,
-                            y0=curr_obs.bbox.y0,
-                            x1=curr_obs.bbox.x1,
-                            y1=curr_obs.bbox.y1,
-                        ),
+                        bbox=BBox(x0=split_x + curr_char_w, y0=curr_obs.bbox.y0,
+                                x1=curr_obs.bbox.x1, y1=curr_obs.bbox.y1),
                         source=curr_obs.source,
                         confidence=curr_obs.confidence,
                     )
@@ -347,6 +345,7 @@ class TableReconstructor:
 
             if curr_obs is not None:
                 processed_obs.append(curr_obs)
+                processed_indices.append(orig_idx)
 
         # =====================================================================
         # 4. 虚拟网格构建与 Colspan 分配
@@ -354,15 +353,11 @@ class TableReconstructor:
         cells_dict: Dict[Tuple[int, int], Dict[str, Any]] = {}
         for r in range(num_rows):
             for c in range(num_cols):
-                cb = BBox(
-                    x0=col_edges[c],
-                    y0=row_edges[r],
-                    x1=col_edges[c + 1],
-                    y1=row_edges[r + 1],
-                )
+                cb = BBox(x0=col_edges[c], y0=row_edges[r],
+                        x1=col_edges[c + 1], y1=row_edges[r + 1])
                 cells_dict[(r, c)] = {"bbox": cb, "obs": []}
 
-        for obs in processed_obs:
+        for obs, orig_idx in zip(processed_obs, processed_indices):
             best_r = -1
             max_r_inter = 0.0
             for r in range(num_rows):
@@ -390,7 +385,7 @@ class TableReconstructor:
             end_c = max(start_c, end_c if end_c != -1 else num_cols - 1)
             colspan = end_c - start_c + 1
 
-            cells_dict[(best_r, start_c)]["obs"].append((obs, colspan))
+            cells_dict[(best_r, start_c)]["obs"].append((obs, colspan, orig_idx))
 
         # =====================================================================
         # 5. 生成最终单元格
@@ -404,6 +399,7 @@ class TableReconstructor:
             obs_list.sort(key=lambda item: item[0].bbox.x0)
             merged_text = " ".join(item[0].text for item in obs_list).strip()
             max_colspan = max(item[1] for item in obs_list)
+            obs_ids = sorted({item[2] for item in obs_list if item[2] is not None})
 
             final_cells.append(TableCell(
                 row=r,
@@ -412,6 +408,7 @@ class TableReconstructor:
                 bbox=data["bbox"],
                 colspan=max_colspan,
                 rowspan=1,
+                observation_ids=obs_ids,
             ))
 
         return final_cells, num_rows, num_cols
