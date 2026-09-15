@@ -130,16 +130,8 @@ class ImagePreprocessor:
     # ------------------------------------------------------------------
 
     def _get_ocr_engine(self):
-        if self._ocr_engine is None:
-            try:
-                from rapidocr_onnxruntime import RapidOCR
-            except ImportError as e:
-                raise ExtractionError(
-                    "RapidOCR is required. Install with: "
-                    "pip install rapidocr-onnxruntime"
-                ) from e
-            self._ocr_engine = RapidOCR()
-        return self._ocr_engine
+        from app.perception.utils.ocr_singleton import get_shared_rapidocr
+        return get_shared_rapidocr()
 
     def _run_ocr(self, image_bgr: np.ndarray) -> List:
         engine = self._get_ocr_engine()

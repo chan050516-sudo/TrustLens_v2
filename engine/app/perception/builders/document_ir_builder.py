@@ -73,7 +73,26 @@ class DocumentIRBuilder:
 
         # ---- 1. 分离 table 区域 vs 其他区域 ----
         docling_tables = [r for r in semantic_regions if r.type == "table"]
-        other_regions = [r for r in semantic_regions if r.type != "table"]
+        other_regions_raw = [r for r in semantic_regions if r.type != "table"]
+
+        # ---- 1.5 抑制"被 table bbox 覆盖"的冗余 region ----
+        # 背景：Docling 关闭 do_table_structure 后，会把 table 内每个 cell
+        #      降级输出为一个独立 paragraph region。这些 region 会污染
+        #      RegionAssigner 的匹配（小区域优先抢走 obs）。
+        # 策略：如果某 region 被任意 table bbox 覆盖 95%+，则丢弃之，
+        #      该区域的文本完全交给 TableReconstructor 处理。
+        table_bboxes = [t.bbox for t in docling_tables]
+        other_regions: List[SemanticRegion] = []
+        suppressed_inside_table = 0
+        for r in other_regions_raw:
+            is_inside_table = any(
+                tb.intersection_over(r.bbox) > 0.95
+                for tb in table_bboxes
+            )
+            if is_inside_table:
+                suppressed_inside_table += 1
+                continue
+            other_regions.append(r)
 
         # ---- 2. 合并表格区域 ----
         merged_tables, table_conflicts = self._merge_table_regions(
@@ -294,6 +313,7 @@ class DocumentIRBuilder:
                 "table_element_count": sum(
                     1 for e in elements if e.element_type == "table"
                 ),
+                "suppressed_region_inside_table": suppressed_inside_table,
                 "container_fragment_count": sum(
                     1 for e in elements if e.is_container_fragment
                 ),
