@@ -139,11 +139,11 @@ class PdfObservationExtractor:
                         continue
 
                     # --- 3. 过滤：字体标志位 (隐藏文本) ---
-                    span_flags = span.get("flags", 0)
-                    # 低位第 2 位 (bit 1) 表示隐藏文本 (PDF spec)
-                    if span_flags & 2:
-                        logger.debug(f"Skipping hidden text on page {page_num}: '{text[:20]}...'")
-                        continue
+                    # --- 3. （已移除）字体标志位过滤 ---
+                    # 说明：PyMuPDF 的 span["flags"] 表示字体属性（italic/serifed/bold 等），
+                    #       与"隐藏文本"无关。曾经错误地过滤 flags & 2（=italic），
+                    #       导致所有斜体文本被误删。现已移除该过滤。
+                    span_flags = span.get("flags", 0)  # 保留但不用于过滤
 
                     # --- 4. 过滤：字号异常 ---
                     font_size = span.get("size", 10.0)
