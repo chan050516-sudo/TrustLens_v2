@@ -19,6 +19,8 @@ from .builders.table_reconstructor import TableReconstructor
 from .builders.document_ir_builder import DocumentIRBuilder
 
 from .pipeline import PerceptionPipeline
+from .orchestration import MultiPagePdfOrchestrator, PageProfile
+
 
 __all__ = [
     # Models
@@ -48,4 +50,6 @@ __all__ = [
     "DocumentIRBuilder",
     # Pipeline
     "PerceptionPipeline",
+    "MultiPagePdfOrchestrator",
+    "PageProfile",
 ]

@@ -1,5 +1,6 @@
 import logging
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,18 +24,14 @@ class PerceptionPipeline:
     """
     Perception 层顶层入口
 
-    编排：
-      1. 若输入为图片：先做 deskew（ImagePreprocessor）
-         - 若需要旋转，deskewed 图写到临时文件，下游共享此图
-         - 若不需要旋转，直接用原图
-      2. 并行执行 Observation 提取 + Docling 区域解析 + PyMuPDF 表格检测
-      3. 调用 DocumentIRBuilder 合并
-      4. 清理临时文件
-      5. 返回 DocumentIR
+    三种输入模式：
+      1. 图片（独立文件）→ 走 image 路径（OCR + Docling with OCR）
+      2. Native PDF（有文本层）→ 走 PDF 路径（PyMuPDF + Docling without OCR）
+      3. Non-native PDF（扫描件）→ 内部渲染成图 → 走 image 路径
 
-    Docling OCR 策略：
-      - 原生 PDF：默认 do_ocr=False
-      - 图片/扫描件：强制 do_ocr=True
+    页级处理：
+      - page_num=None: 处理所有页
+      - page_num=N: 只处理第 N 页（用于多页 orchestrator 分发）
     """
 
     def __init__(
@@ -43,17 +40,20 @@ class PerceptionPipeline:
         docling_do_ocr: Optional[bool] = None,
         force_ocr_for_pdf: bool = False,
         deskew_min_angle: float = 0.2,
+        pdf_render_dpi: int = 200,
     ):
         """
         Args:
-            max_workers: 线程池大小
-            docling_do_ocr: 覆盖 Docling OCR 开关（None=自动）
-            force_ocr_for_pdf: 原生 PDF 是否强制 OCR
-            deskew_min_angle: 图片 deskew 的最小角度阈值（度）
+            max_workers: 页内任务并行度
+            docling_do_ocr: 覆盖 Docling OCR 开关（None=按页类型自动）
+            force_ocr_for_pdf: （已弃用，保留兼容）
+            deskew_min_angle: 图片 deskew 最小角度阈值（度）
+            pdf_render_dpi: non-native PDF 页渲染的 DPI
         """
         self.max_workers = max_workers
         self.docling_do_ocr_override = docling_do_ocr
         self.force_ocr_for_pdf = force_ocr_for_pdf
+        self.pdf_render_dpi = pdf_render_dpi
 
         self.pdf_extractor = PdfObservationExtractor()
         self.image_extractor = ImageObservationExtractor()
@@ -61,34 +61,173 @@ class PerceptionPipeline:
         self.pymupdf_table_detector = PyMuPDFTableDetector()
         self.builder = DocumentIRBuilder()
 
+        # Docling parser 按 do_ocr 缓存
         self._docling_parsers: Dict[bool, DoclingRegionParser] = {}
 
     # ------------------------------------------------------------------
 
-    def run(self, context: DocumentContext) -> DocumentIR:
-        mime_type = self._resolve_mime(context)
-        is_pdf = (mime_type == "application/pdf")
-        is_image = bool(mime_type and mime_type.startswith("image/"))
+    def run(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int] = None,
+        is_native_pdf: Optional[bool] = None,
+    ) -> DocumentIR:
+        """
+        Args:
+            context: 文档上下文
+            page_num: None=处理整文档；int=只处理该页 (从1开始)
+            is_native_pdf: None=自动判定；True=强制按 native 处理；False=强制按 non-native 处理
 
-        if not (is_pdf or is_image):
+        Returns:
+            DocumentIR（若 page_num 非 None，返回的 IR 只包含该页内容）
+        """
+        mime_type = self._resolve_mime(context)
+        is_pdf_file = (mime_type == "application/pdf")
+        is_image_file = bool(mime_type and mime_type.startswith("image/"))
+
+        if not (is_pdf_file or is_image_file):
             logger.warning(
                 f"Unsupported mime type: {mime_type}, proceeding with PDF path"
             )
-            is_pdf = True
+            is_pdf_file = True
 
-        # ★ 图片：先做 deskew 预处理
+        # ---- 1. 图片：直接走 image 路径 ----
+        if is_image_file:
+            return self._run_image_path(context, page_num=page_num)
+
+        # ---- 2. PDF：先判定 native ----
+        if is_native_pdf is None:
+            is_native_pdf = self._detect_native_pdf(context.file_path, page_num)
+            logger.info(
+                f"[Pipeline] page_num={page_num}, "
+                f"auto-detected is_native_pdf={is_native_pdf}"
+            )
+
+        if is_native_pdf:
+            return self._run_native_pdf_path(context, page_num=page_num)
+        else:
+            return self._run_non_native_pdf_path(context, page_num=page_num)
+
+    # ------------------------------------------------------------------
+    # Native PDF 路径
+    # ------------------------------------------------------------------
+
+    def _run_native_pdf_path(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int],
+    ) -> DocumentIR:
+        """
+        Native PDF 路径：
+          - PyMuPDF 提取 observation
+          - PyMuPDF find_tables 提取表格
+          - Docling do_ocr=False 提取语义区域
+        """
+        docling_parser = self._get_docling_parser(do_ocr=False)
+
+        # ★ 给 Docling 传 page_range（若指定单页）
+        page_range: Optional[Tuple[int, int]] = None
+        if page_num is not None:
+            page_range = (page_num, page_num)
+
+        results = {"observations": [], "regions": [], "tables": []}
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self.pdf_extractor.extract, context, page_num): "observations",
+                executor.submit(self.pymupdf_table_detector.detect, context, page_num): "tables",
+                executor.submit(docling_parser.parse, context, page_range): "regions",
+            }
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    results[key] = future.result()
+                except Exception as e:
+                    logger.exception(f"Native PDF task '{key}' failed: {e}")
+                    results[key] = []
+
+        observations = results["observations"] or []
+        regions = results["regions"] or []
+        tables = results["tables"] or []
+
+        # 若指定单页，过滤 regions（防止 Docling 不兼容 page_range 时返回多页）
+        if page_num is not None:
+            regions = [r for r in regions if r.page == page_num]
+
+        # 页面信息
+        page_count, page_dimensions = self._get_page_info(
+            context, observations, is_pdf_file=True, page_num=page_num
+        )
+
+        return self.builder.build(
+            observations=observations,
+            semantic_regions=regions,
+            pymupdf_tables=tables,
+            page_count=page_count,
+            page_dimensions=page_dimensions,
+            file_path=str(context.file_path),
+            pymupdf_enabled=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Non-native PDF 路径
+    # ------------------------------------------------------------------
+
+    def _run_non_native_pdf_path(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int],
+    ) -> DocumentIR:
+        """
+        Non-native PDF 路径：把指定页渲染成图，然后走 image 路径
+        """
+        # 若 page_num=None，需要遍历每页单独处理（orchestrator 不会这样调）
+        if page_num is None:
+            raise ValueError(
+                "Non-native PDF requires explicit page_num "
+                "(use MultiPagePdfOrchestrator for whole-document processing)"
+            )
+
+        rendered_path = self._render_pdf_page(context.file_path, page_num)
+        try:
+            rendered_context = context.model_copy(
+                update={"file_path": rendered_path, "mime_type": "image/png"}
+            )
+            return self._run_image_path(rendered_context, page_num=page_num)
+        finally:
+            try:
+                if rendered_path.exists():
+                    os.unlink(str(rendered_path))
+            except Exception as e:
+                logger.warning(f"Failed to cleanup rendered PDF page: {e}")
+
+    # ------------------------------------------------------------------
+    # Image 路径（图片 或 PDF 渲染图）
+    # ------------------------------------------------------------------
+
+    def _run_image_path(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int],
+    ) -> DocumentIR:
+        """
+        Image 路径：
+          - Deskew（可选）
+          - Image extractor（OCR）
+          - Docling do_ocr=True 提取语义区域
+        """
+        target_page = page_num if page_num is not None else 1
+
+        # 1. Deskew 预处理
         effective_path: Path = context.file_path
         temp_path: Optional[Path] = None
-        if is_image:
-            try:
-                effective_path, temp_path = self.image_preprocessor.preprocess(context)
-            except Exception as e:
-                logger.exception(f"Image preprocessing failed: {e}")
-                effective_path = context.file_path
-                temp_path = None
+        try:
+            effective_path, temp_path = self.image_preprocessor.preprocess(context)
+        except Exception as e:
+            logger.exception(f"Image preprocessing failed: {e}")
+            effective_path = context.file_path
+            temp_path = None
 
-        # 若创建了临时文件，创建一个"影子 context"传给下游
-        # 保留原 context 的所有元数据（mime_type 等），只把 file_path 指向 deskewed 图
         downstream_context = (
             context.model_copy(update={"file_path": effective_path})
             if temp_path is not None
@@ -96,91 +235,154 @@ class PerceptionPipeline:
         )
 
         try:
-            results = self._run_parallel(
-                downstream_context, is_pdf=is_pdf, is_image=is_image
-            )
+            docling_parser = self._get_docling_parser(do_ocr=True)
 
-            observations = results.get("observations") or []
-            semantic_regions = results.get("regions") or []
-            pymupdf_tables = results.get("tables") or []
+            results = {"observations": [], "regions": []}
 
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(self.image_extractor.extract, downstream_context): "observations",
+                    executor.submit(docling_parser.parse, downstream_context, None): "regions",
+                }
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        results[key] = future.result()
+                    except Exception as e:
+                        logger.exception(f"Image task '{key}' failed: {e}")
+                        results[key] = []
+
+            observations = results["observations"] or []
+            regions = results["regions"] or []
+
+            # ★ 强制覆盖 page 字段（image extractor / docling 硬编码 page=1）
+            for obs in observations:
+                obs.page = target_page
+            for r in regions:
+                r.page = target_page
+
+            # 页面信息（图片总是单页）
             page_count, page_dimensions = self._get_page_info(
-                downstream_context, observations, is_pdf
+                downstream_context, observations, is_pdf_file=False, page_num=target_page
             )
 
-            # DocumentIR 里保留原始 file_path（用户视角的文档身份）
             return self.builder.build(
                 observations=observations,
-                semantic_regions=semantic_regions,
-                pymupdf_tables=pymupdf_tables,
+                semantic_regions=regions,
+                pymupdf_tables=[],
                 page_count=page_count,
                 page_dimensions=page_dimensions,
                 file_path=str(context.file_path),
-                pymupdf_enabled=is_pdf,
+                pymupdf_enabled=False,
             )
         finally:
-            # 清理临时文件
             if temp_path is not None:
                 try:
                     if temp_path.exists():
                         os.unlink(str(temp_path))
-                        logger.info(f"Cleaned up temp deskewed image: {temp_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to cleanup temp file {temp_path}: {e}")
+                    logger.warning(f"Failed to cleanup temp file: {e}")
 
     # ------------------------------------------------------------------
+    # Native 判定
+    # ------------------------------------------------------------------
 
-    def _get_docling_parser(self, is_pdf: bool) -> DoclingRegionParser:
+    def _detect_native_pdf(
+        self,
+        pdf_path: Path,
+        page_num: Optional[int],
+    ) -> bool:
+        """逐页(或指定页)判定 PDF 是否 native"""
+        try:
+            import fitz
+            doc = fitz.open(pdf_path)
+            try:
+                total_pages = len(doc)
+                if page_num is not None:
+                    if page_num < 1 or page_num > total_pages:
+                        return True
+                    pages_to_check = [page_num - 1]
+                else:
+                    pages_to_check = list(range(total_pages))
+
+                total_text = 0
+                total_image_area = 0.0
+                total_page_area = 0.0
+
+                for idx in pages_to_check:
+                    page = doc[idx]
+                    text = page.get_text("text").strip()
+                    total_text += len(text)
+
+                    page_area = page.rect.width * page.rect.height
+                    total_page_area += page_area
+
+                    for img in page.get_images(full=True):
+                        try:
+                            rects = page.get_image_rects(img[0])
+                            for r in rects:
+                                total_image_area += r.width * r.height
+                        except Exception:
+                            continue
+
+                avg_text = total_text / max(1, len(pages_to_check))
+                avg_coverage = total_image_area / max(1.0, total_page_area)
+
+                is_native = (avg_text > 100) and (avg_coverage < 0.5)
+                logger.info(
+                    f"[Pipeline] native detection: avg_text={avg_text:.0f} chars, "
+                    f"avg_image_coverage={avg_coverage:.2f} → native={is_native}"
+                )
+                return is_native
+            finally:
+                doc.close()
+        except Exception as e:
+            logger.warning(f"Native detection failed: {e}, defaulting to native=True")
+            return True
+
+    # ------------------------------------------------------------------
+    # PDF 页渲染
+    # ------------------------------------------------------------------
+
+    def _render_pdf_page(self, pdf_path: Path, page_num: int) -> Path:
+        """把 PDF 指定页渲染成临时 PNG"""
+        import fitz
+
+        doc = fitz.open(pdf_path)
+        try:
+            if page_num < 1 or page_num > len(doc):
+                raise ValueError(f"page_num {page_num} out of range [1, {len(doc)}]")
+
+            page = doc[page_num - 1]
+            zoom = self.pdf_render_dpi / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+
+            fd, tmp_str = tempfile.mkstemp(
+                suffix=".png", prefix=f"pdf_page{page_num}_"
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_str)
+            pix.save(str(tmp_path))
+
+            logger.info(f"[Pipeline] Rendered PDF page {page_num} → {tmp_path}")
+            return tmp_path
+        finally:
+            doc.close()
+
+    # ------------------------------------------------------------------
+    # Docling parser 缓存
+    # ------------------------------------------------------------------
+
+    def _get_docling_parser(self, do_ocr: bool) -> DoclingRegionParser:
+        """按 do_ocr 缓存 Docling parser 实例"""
         if self.docling_do_ocr_override is not None:
             do_ocr = self.docling_do_ocr_override
-        elif is_pdf:
-            do_ocr = self.force_ocr_for_pdf
-        else:
-            do_ocr = True
 
         if do_ocr not in self._docling_parsers:
-            logger.info(f"Creating DoclingRegionParser with do_ocr={do_ocr}")
+            logger.info(f"[Pipeline] Creating DoclingRegionParser(do_ocr={do_ocr})")
             self._docling_parsers[do_ocr] = DoclingRegionParser(do_ocr=do_ocr)
         return self._docling_parsers[do_ocr]
-
-    # ------------------------------------------------------------------
-
-    def _run_parallel(
-        self,
-        context: DocumentContext,
-        is_pdf: bool,
-        is_image: bool,
-    ) -> Dict[str, list]:
-        results: Dict[str, list] = {
-            "observations": [],
-            "regions": [],
-            "tables": [],
-        }
-
-        docling_parser = self._get_docling_parser(is_pdf)
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {}
-
-            if is_pdf:
-                futures[executor.submit(self.pdf_extractor.extract, context)] = "observations"
-            elif is_image:
-                futures[executor.submit(self.image_extractor.extract, context)] = "observations"
-
-            futures[executor.submit(docling_parser.parse, context)] = "regions"
-
-            if is_pdf:
-                futures[executor.submit(self.pymupdf_table_detector.detect, context)] = "tables"
-
-            for future in as_completed(futures):
-                key = futures[future]
-                try:
-                    results[key] = future.result()
-                except Exception as e:
-                    logger.exception(f"Pipeline task '{key}' failed: {e}")
-                    results[key] = []
-
-        return results
 
     # ------------------------------------------------------------------
 
@@ -188,40 +390,48 @@ class PerceptionPipeline:
         self,
         context: DocumentContext,
         observations: List[ObservationIR],
-        is_pdf: bool,
+        is_pdf_file: bool,
+        page_num: Optional[int] = None,
     ) -> Tuple[int, List[Dict[str, int]]]:
-        page_count = 1
-        page_dimensions: List[Dict[str, int]] = []
-
-        if is_pdf:
+        """
+        Returns:
+            (page_count, page_dimensions)
+              - page_num=None: 返回 (total_pages, [所有页尺寸])
+              - page_num=int:  返回 (total_pages, [目标页尺寸])  (单页模式)
+        """
+        if is_pdf_file:
             try:
                 import fitz
                 doc = fitz.open(context.file_path)
-                page_count = len(doc)
-                for page in doc:
-                    page_dimensions.append({
-                        "width": int(round(page.rect.width)),
-                        "height": int(round(page.rect.height)),
-                    })
-                doc.close()
-                return page_count, page_dimensions
-            except Exception as e:
-                logger.warning(f"Failed to read PDF page dimensions: {e}")
+                try:
+                    all_dims = [
+                        {
+                            "width": int(round(p.rect.width)),
+                            "height": int(round(p.rect.height)),
+                        }
+                        for p in doc
+                    ]
+                finally:
+                    doc.close()
 
+                total_pages = len(all_dims)
+
+                if page_num is not None:
+                    if 1 <= page_num <= total_pages:
+                        return total_pages, [all_dims[page_num - 1]]
+                    return total_pages, [{"width": 0, "height": 0}]
+                return total_pages, all_dims
+            except Exception as e:
+                logger.warning(f"Failed to read PDF page dims: {e}")
+
+        # Image 或 fallback：单页
         if observations:
-            page_count = max((o.page for o in observations), default=1)
             max_x = max((o.bbox.x1 for o in observations), default=0.0)
             max_y = max((o.bbox.y1 for o in observations), default=0.0)
             if max_x > 0 and max_y > 0:
-                page_dimensions = [{
-                    "width": int(round(max_x)),
-                    "height": int(round(max_y)),
-                }]
+                return 1, [{"width": int(round(max_x)), "height": int(round(max_y))}]
 
-        if not page_dimensions:
-            page_dimensions = [{"width": 0, "height": 0}]
-
-        return page_count, page_dimensions
+        return 1, [{"width": 0, "height": 0}]
 
     # ------------------------------------------------------------------
 

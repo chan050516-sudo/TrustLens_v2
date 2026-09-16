@@ -28,19 +28,20 @@ class PdfObservationExtractor:
         self.min_font_size = min_font_size
         self.max_font_size = max_font_size
 
-    def extract(self, context: DocumentContext) -> List[ObservationIR]:
+    def extract(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int] = None,
+    ) -> List[ObservationIR]:
         """
         从 DocumentContext 中提取 Observation IR
 
         Args:
-            context: 文档上下文（必须包含 file_path）
+            context: 文档上下文
+            page_num: None=处理所有页；int=只处理指定页 (从1开始)
 
         Returns:
-            List[ObservationIR]: 观察层数据列表
-
-        Raises:
-            PDFParseError: PDF 解析失败
-            ExtractionError: 其他提取错误
+            List[ObservationIR]
         """
         file_path = context.file_path
         if not file_path.exists():
@@ -54,18 +55,35 @@ class PdfObservationExtractor:
             raise PDFParseError(f"Failed to open PDF with PyMuPDF: {e}") from e
 
         try:
-            for page_num in range(len(doc)):
-                page = doc[page_num]
+            total_pages = len(doc)
+
+            # ★ 决定处理哪些页
+            if page_num is None:
+                pages_to_process = list(range(total_pages))
+            else:
+                if page_num < 1 or page_num > total_pages:
+                    logger.warning(
+                        f"page_num {page_num} out of range [1, {total_pages}], "
+                        f"returning empty observations"
+                    )
+                    return []
+                pages_to_process = [page_num - 1]
+
+            for page_idx in pages_to_process:
+                page = doc[page_idx]
                 page_rect = page.rect
                 page_obs = self._extract_from_page(
                     page,
-                    page_num=page_num + 1,
+                    page_num=page_idx + 1,
                     page_width=page_rect.width,
-                    page_height=page_rect.height
+                    page_height=page_rect.height,
                 )
                 observations.extend(page_obs)
 
-            logger.info(f"Extracted {len(observations)} observations from PDF: {file_path.name}")
+            logger.info(
+                f"Extracted {len(observations)} observations from PDF "
+                f"{file_path.name} (page_num={page_num}, processed {len(pages_to_process)} pages)"
+            )
             return observations
 
         except Exception as e:

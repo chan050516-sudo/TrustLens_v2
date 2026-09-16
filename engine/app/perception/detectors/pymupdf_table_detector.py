@@ -19,7 +19,18 @@ class PyMuPDFTableDetector:
     仅输出区域和网格 bbox，不提取文本（文本由 Observation IR 认领）。
     """
 
-    def detect(self, context: DocumentContext) -> List[TableRegion]:
+    def detect(
+        self,
+        context: DocumentContext,
+        page_num: Optional[int] = None,
+    ) -> List[TableRegion]:
+        """
+        检测表格
+
+        Args:
+            context: 文档上下文
+            page_num: None=所有页；int=指定页 (从1开始)
+        """
         file_path = context.file_path
         if not file_path.exists():
             raise ExtractionError(f"File not found: {file_path}")
@@ -32,16 +43,27 @@ class PyMuPDFTableDetector:
 
         regions: List[TableRegion] = []
         try:
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                regions.extend(self._detect_from_page(page, page_num + 1))
+            total_pages = len(doc)
+
+            if page_num is None:
+                pages_to_process = list(range(total_pages))
+            else:
+                if page_num < 1 or page_num > total_pages:
+                    logger.warning(f"page_num {page_num} out of range [1, {total_pages}]")
+                    return []
+                pages_to_process = [page_num - 1]
+
+            for page_idx in pages_to_process:
+                page = doc[page_idx]
+                regions.extend(self._detect_from_page(page, page_idx + 1))
         except Exception as e:
             logger.exception(f"PyMuPDF table detection error: {e}")
         finally:
             doc.close()
 
         logger.info(
-            f"PyMuPDF detected {len(regions)} table regions from {file_path.name}"
+            f"PyMuPDF detected {len(regions)} table regions from "
+            f"{file_path.name} (page_num={page_num})"
         )
         return regions
 

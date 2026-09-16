@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 from app.core.document_ir import DocumentContext
 from app.perception.models.bbox import BBox
@@ -160,7 +160,22 @@ class DoclingRegionParser:
 
     # ------------------------------------------------------------------
 
-    def parse(self, context: DocumentContext) -> List[SemanticRegion]:
+    def parse(
+        self,
+        context: DocumentContext,
+        page_range: Optional[Tuple[int, int]] = None,
+    ) -> List[SemanticRegion]:
+        """
+        解析文档的语义区域
+
+        Args:
+            context: 文档上下文
+            page_range: 可选的 (start_page, end_page)，仅处理指定页范围 (1-indexed)
+                        若 Docling 版本不支持，会退化为处理整文档
+
+        Returns:
+            List[SemanticRegion]
+        """
         file_path = context.file_path
         if not file_path.exists():
             raise ExtractionError(f"File not found: {file_path}")
@@ -168,7 +183,23 @@ class DoclingRegionParser:
         converter = self._get_converter()
 
         try:
-            result = converter.convert(str(file_path))
+            # ★ 尝试带 page_range 调用
+            if page_range is not None:
+                try:
+                    result = converter.convert(
+                        str(file_path), page_range=page_range
+                    )
+                    logger.debug(f"Docling convert with page_range={page_range}")
+                except TypeError:
+                    # 旧版本 Docling 不支持 page_range
+                    logger.warning(
+                        "Docling version doesn't support page_range, "
+                        "processing full document"
+                    )
+                    result = converter.convert(str(file_path))
+            else:
+                result = converter.convert(str(file_path))
+
             doc = result.document
         except Exception as e:
             logger.exception(f"Docling conversion failed: {e}")
@@ -184,7 +215,6 @@ class DoclingRegionParser:
             logger.exception(f"Docling item iteration failed: {e}")
             raise ExtractionError(f"Docling item iteration failed: {e}") from e
 
-        # ★ 标记祖先容器（不删除，只设置 is_container / container_group_id）
         if self.mark_parent_containers:
             self._mark_parent_containers(regions)
 
@@ -193,7 +223,7 @@ class DoclingRegionParser:
         logger.info(
             f"Docling extracted {len(regions)} semantic regions "
             f"({n_with_text} with text, {n_containers} containers) "
-            f"from {file_path.name} (do_ocr={self.do_ocr})"
+            f"from {file_path.name} (do_ocr={self.do_ocr}, page_range={page_range})"
         )
         return regions
 
