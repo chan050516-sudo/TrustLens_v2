@@ -1,0 +1,1446 @@
+# TrustLens v2 Perception 模块 Context 总结
+
+## 1. 模块定位
+
+`app.perception` 是文档感知层，目标是把不同来源的文档输入统一转换为 `DocumentIR`：
+
+- **输入**：原生 PDF、扫描 PDF、图片。
+- **中间事实**：`ObservationIR`，表示页面上物理存在的“一行文本 + bbox”。
+- **语义提示**：`SemanticRegion`，由 Docling 提供区域类型、bbox、辅助文本、阅读顺序。
+- **表格提示**：`TableRegion`，由 PyMuPDF 提供精确网格，或由 Docling 提供只有 bbox 的表格区域。
+- **输出**：`DocumentIR`，包含：
+  - `observations`：物理事实层；
+  - `elements`：按阅读顺序排列的结构层；
+  - `conflicts`：冲突与异常记录；
+  - `metadata`：统计信息。
+
+核心设计原则：
+
+1. **Observation 是权威文本来源**，Docling 文本只做辅助与交叉验证。
+2. **表格重建优先使用 PyMuPDF 网格**，无网格时用扫描线投影重建。
+3. **语义区域与物理观察分离**，通过 `observation_ids` 引用，避免对象嵌套膨胀。
+4. **多页 PDF 分 native / non-native 调度**：native 主进程串行，non-native 进程池并行。
+5. **容器大框不删除**，只标记 `is_container`，残余 observation 按 Y 轴切分成 fragment。
+
+---
+
+## 2. 目录与模块职责
+
+```text
+app/perception/
+  __init__.py
+  pipeline.py
+  exceptions.py
+
+  models/
+    bbox.py
+    observation_ir.py
+    semantic_region.py
+    table_region.py
+    document_ir.py
+
+  preprocessors/
+    image_preprocessor.py
+
+  extractors/
+    pdf_observation_extractor.py
+    image_observation_extractor.py
+    docling_region_parser.py
+
+  detectors/
+    pymupdf_table_detector.py
+
+  builders/
+    region_assigner.py
+    table_reconstructor.py
+    document_ir_builder.py
+
+  utils/
+    geometry.py
+    ocr_singleton.py
+
+  orchestration/
+    multi_page_pdf_orchestrator.py
+```
+
+主要职责：
+
+| 模块 | 职责 |
+|---|---|
+| `PerceptionPipeline` | 顶层入口，按图片 / native PDF / non-native PDF 分派 |
+| `MultiPagePdfOrchestrator` | 多页 PDF 逐页探测、混合调度、合并 DocumentIR |
+| `PdfObservationExtractor` | PyMuPDF 提取原生 PDF 文本行 |
+| `ImageObservationExtractor` | RapidOCR 提取图片文本，cv2 贴合 bbox |
+| `DoclingRegionParser` | Docling 提取语义区域、容器标记、阅读顺序 |
+| `PyMuPDFTableDetector` | PyMuPDF `find_tables()` 提取表格网格 |
+| `ImagePreprocessor` | 图片 deskew，共享 RapidOCR 单例 |
+| `RegionAssigner` | 非表格区域认领 observation |
+| `TableReconstructor` | 表格重建，网格分配或扫描线切分 |
+| `DocumentIRBuilder` | 融合 observation、region、table，生成 DocumentIR |
+| `utils.geometry` | IoU、中心点包含、gap 扫描 |
+| `utils.ocr_singleton` | RapidOCR 全局单例 |
+
+---
+
+## 3. 核心数据模型
+
+### 3.1 `BBox`
+
+轴对齐边界框，原点为页面左上角。
+
+字段：`x0, y0, x1, y1`
+
+属性：`width, height, area, center_x, center_y`
+
+方法：
+
+- `intersects(other)`
+- `contains(other)`
+- `overlap_ratio(other)`：交集 / 自身面积
+- `intersection_over(other)`：交集 / other 面积，用于判断“other 是否几乎被 self 覆盖”
+- `to_tuple()` / `from_tuple()`
+
+### 3.2 `ObservationIR`
+
+物理事实层，一行文本。
+
+字段：
+
+- `page`
+- `text`
+- `bbox`
+- `source`：`pymupdf | pdfplumber | rapidocr | paddleocr`
+- `confidence`
+- `char_bboxes`
+- `font / font_size / color / flags`
+
+### 3.3 `SemanticRegion`
+
+Docling 等工具输出的语义区域提示。
+
+字段：
+
+- `page`
+- `bbox`
+- `type`：粗粒度语义类型
+- `docling_label`：原始细粒度标签
+- `docling_text`：Docling 辅助文本，不进入最终权威文本
+- `source`
+- `confidence`
+- `raw_meta`
+- `is_container`
+- `container_group_id`
+- `reading_order_index`
+
+`SemanticRegionType` 包括：
+
+- 结构块：`table, picture, chart`
+- 文本块：`paragraph, title, list, caption, footnote, reference, code, formula, index`
+- 页面级：`header, footer`
+- 表单：`form_field, checkbox, empty_value`
+- 特殊：`handwritten, gradient_text, marker`
+
+### 3.4 `TableRegion` / `GridCell`
+
+`GridCell`：`row, col, bbox`
+
+`TableRegion`：
+
+- `page`
+- `bbox`
+- `rows / cols`
+- `cells`
+- `source`：`pymupdf | docling`
+- `has_grid`
+- `docling_label`
+- `reading_order_index`
+
+PyMuPDF 来源有网格；Docling 来源通常无网格。
+
+### 3.5 `DocumentIR`
+
+最终输出。
+
+字段：
+
+- `file_path`
+- `page_count`
+- `page_dimensions`
+- `observations: List[ObservationIR]`
+- `elements: List[DocumentElement]`
+- `conflicts: List[Dict]`
+- `metadata: Dict`
+
+### 3.6 `DocumentElement`
+
+结构层元素。
+
+字段：
+
+- `reading_order_index`
+- `page`
+- `bbox`
+- `element_type`
+- `docling_label`
+- `docling_text`
+- `source`：`docling | fallback_orphan`
+- `text`
+- `table`
+- `observation_ids`
+- `is_container_fragment`
+- `container_group_id`
+- `local_conflicts`
+
+`element_type` 可为 `SemanticRegionType` 之一，或 `orphan_paragraph`。
+
+### 3.7 `Table` / `TableCell`
+
+`TableCell`：
+
+- `row, col`
+- `text`
+- `bbox`
+- `rowspan, colspan`
+- `observation_ids`
+
+`Table`：
+
+- `page`
+- `bbox`
+- `rows, cols`
+- `cells`
+
+旧模型 `TextBlock`、`Picture` 保留兼容，新代码不再使用。
+
+---
+
+## 4. 顶层流水线：`PerceptionPipeline`
+
+`PerceptionPipeline` 是 perception 层顶层入口。
+
+构造参数：
+
+- `max_workers=4`
+- `docling_do_ocr=None`
+- `force_ocr_for_pdf=False`
+- `deskew_min_angle=0.2`
+- `pdf_render_dpi=200`
+
+内部组件：
+
+- `PdfObservationExtractor`
+- `ImageObservationExtractor`
+- `ImagePreprocessor`
+- `PyMuPDFTableDetector`
+- `DocumentIRBuilder`
+- 按 `do_ocr` 缓存的 `DoclingRegionParser`
+
+入口：
+
+```python
+run(context, page_num=None, is_native_pdf=None) -> DocumentIR
+```
+
+流程：
+
+1. 解析 MIME。
+2. 图片文件 → `_run_image_path()`。
+3. PDF：
+   - 若 `is_native_pdf is None`，调用 `_detect_native_pdf()`。
+   - native → `_run_native_pdf_path()`。
+   - non-native → `_run_non_native_pdf_path()`。
+
+### 4.1 Native PDF 路径
+
+组件并行：
+
+- `PdfObservationExtractor.extract`
+- `PyMuPDFTableDetector.detect`
+- `DoclingRegionParser.parse(do_ocr=False)`
+
+若指定 `page_num`，给 Docling 传 `page_range=(page_num, page_num)`，并在结果中过滤页。
+
+最后调用：
+
+```python
+builder.build(
+  observations=...,
+  semantic_regions=...,
+  pymupdf_tables=...,
+  page_count=...,
+  page_dimensions=...,
+  file_path=...,
+  pymupdf_enabled=True,
+)
+```
+
+### 4.2 Non-native PDF 路径
+
+要求必须指定 `page_num`，否则抛错。
+
+流程：
+
+1. 用 PyMuPDF 把指定页渲染成临时 PNG，DPI 由 `pdf_render_dpi` 控制。
+2. 构造临时 `DocumentContext`，MIME 为 `image/png`。
+3. 走 `_run_image_path()`。
+4. `finally` 清理临时 PNG。
+
+### 4.3 Image 路径
+
+流程：
+
+1. `ImagePreprocessor.preprocess()` 做 deskew。
+2. 若产生临时图，替换 `context.file_path`。
+3. 并行：
+   - `ImageObservationExtractor.extract`
+   - `DoclingRegionParser.parse(do_ocr=True)`
+4. 强制把 `obs.page` 和 `region.page` 覆盖为 `target_page`。
+5. 调用 `builder.build(..., pymupdf_tables=[], pymupdf_enabled=False)`。
+6. `finally` 清理 deskew 临时文件。
+
+### 4.4 Native 判定
+
+`_detect_native_pdf()`：
+
+- 计算平均文本字符数。
+- 计算平均图片覆盖率。
+- 判定条件：
+  - `avg_text > 100`
+  - `avg_coverage < 0.5`
+
+### 4.5 页面尺寸
+
+`_get_page_info()`：
+
+- PDF：PyMuPDF 读取所有页尺寸；单页模式只返回目标页尺寸。
+- 图片：根据 observation 的最大 `x1/y1` 估算单页尺寸。
+
+---
+
+## 5. 多页编排：`MultiPagePdfOrchestrator`
+
+用于整本 PDF 处理。
+
+构造参数：
+
+- `non_native_workers=4`
+- `dpi=200`
+- `native_text_threshold=100`
+- `native_coverage_threshold=0.5`
+
+`PageProfile`：
+
+- `page_num`
+- `is_native`
+- `text_chars`
+- `image_coverage`
+
+流程：
+
+1. `_probe_pdf_pages()` 逐页探测 native。
+2. 分场景：
+   - 混合页：native 主线程处理，non-native 子线程 + ProcessPool。
+   - 全 native：主进程串行。
+   - 全 non-native：ProcessPool。
+3. `_merge_document_irs()` 合并。
+
+关键设计：
+
+- Native 页不 worker 化，复用同一个 `PerceptionPipeline(docling_do_ocr=False)`。
+- Non-native 页 ProcessPool 并行，每个 worker 独立加载 `PerceptionPipeline(docling_do_ocr=True)`。
+- Worker 全局变量：`_non_native_pipeline`、`_worker_dpi`。
+
+合并时：
+
+- 按页排序。
+- `observations` 直接拼接。
+- `elements` 的 `page` 对齐。
+- `element.observation_ids` 加 offset。
+- `table.cells[].observation_ids` 也加 offset。
+- `conflicts` 覆盖 page。
+- 最终按 `(page, bbox.y0, bbox.x0)` 重排 `reading_order_index`。
+
+注意：最终合并阶段会按页和几何位置重新分配全局阅读顺序，可能覆盖页内 Docling 顺序。
+
+---
+
+## 6. 提取器细节
+
+### 6.1 `PdfObservationExtractor`
+
+使用 PyMuPDF `page.get_text("dict")`。
+
+处理：
+
+- 遍历 `blocks -> lines -> spans`。
+- 过滤空文本。
+- 过滤白色 / 近似白色文本：`color_int >= 0xEFEFEF`。
+- 过滤异常字号：默认 `min_font_size=1.0`，`max_font_size=500.0`。
+- 过滤明显超出页面边界的坐标。
+- 已移除 `flags` 过滤，避免误删斜体文本。
+- 合并行 bbox 与文本。
+- 输出 `ObservationIR(source="pymupdf", confidence=1.0)`。
+
+### 6.2 `ImageObservationExtractor`
+
+使用共享 RapidOCR。
+
+流程：
+
+1. 加载图片，cv2 优先，PIL fallback。
+2. 调用 `get_shared_rapidocr()`。
+3. OCR 结果格式：`poly, text, confidence`。
+4. 过滤空文本、过长/过短文本。
+5. 原始 bbox 由 poly 的 min/max 得到。
+6. 可选 `_refine_bbox_with_ink()`：
+   - 灰度化；
+   - 背景减除；
+   - 二值化；
+   - Y/X 投影；
+   - 贴合墨迹 bbox。
+7. 输出 `ObservationIR(source="rapidocr")`。
+
+Deskew 已上移到 `ImagePreprocessor`，本类不处理旋转。
+
+### 6.3 `DoclingRegionParser`
+
+职责：
+
+- 输出语义区域类型 + bbox；
+- 附带 Docling 文本；
+- 标记祖先容器；
+- 记录 Docling 阅读顺序。
+
+构造参数：
+
+- `do_ocr=False`
+- `use_rapid_ocr=True`
+- `mark_parent_containers=True`
+- `parent_min_children=2`
+
+`_get_converter()`：
+
+- 延迟创建 `DocumentConverter`。
+- 配置 `PdfPipelineOptions`。
+- 关闭：
+  - `do_table_structure`
+  - `do_picture_classification`
+  - `do_picture_description`
+  - `do_code_enrichment`
+  - `do_formula_enrichment`
+  - `generate_page_images`
+  - `generate_picture_images`
+- 若 `do_ocr=True` 且 `use_rapid_ocr=True`，使用 `RapidOcrOptions`。
+
+`parse()`：
+
+- 尝试 `converter.convert(file_path, page_range=...)`。
+- 旧版不支持则整文档转换，之后由 Pipeline 过滤页。
+- `doc.iterate_items()` 生成 `SemanticRegion`，`reading_order_index` 为枚举顺序。
+
+`_item_to_region()`：
+
+- 从 `prov` 获取页码。
+- `_extract_bbox()` 用 `bbox.to_top_left_origin(page_height)` 转左上原点。
+- 多 prov 合并 min/max。
+- `_classify_item()`：
+  - `TableItem -> table`
+  - `PictureItem -> chart / picture`
+  - `TextItem -> LABEL_TO_TYPE 映射，默认 paragraph`
+
+`_mark_parent_containers()`：
+
+- 用 `intersection_over > 0.95` 判断包含。
+- 找平行子节点，数量 >= `parent_min_children` 则标记容器。
+- 设置 `is_container=True` 和 `container_group_id`。
+- 不删除任何 region。
+
+`_SUPPRESSIBLE_TYPES` 定义可被容器标记处理的类型。
+
+### 6.4 `PyMuPDFTableDetector`
+
+使用 `page.find_tables()`。
+
+输出：
+
+- `TableRegion`
+- 总 bbox
+- `GridCell` 列表
+- `source="pymupdf"`
+- `has_grid=bool(cells)`
+- 不提取文本，文本由 observation 认领。
+
+支持 `page_num=None` 所有页，或指定页。
+
+---
+
+## 7. 构建与融合细节
+
+### 7.1 `RegionAssigner`
+
+非表格区域认领 observation。
+
+策略：
+
+- 小区域优先：按 `bbox.area` 升序。
+- 匹配规则：
+  - observation 中心点在 region 内；
+  - 或 IoU >= `iou_threshold`，默认 0.3。
+- 一个 observation 只能被一个 region 认领。
+
+返回：
+
+```python
+(region_idx -> [obs_idx], unassigned_obs_idx)
+```
+
+### 7.2 `TableReconstructor`
+
+构造参数：
+
+- `cell_iou_threshold=0.1`
+- `gap_ratio=0.02`
+
+入口：
+
+```python
+reconstruct(region, observations, obs_indices=None) -> Table
+```
+
+先过滤在表格内的 observation：中心在表格内或 IoU > 0.3。
+
+两种路径：
+
+#### 有网格路径
+
+- 对每个 observation 找最佳 IoU 的 `GridCell`。
+- IoU >= `cell_iou_threshold` 则放入桶。
+- 每个 cell 内 observation 按 `(center_y, center_x)` 排序。
+- 拼接文本，回填 `observation_ids`。
+
+#### 无网格路径：`_assign_with_scan`
+
+复杂扫描线算法：
+
+1. **Y 轴行聚类**
+   - 按 `center_y` 排序。
+   - `y_tolerance = max(3.0, avg_height * 0.4)`。
+   - 中心接近或垂直重叠 >= 0.4 归为同一行。
+   - 生成 `row_edges`。
+
+2. **X 轴列分割**
+   - 分行局部 gap 探测。
+   - 扫描线计算 `depth(x)`。
+   - 合并相邻同深度段。
+   - 找波峰段。
+   - `min_depth`：`num_rows > 3` 时为 `max(2, int(num_rows * 0.25))`，否则 1。
+   - 近邻波峰合并，`min_col_width = max(avg_char_w * 3, table_bbox.width * 0.02)`。
+   - 取中点作为列割线，生成 `col_edges`。
+
+3. **区间感知词距反向验证与拆词**
+   - 对跨越列割线的 observation，估算字符宽度。
+   - 在 margin 区间内找空格。
+   - 拆成左右 observation，保留原 `orig_idx`。
+
+4. **虚拟网格构建与 colspan 分配**
+   - 按 Y 重叠选最佳行。
+   - 按首字符中心、末字符中心确定起止列。
+   - 计算 `colspan`。
+
+5. **生成最终 TableCell**
+   - 合并同一 cell 的 observation。
+   - 文本拼接，`colspan` 取最大，`rowspan=1`。
+   - 回填 `observation_ids`。
+
+设计原则：宁可把 merged cell 拆成多个格子，也不遗漏 bbox。
+
+### 7.3 `DocumentIRBuilder`
+
+纯函数构建器，不做 I/O。
+
+构造参数：
+
+- `table_merge_iou_threshold=0.5`
+- `region_iou_threshold=0.3`
+- `text_similarity_threshold=0.7`
+- `container_fragment_gap_ratio=0.5`
+- `orphan_y_gap_ratio=0.8`
+
+`build()` 流程：
+
+1. **分离表格区域与非表格区域**
+   - `type == "table"` 为 Docling 表格。
+   - 其他为普通区域。
+
+2. **抑制被表格覆盖的冗余 region**
+   - 若某 region 被任意 table bbox 覆盖超过 95%，丢弃。
+   - 原因：Docling 关闭 `do_table_structure` 后，会把 cell 降级为 paragraph region。
+
+3. **合并表格区域**
+   - PyMuPDF 与 Docling 表格按 IoU >= 0.5 合并。
+   - 两者都识别：保留 PyMuPDF 网格，继承 Docling 的 `reading_order_index` 和 `docling_label`。
+   - PyMuPDF 独有：直接保留。
+   - Docling 独有：生成 `TableRegion(source="docling", has_grid=False)`。
+   - 冲突：
+     - `pymupdf_missed_table` 仅在 `pymupdf_enabled=True` 时记录。
+     - `docling_missed_table` 不再记录，只记 metadata 计数。
+
+4. **重建表格**
+   - 对每个合并表格，取中心在表格 bbox 内的 observation。
+   - 调用 `TableReconstructor.reconstruct()`。
+   - 标记已消费 observation 索引。
+
+5. **非表格区域认领**
+   - 剩余 observation 交给 `RegionAssigner.assign()`。
+
+6. **构建 DocumentElement 流**
+   - 表格元素：`element_type="table"`，`observation_ids` 来自 cell。
+   - 非表格 region：
+     - 容器 region：残余 observation 按 Y 切分 fragment，生成 `is_container_fragment=True` 的元素。
+     - 普通 region：含 picture/chart；文本拼接；空文本且非 picture/chart 则跳过。
+     - 文本类 region 会与 `docling_text` 做相似度检查，低于阈值记录 `docling_text_mismatch` 到 `local_conflicts`。
+   - 孤立 observation：`_build_orphan_elements()` 按同页 + Y 邻近合并成 `orphan_paragraph`，`source="fallback_orphan"`。
+
+7. **排序与重分配阅读顺序**
+   - 有 order 的元素按 `(order, page, y0, x0)`。
+   - 孤儿元素按 `(page, y0, x0)` 几何插入。
+   - 最终重分配 `reading_order_index`。
+
+8. **记录 conflicts**
+   - `unassigned_observation`
+   - `docling_text_but_no_obs`
+   - `empty_region`
+
+9. **组装 DocumentIR**
+   - 写入 metadata 统计。
+
+关键 metadata：
+
+- `observation_count`
+- `element_count`
+- `semantic_region_count`
+- `semantic_region_with_text_count`
+- `container_region_count`
+- `pymupdf_table_count`
+- `docling_table_count`
+- `merged_table_count`
+- `table_element_count`
+- `suppressed_region_inside_table`
+- `container_fragment_count`
+- `orphan_element_count`
+- `table_merged_both`
+- `table_pymupdf_only`
+- `table_docling_only`
+
+---
+
+## 8. 工具与异常
+
+### 8.1 `utils.geometry`
+
+- `iou(a, b)`
+- `bbox_center_in(inner, outer)`
+- `find_gaps(intervals, min_gap)`
+- `edges_from_gaps(min_edge, max_edge, gaps)`
+
+### 8.2 `utils.ocr_singleton`
+
+- `get_shared_rapidocr()`：线程安全，延迟加载 RapidOCR。
+- `is_loaded()`
+- `reset()`
+
+目的：`ImagePreprocessor` 和 `ImageObservationExtractor` 共用同一个 RapidOCR，避免重复加载模型。
+
+### 8.3 异常
+
+```python
+PerceptionError
+  ExtractionError
+    PDFParseError
+```
+
+---
+
+## 9. 关键默认参数速查
+
+| 组件 | 参数 | 默认值 |
+|---|---|---|
+| `DocumentIRBuilder` | `table_merge_iou_threshold` | 0.5 |
+| | `region_iou_threshold` | 0.3 |
+| | `text_similarity_threshold` | 0.7 |
+| | `container_fragment_gap_ratio` | 0.5 |
+| | `orphan_y_gap_ratio` | 0.8 |
+| `RegionAssigner` | `iou_threshold` | 0.3 |
+| `TableReconstructor` | `cell_iou_threshold` | 0.1 |
+| | `gap_ratio` | 0.02 |
+| `PerceptionPipeline` | `max_workers` | 4 |
+| | `pdf_render_dpi` | 200 |
+| | `deskew_min_angle` | 0.2 |
+| `MultiPagePdfOrchestrator` | `non_native_workers` | 4 |
+| | `dpi` | 200 |
+| | `native_text_threshold` | 100 |
+| | `native_coverage_threshold` | 0.5 |
+| `DoclingRegionParser` | `do_ocr` | False |
+| | `use_rapid_ocr` | True |
+| | `mark_parent_containers` | True |
+| | `parent_min_children` | 2 |
+| `ImagePreprocessor` | `deskew_min_angle` | 0.2 |
+| | `deskew_max_angle` | 15.0 |
+| | `min_text_length` | 4 |
+| `PdfObservationExtractor` | `min_font_size` | 1.0 |
+| | `max_font_size` | 500.0 |
+
+---
+
+## 10. 核心调用链
+
+### 图片输入
+
+```text
+PerceptionPipeline.run
+  -> _run_image_path
+    -> ImagePreprocessor.preprocess
+    -> ImageObservationExtractor.extract
+    -> DoclingRegionParser.parse(do_ocr=True)
+    -> DocumentIRBuilder.build
+```
+
+### Native PDF
+
+```text
+PerceptionPipeline.run
+  -> _detect_native_pdf
+  -> _run_native_pdf_path
+    -> PdfObservationExtractor.extract
+    -> PyMuPDFTableDetector.detect
+    -> DoclingRegionParser.parse(do_ocr=False)
+    -> DocumentIRBuilder.build(pymupdf_enabled=True)
+```
+
+### Non-native PDF
+
+```text
+MultiPagePdfOrchestrator.run
+  -> _probe_pdf_pages
+  -> _run_non_native_pool
+    -> ProcessPool worker
+      -> PerceptionPipeline.run(is_native_pdf=False, page_num=N)
+        -> _run_non_native_pdf_path
+          -> _render_pdf_page
+          -> _run_image_path
+            -> ImageObservationExtractor + DoclingRegionParser(do_ocr=True)
+            -> DocumentIRBuilder.build(pymupdf_enabled=False)
+  -> _merge_document_irs
+```
+
+---
+
+## 11. 设计决策与注意事项
+
+1. **Docling 只做语义提示**，最终文本以 Observation 为准。
+2. **PyMuPDF 表格检测不取文本**，只提供网格，文本由 Observation 认领。
+3. **表格合并采用方案 C**：PyMuPDF 网格 + Docling 阅读顺序/标签。
+4. **Docling 关闭 `do_table_structure`**，因此表格内 cell 可能降级为 paragraph region，Builder 会抑制被 table bbox 覆盖 95% 以上的 region。
+5. **图片路径不跑 PyMuPDF 表格检测**，所以 Docling 独有表格不记 `pymupdf_missed_table` conflict。
+6. **容器大框不删除**，只标记 `is_container`，残余 observation 按 Y 切分。
+7. **多页最终阅读顺序会按页和几何位置重排**，可能覆盖页内 Docling 顺序。
+8. **`observation_ids` 是全局索引**，多页合并时必须对 element 和 table cell 做 offset 重映射。
+9. **Non-native PDF 整文档处理必须走 Orchestrator**，不能直接 `PerceptionPipeline.run(page_num=None)`。
+10. **临时文件清理**：deskew 临时图、PDF 渲染临时图都在 `finally` 中清理。
+11. **RapidOCR 单例线程安全**，但在 ProcessPool 中每个子进程独立加载。
+12. **潜在风险点**：
+    - Native 判定阈值硬编码；
+    - Docling `page_range` 旧版本兼容性；
+    - 扫描线表格重建对空格和字符宽度估算敏感；
+    - 小区域优先认领可能抢 observation，但表格内 region 已被抑制；
+    - 多进程下 Docling 模型加载内存开销较大。
+
+---
+
+以上可作为 TrustLens v2 `perception` 模块的完整上下文摘要。核心一句话：**它把 PDF/图片通过 PyMuPDF、RapidOCR、Docling 三种能力提取为 Observation + SemanticRegion + TableRegion，再由 DocumentIRBuilder 融合成带阅读顺序、表格结构、冲突记录的 DocumentIR。**
+
+
+
+
+
+# TrustLens v2 Metadata Analysis 模块 Context 总结
+
+## 1. 模块定位
+
+`app.forensics.metadata` 是 TrustLens v2 的 **L1 元数据取证层**，目标是从文档中提取并分析：
+
+- 文件系统与 ExifTool 元数据；
+- PDF 结构、对象图、修订历史、加密信息；
+- 数字签名与证书；
+- 图片底层结构（JPEG/PNG）；
+- XMP 历史、软件来源、时间线；
+- 生成器指纹与文档类型风险。
+
+最终产出两类结果：
+
+1. **`List[Evidence]`**：统一证据对象，供下游 Risk Engine / LLM Detective 使用；
+2. **`ForensicContext`**：清洗后的高密度 LLM 上下文，遵循“四工具 Raw Metadata → LLM Context 清洗规范”。
+
+整个模块通过 `MetadataEngine` 编排，并被 `LangGraph` 取证图作为 `l1_metadata` 节点调用。整体取证图还包含 L2 视觉、L3 语义、L4 验证，但当前 L2 有真实实现，L3/L4 为占位。
+
+---
+
+## 2. 目录与职责
+
+```text
+app/forensics/metadata/
+  __init__.py
+  metadata_engine.py
+  exceptions.py
+  interfaces.py
+
+  collectors/
+    __init__.py
+    exiftool.py
+    qpdf.py
+
+  parsers/
+    __init__.py
+    pikepdf_parser.py
+    pymupdf_parser.py
+    signature_parser.py
+    image_structural_parser.py
+
+  analyzers/
+    __init__.py
+    xmp_analyzer.py
+    consistency_analyzer.py
+    fingerprint_analyzer.py
+    signature_analyzer.py
+
+  models/
+    __init__.py
+    metadata_ir.py
+    forensic_context.py
+
+  sanitization/
+    __init__.py
+    context_builder.py
+    timeline_builder.py
+    software_aggregator.py
+    annotation_deduplicator.py
+    layout_compressor.py
+
+  registry/
+    fingerprint_matcher.py
+    fingerprints.yaml
+
+app/core/
+  document_ir.py       # DocumentContext
+  evidence.py          # Evidence, EvidenceType
+
+app/orchestration/
+  runner.py
+  graph.py
+  nodes.py
+  state.py
+```
+
+职责概览：
+
+| 模块 | 职责 |
+|---|---|
+| `collectors` | 调用外部工具（exiftool、qpdf），只采集原始数据，不产证据 |
+| `parsers` | 深度解析文件结构，构建中间 IR（对象图、字体、签名、图片结构） |
+| `analyzers` | 基于 IR 跨源推理，产出 `Evidence` |
+| `models.metadata_ir` | 原始/中间数据模型（ExifToolMetadata、PDFStructureReport、ObjectGraph、MetadataContainer） |
+| `models.forensic_context` | 清洗后的 LLM 上下文模型（ForensicContext 及其子模型） |
+| `sanitization` | 将 MetadataContainer 清洗、聚合为 ForensicContext |
+| `registry` | Producer 指纹库与匹配逻辑 |
+| `metadata_engine` | 编排收集、解析、分析、上下文构建 |
+| `orchestration` | LangGraph 取证图、状态、节点、Runner |
+
+---
+
+## 3. 核心数据流
+
+### 3.1 MetadataEngine 主流程
+
+```text
+DocumentContext
+  -> MetadataEngine.analyze()
+     -> _run_parallel_tasks()
+        -> ExifToolCollector.collect()
+        -> QPDFCollector.collect()
+        -> PikepdfParser.parse()
+        -> PyMuPDFParser.parse()
+        -> SignatureParser.parse()
+        -> ImageStructuralParser.parse()
+     -> _assemble_container()
+        -> MetadataContainer
+     -> _run_analyzers()
+        -> XMPAnalyzer
+        -> ConsistencyAnalyzer
+        -> FingerprintAnalyzer
+        -> SignatureAnalyzer
+     -> _build_forensic_context()
+        -> ContextBuilder.build()
+        -> ForensicContext
+  -> 返回 (List[Evidence], Optional[ForensicContext])
+```
+
+### 3.2 LangGraph 取证图
+
+```text
+START
+  -> ingest
+  -> route_by_type
+  -> 并行：
+       l1_metadata   (MetadataEngine)
+       l2_visual     (VisualPreprocessor / VisualInferenceEngine / EvidenceExtractor)
+       l3_semantic   (占位)
+  -> l4_verification (占位)
+  -> build_evidence_graph (占位)
+  -> risk_engine (简单占位)
+  -> finalize
+  -> END
+```
+
+关键点：
+
+- `l1_metadata` 根据 MIME 类型选择 `ResolverSet.PDF` / `ResolverSet.IMAGE` / `ResolverSet.MINIMAL`。
+- L2 视觉分析已接入真实模型，产出 `visual_context` 存入 `ForensicState`。
+- L3/L4 当前为占位，但状态和节点已预留。
+
+---
+
+## 4. 核心数据模型
+
+### 4.1 `DocumentContext`
+
+位置：`app/core/document_ir.py`
+
+字段：
+
+- `file_path: Path`
+- `file_name: Optional[str]`
+- `file_size_bytes: Optional[int]`
+- `mime_type: Optional[str]`
+- `document_id: Optional[str]`
+- `raw_bytes: Optional[bytes]`
+- `custom_metadata: Dict[str, Any]`
+
+自动填充 `file_name` 和 `file_size_bytes`。
+
+### 4.2 `Evidence` / `EvidenceType`
+
+位置：`app/core/evidence.py`
+
+`EvidenceType` 覆盖 L1、L2、图片专用、通用观察等，例如：
+
+- L1：`METADATA_SOFTWARE`, `TEMPORAL_INCONSISTENCY`, `PDF_INCREMENTAL_UPDATE`, `UNEXPECTED_ACTIVE_CONTENT`, `EMBEDDED_OBJECT_FOUND`, `FONT_INCONSISTENCY`, `XMP_HISTORY_CHAIN`, `PRODUCER_FINGERPRINT_MISMATCH`, `OBJECT_GRAPH_ANOMALY`, `SIGNATURE_*`
+- L1 扩展：`PAGE_DIMENSION_INCONSISTENCY`, `XMP_FORMAT_MISMATCH`, `XMP_METADATA_AFTER_CREATE`, `METADATA_ENCODING_ANOMALY`, `COMPANY_METADATA_MISMATCH`, `FS_VS_PDF_TIME_DIFF`, `OBJECT_STREAM_ANOMALY`, `ACROFORM_DETECTED`, `LAYERS_DETECTED`, `ANNOTATIONS_DETECTED`, `EXCESSIVE_EMBEDDED_IMAGES`, `CERTIFICATE_EXPIRED`, `CERTIFICATE_REVOKED`, `SIGNATURE_TIME_MISMATCH`, `MULTI_SIGNATURE_INCONSISTENCY`, `SIGNER_ISSUER_INFO`
+- 图片：`JPEG_DQT_ANOMALY`, `JPEG_DHT_ANOMALY`, `JPEG_HEADER_CORRUPTION`, `JPEG_EXIF_MISSING`, `JPEG_QUALITY_MISMATCH`, `PNG_CHUNK_ANOMALY`, `PNG_IHDR_MISMATCH`, `THUMBNAIL_INCONSISTENCY`, `IMAGE_DIMENSION_MISMATCH`, `IMAGE_SOFTWARE_FINGERPRINT`
+- L2：`VISUAL_ANOMALY`, `VISUAL_CONSENSUS`, `VISUAL_MODEL_SPECIFIC`, `VISUAL_DISAGREEMENT`
+- 通用：`GENERIC_OBSERVATION`, `HIDDEN_TEXT_DETECTED`
+
+`Evidence` 字段：
+
+- `type: EvidenceType`
+- `value: Any`
+- `confidence: float` (0-1)
+- `source: str`
+- `description: Optional[str]`
+- `location: Optional[Dict]`
+- `raw_data: Optional[Dict]`
+- `generated_at: datetime`
+
+`__hash__` 基于 `(type, value, source, description)` 去重。
+
+### 4.3 `ExifToolMetadata`
+
+位置：`app/forensics/metadata/models/metadata_ir.py`
+
+归一化后的 ExifTool 输出：
+
+- `producer`, `creator`, `create_date`, `modify_date`, `software`
+- `xmp`, `exif`, `raw_json`
+- 文档身份：`document_id`, `instance_id`, `original_document_id`, `derived_from`
+- 文件系统时间：`file_modify_date`, `file_access_date`, `file_create_date`
+- `xmp_history_items: List[Dict]`
+- EXIF 详细：`exif_make`, `exif_model`, `exif_software`, `exif_datetime_original`, `exif_gps`, `exif_color_space`, `exif_icc_profile`
+- EXIF 三时间戳：`exif_datetime_digitized`, `exif_datetime`
+- `makernotes_present: bool`
+
+### 4.4 `PDFStructureReport`
+
+- `is_valid`
+- `revision_count`
+- `has_incremental_updates`
+- `xref_errors`
+- `structural_warnings`
+- `is_linearized`
+
+### 4.5 `ObjectGraph`
+
+- `total_objects`, `total_streams`
+- `embedded_files: List[Dict]`
+- `javascript_present`, `launch_actions_present`, `open_action_present`
+- `edges: List[Tuple[int, int]]`
+- `pages_with_xobjects: Dict[int, List[int]]`
+- `error`
+
+### 4.6 `MetadataContainer`
+
+L1 所有收集数据的容器，字段非常多，包括：
+
+- `exiftool`, `structure`, `object_graph`
+- `fonts_per_page`, `signature_fields`, `signatures`
+- `has_acroform`, `has_layers`, `has_annotations`, `object_stream_count`
+- `images_per_page`
+- 图片相关：`image_type`, `image_width`, `image_height`, `image_has_thumbnail`, `image_thumbnail_width`, `image_thumbnail_height`, `image_structural_errors`, `image_structural_details`
+- 文档身份、XMP History、EXIF、修订详情、加密信息、注释详情、表单详情、嵌入文件详情、活跃内容详情、孤立对象
+- 全文文本、阅读顺序置信度、字体分布、图像摘要、异常区域
+- 颜色分布、字号分布、替换字符、文本重叠、图像 DPI
+- 内部字段：`filesystem_timestamps`, `file_name`
+
+### 4.7 `ForensicContext`
+
+清洗后的 LLM 上下文，顶层容器，包含：
+
+- `metadata_identity: MetadataIdentity`
+- `software_provenance: List[SoftwareProvenanceItem]`
+- `timeline: List[TimelineItem]`
+- `xmp_history: List[XMPHistoryItem]`
+- `document_lineage: DocumentLineage`
+- `image_metadata: ImageMetadata`
+- `pdf_integrity: PDFIntegrity`
+- `revision_history: RevisionHistory`
+- `semantic_text: SemanticText`
+- `layout_summary: LayoutSummary`
+- `anomalous_regions: List[AnomalousRegion]`
+- `annotations: List[Annotation]`
+- `forms: List[Form]`
+- `active_content: ActiveContent`
+- `embedded_files: List[EmbeddedFile]`
+- `object_graph: ObjectGraphSummary`
+- `color_distribution`, `size_distribution`, `replacement_chars`, `text_overlaps`, `image_dpi`
+- `image_structural_fingerprint: Optional[ImageStructuralFingerprint]`
+- `image_observations: List[str]`
+
+子模型包括：`MetadataIdentity`, `SoftwareProvenanceItem`, `TimelineItem`, `XMPHistoryItem`, `DocumentLineage`, `ImageMetadata`, `ImageStructuralFingerprint`, `PDFIntegrity`, `RevisionDetail`, `RevisionHistory`, `PageText`, `SemanticText`, `FontDistributionItem`, `ImageSummaryItem`, `PageStatistics`, `LayoutSummary`, `AnomalousRegion`, `Annotation`, `Form`, `ActiveContent`, `EmbeddedFile`, `RelevantObject`, `Relationship`, `OrphanObject`, `ObjectGraphSummary`。
+
+注意：`ImageStructuralFingerprint` 中 `jpeg_encoding_type` 字段定义重复。
+
+---
+
+## 5. 收集器（Collectors）
+
+### 5.1 `ExifToolCollector`
+
+- 执行：
+  ```bash
+  exiftool -j -G1 -a -charset utf8 -All <file>
+  ```
+- 强制 UTF-8，`errors="replace"`，超时 30s。
+- 解析 JSON 为 `ExifToolMetadata`。
+- 日期解析采用白名单格式，不盲目猜测：
+  - `%Y:%m:%d %H:%M:%S`
+  - `%Y:%m:%d`
+  - `%Y-%m-%d %H:%M:%S`
+  - `%Y-%m-%dT%H:%M:%S`
+  - `%Y-%m-%d`
+  - `%d/%m/%Y %H:%M:%S`
+  - `%a %b %d %H:%M:%S %Y`
+- 提取文档身份、文件系统时间、XMP History、EXIF 详细、MakerNotes 存在性。
+- 返回 `{"metadata": ExifToolMetadata}`。
+
+### 5.2 `QPDFCollector`
+
+- 执行 `qpdf --check <file>` 和 `qpdf --show-xref <file>`。
+- 解析：
+  - `PDFStructureReport`：有效性、修订数、增量更新、xref 错误、警告、线性化。
+  - `encryption_info`：加密、算法、权限、密码保护。
+  - `revision_details`：从 `--show-xref` 解析修订详情。
+- 返回 `{"structure": ..., "encryption_info": ..., "revision_details": ...}`。
+
+---
+
+## 6. 解析器（Parsers）
+
+### 6.1 `PikepdfParser`
+
+- 使用 `pikepdf` 打开 PDF。
+- 构建 `ObjectGraph`：
+  - 总对象数、流数量。
+  - 检测 `/ObjStm` 对象流。
+  - 检测嵌入文件、JavaScript、Launch、OpenAction。
+  - 提取注释、附加动作、嵌入文件详情、活跃内容详情。
+  - 检测孤立对象（从 Root 不可达）。
+  - 页面 XObject 关系，填充 `pages_with_xobjects` 和 `edges`。
+- 返回：
+  ```python
+  {
+    "object_graph": ObjectGraph,
+    "has_acroform": bool,
+    "has_layers": bool,
+    "has_annotations": bool,
+    "object_stream_count": int,
+    "total_objects": int,
+    "embedded_files_detail": list,
+    "active_content_detail": dict,
+    "orphan_objects": list,
+    "annotations_pikepdf": list,
+    "additional_actions": list,
+  }
+  ```
+
+### 6.2 `PyMuPDFParser`
+
+- 使用 `fitz` 遍历页面。
+- 提取：
+  - `fonts_per_page`：页码 -> 字体名列表。
+  - `images_per_page`：页码 -> 图像数。
+  - `semantic_text_pages`：页码 -> 全文。
+  - `annotations_detail`：注释详情。
+  - `forms_detail`：表单字段。
+  - `anomalous_regions`：出界文本、极小文本。
+  - `page_order_confidence`：默认 1.0。
+  - `font_distribution`：字体覆盖率。
+  - `image_summary`：图像尺寸聚合。
+  - `color_distribution`：颜色覆盖率。
+  - `size_distribution`：字号覆盖率。
+  - `replacement_chars`：U+FFFD 替换字符。
+  - `text_overlaps`：文本重叠。
+  - `image_dpi`：图像 DPI 估算。
+- 返回上述字段组成的字典。
+
+### 6.3 `SignatureParser`
+
+- 使用 PyMuPDF 检测签名 Widget。
+- 使用 `pdfsig` 验证签名完整性与证书状态。
+- 使用 `cryptography` 交叉验证证书有效期和颁发者 CN。
+- 返回：
+  ```python
+  {
+    "signature_fields": list,
+    "signatures": list,
+    "has_signatures": bool,
+    "signature_status": str,  # NO_SIGNATURE / HAS_SIGNATURE / VERIFIED / BROKEN
+    "pdfsig_available": bool,
+    "cryptography_available": bool,
+  }
+  ```
+
+### 6.4 `ImageStructuralParser`
+
+- 解析 JPEG：
+  - APP 段、JFIF、EXIF、Photoshop 资源。
+  - DQT 量化表指纹、估算质量。
+  - DHT 完整表数据、按 ITU-T Annex K 判定 standard/optimized/mixed。
+  - SOF 编码类型、尺寸。
+  - marker 序列、尾部游离字节。
+  - 缩略图存在性。
+- 解析 PNG：
+  - IHDR、pHYs、PLTE、IDAT、IEND。
+  - 文本块 tEXt/zTXt/iTXt。
+  - 关键块完整性。
+- 返回结构化字典，供 `MetadataContainer` 和 `ContextBuilder` 使用。
+
+---
+
+## 7. 分析器（Analyzers）
+
+### 7.1 `XMPAnalyzer`
+
+- 提取 XMP History 链，产出 `XMP_HISTORY_CHAIN`。
+- 检测 `CreatorTool` 与 `Producer` 矛盾，产出 `METADATA_SOFTWARE`。
+- 检测 `DerivedFrom` / `OriginalDocumentID`，产出 `GENERIC_OBSERVATION`。
+
+### 7.2 `ConsistencyAnalyzer`
+
+综合多源数据，检测：
+
+- 时间线矛盾：`TEMPORAL_INCONSISTENCY`。
+- 结构-软件交叉：`PDF_INCREMENTAL_UPDATE`、`GENERIC_OBSERVATION`。
+- 字体-软件关系：`FONT_INCONSISTENCY`。
+- 页面尺寸不一致：`PAGE_DIMENSION_INCONSISTENCY`。
+- XMP 格式不匹配：`XMP_FORMAT_MISMATCH`。
+- XMP MetadataDate 晚于 CreateDate：`XMP_METADATA_AFTER_CREATE`。
+- 编码异常：`METADATA_ENCODING_ANOMALY`。
+- 公司字段不匹配：`COMPANY_METADATA_MISMATCH`（需外部传入 expected_company）。
+- 文件系统时间与 PDF ModifyDate 差异：`FS_VS_PDF_TIME_DIFF`。
+- 对象流异常：`OBJECT_STREAM_ANOMALY`。
+- 表单/图层/注释检测：`ACROFORM_DETECTED`、`LAYERS_DETECTED`、`ANNOTATIONS_DETECTED`。
+- 过度嵌入图像：`EXCESSIVE_EMBEDDED_IMAGES`。
+- 对象图异常：`OBJECT_GRAPH_ANOMALY`、`EMBEDDED_OBJECT_FOUND`。
+- 隐藏文本：`HIDDEN_TEXT_DETECTED`（基于颜色分布中白色文本）。
+- 图片专用一致性：
+  - `IMAGE_DIMENSION_MISMATCH`
+  - `THUMBNAIL_INCONSISTENCY`
+  - `JPEG_QUALITY_MISMATCH`
+  - `JPEG_DQT_ANOMALY`、`JPEG_DHT_ANOMALY`、`PNG_CHUNK_ANOMALY`、`JPEG_HEADER_CORRUPTION`
+
+### 7.3 `FingerprintAnalyzer`
+
+- 从 `ExifToolMetadata` 提取 Creator、Producer、XMP CreatorTool、Software 等。
+- 调用 `FingerprintRegistry.match()` 匹配生成器。
+- 产出：
+  - `METADATA_SOFTWARE`：识别出的生成器。
+  - `PRODUCER_FINGERPRINT_MISMATCH`：生成器与文档类型关系及风险分数。
+  - `METADATA_SOFTWARE`：Creator/Producer 工具链映射。
+  - `GENERIC_OBSERVATION`：多匹配痕迹。
+- 不做风险判断，只输出事实，由上层推理。
+
+### 7.4 `SignatureAnalyzer`
+
+- 基于 `SignatureParser` 输出，产出：
+  - `CERTIFICATE_EXPIRED`
+  - `CERTIFICATE_REVOKED`
+  - `SIGNATURE_TIME_MISMATCH`
+  - `SIGNER_ISSUER_INFO`（纯事实，证书颁发者 CN）
+  - `MULTI_SIGNATURE_INCONSISTENCY`
+
+---
+
+## 8. 指纹库（Registry）
+
+### 8.1 `FingerprintRegistry`
+
+- 加载 `fingerprints.yaml`。
+- `match(metadata, header_binary, pdf_version)`：
+  - 遍历 producers。
+  - 匹配 `fingerprints.metadata`、`header_binary`、`structure`。
+  - 计算置信度 `total_weight / max_possible_weight`。
+  - 返回 `List[FingerprintMatch]` 按置信度降序。
+- `get_document_type_risk(producer_name, document_type)`：
+  - 返回 `(risk_level, risk_score)`。
+  - 风险等级：`low`, `medium`, `high`, `critical`, `unknown`。
+- `detect_creator_producer_mismatch(creator, producer)`：
+  - 使用 `TOOL_CATEGORIES` 关键词库识别工具类别。
+  - 返回映射关系，如 `office_suite -> image_editor`。
+
+### 8.2 `fingerprints.yaml`
+
+定义多个 producer，例如：
+
+- 办公软件：Microsoft Word、LibreOffice。
+- Adobe：Acrobat、Photoshop、InDesign。
+- 在线设计：Canva。
+- 系统：macOS Quartz、Microsoft Print to PDF、PDFium。
+- 转换引擎：Ghostscript、Skia/PDF。
+- TeX：pdfTeX、LuaTeX。
+- PDF 库：iText、ReportLab、FPDF。
+- 在线转换：PDF24、PDF2Go。
+- AI 生成：ChatGPT PDF。
+- 图片编辑/相机：Photoshop Image、Lightroom、GIMP、iPhone、Android、Canon、Sony、Canva Image。
+
+每个 producer 包含：
+
+- `name`, `category`, `risk_baseline`
+- `fingerprints.metadata/header_binary/structure`
+- `document_type_risk`：针对不同文档类型的风险等级。
+
+---
+
+## 9. 清洗与聚合（Sanitization）
+
+### 9.1 `ContextBuilder`
+
+- 入口：`build(container: MetadataContainer) -> Optional[ForensicContext]`
+- 编排所有清洗模块：
+  - `MetadataIdentity`
+  - `SoftwareAggregator.build()`
+  - `TimelineBuilder.build()`
+  - XMP History
+  - `DocumentLineage`
+  - `ImageMetadata`
+  - `ImageStructuralFingerprint`
+  - `PDFIntegrity`
+  - `RevisionHistory`
+  - `SemanticText`
+  - `LayoutCompressor.build()`
+  - `AnomalousRegion`
+  - `AnnotationDeduplicator.build()`
+  - `Form`
+  - `ActiveContent`
+  - `EmbeddedFile`
+  - `ObjectGraphSummary`
+- 额外生成：
+  - 低覆盖率颜色/字号作为异常区域。
+  - 替换字符、文本重叠作为异常区域。
+  - 图片观察摘要：缩略图比例差异、尾部游离数据、Photoshop 资源、MakerNotes 缺失。
+
+### 9.2 `TimelineBuilder`
+
+- 将所有时间源归一化为 ISO-8601，保留 `source` 和 `raw`。
+- 来源：PDF CreateDate/ModifyDate、XMP 时间、XMP History、文件系统时间、EXIF 时间。
+- 去重按 `(time, source)`，按时间排序。
+
+### 9.3 `SoftwareAggregator`
+
+- 从 `ExifToolMetadata` 聚合软件来源：
+  - `PDF:Producer`, `PDF:Creator`, `PDF:Software`, `XMP:CreatorTool`
+  - `raw_json` 中的额外字段
+  - XMP History 中的 `software_agent`
+  - `EXIF:Software`
+- 去重并保留来源标签。
+
+### 9.4 `AnnotationDeduplicator`
+
+- 合并 PyMuPDF 和 pikepdf 的注释。
+- 去重键包含：页码、类型、规范化 URI、内容、bbox、动作关键字段。
+- 合并来源到 `sources` 列表。
+
+### 9.5 `LayoutCompressor`
+
+- 聚合字体分布、图像摘要、页面统计。
+- 输入：`fonts_per_page`, `images_per_page`, `semantic_text_pages`, `font_distribution`, `image_summary`, `color_distribution`, `size_distribution`。
+- 输出 `LayoutSummary`。
+
+---
+
+## 10. 引擎与编排
+
+### 10.1 `MetadataEngine`
+
+- 构造参数：
+  - `max_workers=4`
+  - `timeout_seconds=60`
+  - `resolver_set: Optional[List[tuple]]`
+- 内部组件：
+  - `ExifToolCollector`, `QPDFCollector`
+  - `PikepdfParser`, `PyMuPDFParser`, `SignatureParser`
+  - `XMPAnalyzer`, `ConsistencyAnalyzer`, `FingerprintAnalyzer`, `SignatureAnalyzer`
+  - `FingerprintRegistry`
+- 主要方法：
+  - `analyze(context) -> List[Evidence]`
+  - `analyze_with_context(context) -> Tuple[List[Evidence], Optional[ForensicContext]]`
+  - `build_forensic_context(context=None) -> Optional[ForensicContext]`
+  - `get_container()`, `get_errors()`, `get_last_forensic_context()`
+- 并行执行收集器/解析器，部分失败记录到 `_errors` 并继续。
+- 组装 `MetadataContainer`。
+- 运行分析器，证据去重。
+- 构建 `ForensicContext` 存入 `_last_context`。
+- 若有错误，追加 `GENERIC_OBSERVATION` 证据 `L1_PARTIAL_FAILURE`。
+
+### 10.2 `ResolverSet`
+
+预定义解析器集合：
+
+- `PDF`: qpdf, pikepdf, pymupdf, signature
+- `IMAGE`: image_structural
+- `MINIMAL`: 只跑 ExifTool
+
+### 10.3 异常体系
+
+```text
+MetadataForensicsError
+  CollectorError
+    ToolNotFoundError
+      ExifToolNotFoundError
+      QPDFNotFoundError
+      PDFSigNotFoundError
+  ParserError
+    PDFParseError
+    XMPParseError
+    SignatureVerificationError
+  AnalyzerError
+  ConfigurationError
+```
+
+### 10.4 LangGraph 编排
+
+- `ForensicState`：跨层状态，包含 `context`、各层证据、`all_evidences`、`document_type`、`template_id`、`visual_context`、`current_stage`、`errors`、`risk_score`、`risk_level`、`final_report`。
+- `ForensicGraph`：构建状态图，节点：
+  - `ingest`：加载文件、计算 SHA256、检测 MIME、页数/图片尺寸。
+  - `route_by_type`：根据 MIME 路由。
+  - `l1_metadata`：调用 `MetadataEngine`，选择 `ResolverSet`。
+  - `l2_visual`：真实视觉分析，产出 `visual_context`。
+  - `l3_semantic`：占位，设置 `document_type`。
+  - `l4_verification`：占位。
+  - `build_evidence_graph`：占位。
+  - `risk_engine`：简单基于证据数量。
+  - `finalize`：组装 `final_report`。
+- 边：START -> ingest -> route_by_type -> 并行 L1/L2/L3 -> L4 -> build_evidence_graph -> risk_engine -> finalize -> END。
+- `ForensicRunner`：对外 API，`analyze` 和 `analyze_stream`。
+
+---
+
+## 11. 设计原则与注意事项
+
+### 11.1 设计原则
+
+1. **收集器只采集，不产证据**；解析器深度解析；分析器跨源推理产证据。
+2. **部分失败优雅降级**：单个收集器/解析器/分析器失败不影响整体，错误记录到 `_errors`。
+3. **证据去重**：基于 `Evidence.__hash__`。
+4. **双轨输出**：`List[Evidence]` 和 `ForensicContext`。
+5. **清洗规范**：删除表示冗余，保留潜在有用事实；语义信息损失敏感，结构信息可压缩。
+6. **指纹分析纯事实**：`FingerprintAnalyzer` 只输出识别结果和注册表风险分数，不做最终判断。
+7. **签名分析纯事实**：证书颁发者信息一律提取，不因文档类型过滤。
+8. **日期解析白名单**：不盲目猜测，无法解析则丢弃并 warning。
+
+### 11.2 潜在问题与注意点
+
+- `ImageStructuralFingerprint` 中 `jpeg_encoding_type` 重复定义。
+- `ContextBuilder` 中使用了 `container._filesystem_timestamps` 和 `container._file_name`，但 `MetadataContainer` 定义的是 `filesystem_timestamps` 和 `file_name`，可能不一致。
+- `MetadataEngine._assemble_container` 中部分字段映射可能遗漏或覆盖。
+- `fingerprint_matcher` 的 `header_binary` 是十六进制字符串，而 `fingerprints.yaml` 中 pattern 是字节转义（如 `\\xB5\\xB5\\xB5\\xB5`），匹配逻辑可能不准确。
+- L3/L4 尚未实现，风险引擎为简单占位。
+- `ForensicState` 使用 Pydantic + `field(default_factory=list)`，但 Pydantic v2 中应使用 `Field(default_factory=list)`，当前写法可能不标准。
+- `graph.py` 中 `MemorySaver` 导入路径可能因 LangGraph 版本而异。
+- `nodes.py` 中 L2 视觉分析依赖 `app.forensics.visual`，但未在本次上下文中提供。
+- `ConsistencyAnalyzer` 中部分检测依赖 `parsed_data` 的键，需确保 `MetadataEngine` 正确传入。
+- 图片专用分析依赖 `image_type` 和 `image_structural_details`，需确保 `ImageStructuralParser` 被调用。
+
+---
+
+## 12. 整体调用链速查
+
+### PDF 文件
+
+```text
+ForensicRunner.analyze
+  -> ForensicGraph.run
+    -> ingest
+    -> route_by_type
+    -> l1_metadata
+      -> MetadataEngine.analyze
+        -> ResolverSet.PDF
+          -> ExifToolCollector
+          -> QPDFCollector
+          -> PikepdfParser
+          -> PyMuPDFParser
+          -> SignatureParser
+        -> _assemble_container
+        -> XMPAnalyzer / ConsistencyAnalyzer / FingerprintAnalyzer / SignatureAnalyzer
+        -> ContextBuilder.build
+      -> state.add_evidences("L1", evidences)
+    -> l2_visual (并行)
+    -> l3_semantic (并行)
+    -> l4_verification
+    -> build_evidence_graph
+    -> risk_engine
+    -> finalize
+  -> final_report
+```
+
+### 图片文件
+
+```text
+ForensicRunner.analyze
+  -> ForensicGraph.run
+    -> ingest
+    -> route_by_type
+    -> l1_metadata
+      -> MetadataEngine.analyze
+        -> ResolverSet.IMAGE
+          -> ExifToolCollector
+          -> ImageStructuralParser
+        -> _assemble_container
+        -> 各分析器
+        -> ContextBuilder.build
+    -> l2_visual
+    -> ...
+```
+
+---
+
+## 13. 一句话总结
+
+TrustLens v2 的 `metadata` 模块是一个以 `MetadataEngine` 为核心、以 `ExifTool/QPDF/pikepdf/PyMuPDF/Signature/ImageStructural` 为采集解析工具、以 `XMP/Consistency/Fingerprint/Signature` 为分析器、以 `ForensicContext` 为 LLM 上下文载体的 L1 元数据取证流水线；它通过 LangGraph 与 L2 视觉、L3 语义、L4 验证层协同，最终产出统一 `Evidence` 和结构化报告。

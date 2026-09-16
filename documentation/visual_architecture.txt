@@ -1,0 +1,68 @@
+纯色+平滑度+摩尔纹 → 0-1 score → camera / digital
+
+digital pdf
+https://share.gemini.google/nDmrn28iMien
+- PyMuPDF 提取原始 spans / chars
+1. 构建全页全局分布 (FontSize, Color, FontName) → 标记离群三元组
+2. 遍历每行计算 Span/Line 宽度比 → 标记 Micro-Span (碎裂篡改)
+3. Inter-character delta varience: 遍历数值字段计算字符 X 步进方差 → 标记间距挤压 (Kerning 异常)
+4. bbox overlap in pymupdf
+5. partial outlining
+文本行异常gap，page.get_drawing()
+正常表格的 Drawing 都是大矩形、横线、竖线（由简单的 l 划线或 re 矩形指令构成）。 
+字符转曲生成的 Drawing，必然包含大量的紧密三次贝塞尔曲线段（包含多个 c 操作符）与环状闭合路径，且外接矩形的长宽比完全符合字符特征。 
+一旦在文本行的空白间隙中捕捉到“字符尺寸的高密度闭合曲线群”，立即判定为转曲注入篡改。
+6. vector spoofing
+检测算法：
+​遍历 page.get_drawings()，筛选出所有极小尺寸的矢量元素（比如高度或宽度小于当前正文字号，例如 < 5\text{pt} 的线段或微型闭合块）。
+​排除掉合规的下划线（下划线通常横跨整个 Span，宽度较长）。
+​将这些微型矢量图元与所有的字符 char["bbox"] 做空间相交（Intersection）测试。
+​判定： 如果一个微小的无描边填充矩形/线段，正好跨越并压在某个字符（如 'F'、'3'）的关键几何边缘上，直接告警提示“检测到人工矢量笔画干预与文本修补”。
+
+
+digital image
+1. character profile
+(剪枝)只注重ocr observation的数字textblock，切割出character level的方格
+- Stroke Width Transform (考虑待定)
+- PCA: character orientation, baseline orientation, stroke orientation distribution
+- Black Level: median darkness
+- glyph embedding vector (Dinov2 / ViT)
+2. text block profile
+对于所有text blocks内部:
+- baseline anomaly detection
+对于paragraph region里的text blocks:
+- y坐标接近的bbox放在一起，每个bbox都有average baseline gradient，用z score via MAD对比
+对于table region里的text block:
+- 以列为单位，为列内bbox找left alignment / right alignment / centre alignment对齐线 (需判断主对齐线来做基准)，列内bbox的起始端、中点、尾端x坐标对比，z-score anomaly via MAD。行内直接测中线。
+
+#### 步骤 1：提取当前列内所有 $N$ 个 bbox 的三个一维投影
+设当前列有 $N$ 个单元格，对于第 $i$ 个数字的 BBox，提取：
+* 左端坐标：$L_i = x_{\text{min}}^{(i)}$
+* 中心坐标：$M_i = \frac{x_{\text{min}}^{(i)} + x_{\text{max}}^{(i)}}{2}$
+* 右端坐标：$R_i = x_{\text{max}}^{(i)}$
+
+#### 步骤 2：用鲁棒离散度（MAD）自动识别这一列的“主排版法则”
+计算这三个坐标序列的绝对中位差（MAD）：
+$$\text{MAD}_L = \text{median}(\vert{}L_i - \tilde{L}\vert{})$$
+$$\text{MAD}_M = \text{median}(\vert{}M_i - \tilde{M}\vert{})$$
+$$\text{MAD}_R = \text{median}(\vert{}R_i - \tilde{R}\vert{})$$
+* **判定主对齐模式**：
+$$\text{Mode} = \arg\min(\text{MAD}_L, \text{MAD}_M, \text{MAD}_R)$$
+* 如果 $\text{MAD}_L$ 最小（接近 0），说明此列排版法则是**左对齐**，主基准为 $L$；
+* 如果 $\text{MAD}_M$ 最小，说明此列排版法则是**居中对齐**，主基准为 $M$；
+* 如果 $\text{MAD}_R$ 最小，说明此列排版法则是**右对齐**，主基准为 $R$。
+
+#### 步骤 3：在选定的主基准轴上，运行 Modified Z-score
+选定主基准序列 $A \in \{L, M, R\}$ 后，只对序列 $A$ 跑前面提到的修正 Z-Score：
+$$S_i = \frac{0.6745 \cdot \vert{}A_i - \tilde{A}\vert{}}{\max(\text{MAD}_A, 0.5\text{ px})}$$
+* **定罪判决**：如果某个单元格的 $S_i > 3.5$（或偏移绝对距离 $> 2\sim 3\text{ px}$），直接报出：**“该字符破坏了该列的主排版对齐基准”**。
+
+
+image
+- 把ocr bbox mask起来，在其他地方做检测
+background color
+local contrast
+texture statistics
+illumination
+compression characteristics
+edge continuity​

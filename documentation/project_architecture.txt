@@ -1,14 +1,6 @@
 **Document IR**
 
-1. native digital pdf -> pdfplumber/pymupdf -> filter and cleaning -> indexing
-2. non-native digital and non-pdf -> deskew -> text warpping (paddleocr module) -> rapidocr -> cv2算法让bbox更贴合文字
-
--> 获得lines与bbox的集合 (Observation IR) -> docling/ppstructurev3
-
-1. 抓出表格区域 -> 用算法+统计方式对表格区域的bbox群进行纵横切割 -> 如果有实际上merged的格子被拆分也没关系，至少抓出了每个bbox在表格里的位置 -> 补齐到document IR的table部分
-2. 将文件的其他elements结构化 -> 基于bbox和text认领/交叉验证领取lines与bbox -> document IR 矛盾点记录下来
-
--> 整合成Document IR
+Original Document -> Perception Pipeline -> Observation IR -> Document IR
 
 **DTO IR**
 
