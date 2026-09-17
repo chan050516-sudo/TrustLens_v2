@@ -1,12 +1,17 @@
 纯色+平滑度+摩尔纹 → 0-1 score → camera / digital
 
-digital pdf
+## digital pdf
 https://share.gemini.google/nDmrn28iMien
 - PyMuPDF 提取原始 spans / chars
 1. 构建全页全局分布 (FontSize, Color, FontName) → 标记离群三元组
 2. 遍历每行计算 Span/Line 宽度比 → 标记 Micro-Span (碎裂篡改)
 3. Inter-character delta varience: 遍历数值字段计算字符 X 步进方差 → 标记间距挤压 (Kerning 异常)
-4. bbox overlap in pymupdf
+4. bbox overlap / copy-move detection
+Detector	检测内容	产出类型
+Occlusion Detector	A covers B（覆盖率、Z 顺序、对象类型）	PDF_OBJECT_OCCLUSION
+Object Reuse Detector	A ≈ B（精确/近似/视觉对应）	PDF_OBJECT_REUSE
+Overlay Characterization	Overlay 的类型（image/text/vector/form）和不透明度	PDF_OVERLAY_CHARACTERIZATION
+Correlation Engine	将上述三者关联	PDF_COPY_MOVE_CORRELATION
 5. partial outlining
 文本行异常gap，page.get_drawing()
 正常表格的 Drawing 都是大矩形、横线、竖线（由简单的 l 划线或 re 矩形指令构成）。 
@@ -20,7 +25,7 @@ https://share.gemini.google/nDmrn28iMien
 ​判定： 如果一个微小的无描边填充矩形/线段，正好跨越并压在某个字符（如 'F'、'3'）的关键几何边缘上，直接告警提示“检测到人工矢量笔画干预与文本修补”。
 
 
-digital image
+## digital image
 1. character profile
 (剪枝)只注重ocr observation的数字textblock，切割出character level的方格
 - Stroke Width Transform (考虑待定)
@@ -58,7 +63,7 @@ $$S_i = \frac{0.6745 \cdot \vert{}A_i - \tilde{A}\vert{}}{\max(\text{MAD}_A, 0.5
 * **定罪判决**：如果某个单元格的 $S_i > 3.5$（或偏移绝对距离 $> 2\sim 3\text{ px}$），直接报出：**“该字符破坏了该列的主排版对齐基准”**。
 
 
-image
+## camera-captured (待定，暂时搁置)
 - 把ocr bbox mask起来，在其他地方做检测
 background color
 local contrast

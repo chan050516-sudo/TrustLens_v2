@@ -8,46 +8,80 @@ app/
 │   ├── risk.py
 │   └── interfaces.py
 │
-├── ingestion/
-│   ├── pdf/
-│   ├── image/
-│   ├── ocr/
-│   ├── renderer/
-│   ├── detector.py
-│   └── loader.py
+├── perception/
+│   │
+│   ├── models/
+│   │   ├── bbox.py
+│   │   ├── observation_ir.py
+│   │   ├── semantic_region.py
+│   │   ├── table_region.py
+│   │   └── document_ir.py
+│   │
+│   ├──  preprocessors/
+│   │   ├── __init__.py
+│   │   └── image_preprocessor.py
+│   │
+│   ├── extractors/
+│   │   ├── __init__.py
+│   │   ├── pdf_observation_extractor.py
+│   │   ├── image_observation_extractor.py
+│   │   └── docling_region_parser.py
+│   │
+│   ├── detectors/
+│   │   ├── __init__.py
+│   │   └── pymupdf_table_detector.py
+│   │
+│   ├── builders/
+│   │   ├── __init__.py
+│   │   ├── region_assigner.py
+│   │   ├── table_reconstructor.py
+│   │   └── document_ir_builder.py
+│   │
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── geometry.py
+│   │   └── ocr_singleton.py
+│   │
+│   ├── orchestration/
+│   │   ├── __init__.py
+│   │   └── multi_page_pdf_orchestrator.py
+│   │
+│   ├── __init__.py
+│   ├── pipeline.py
+│   └── exceptions.py
 │
 ├── forensics/
 │   │
 │   ├── metadata/
 │   │   │
-│   │   ├── collectors
+│   │   ├── collectors/
 │   │   │   ├── __init__.py
 │   │   │   ├── exiftool.py
 │   │   │   └── qpdf.py
 │   │   │
-│   │   ├── parsers
+│   │   ├── parsers/
 │   │   │   ├── __init__.py
 │   │   │   ├── image_structural_parser.py
 │   │   │   ├── pikepdf_parser.py
 │   │   │   ├── pymupdf_parser.py
 │   │   │   └── signature_parser.py
 │   │   │
-│   │   ├── analyzers
+│   │   ├── analyzers/
 │   │   │   ├── __init__.py
 │   │   │   ├── consistency_analyzer.py
 │   │   │   ├── fingerprint_analyzer.py
 │   │   │   ├── signature_analyzer.py
 │   │   │   └── xmp_analyzer.py
 │   │   │
-│   │   ├── registry
+│   │   ├── registry/
 │   │   │   ├── fingerprint_matcher.py
 │   │   │   └── fingerprints.yaml
 │   │   │
-│   │   ├── models
+│   │   ├── models/
 │   │   │   ├── forensic_context.py
 │   │   │   └── metadata_ir.py
 │   │   │
-│   │   ├── sanitization
+│   │   ├── sanitization/
 │   │   │   ├── __init__.py
 │   │   │   ├── annotation_deduplication.py
 │   │   │   ├── software_aggregator.py
@@ -61,41 +95,28 @@ app/
 │   │   └── metadata_engine.py
 │   │
 │   ├── visual/
-│   │   ├── trufor.py
-│   │   ├── mantra.py
-│   │   ├── logo.py
-│   │   └── seal.py
 │   │
 │   ├── semantic/
-│   │   ├── layoutlm.py
-│   │   ├── classifier.py
-│   │   └── extractor.py
 │   │
 │   ├── template/
-│   │   ├── matcher.py
-│   │   ├── registry.py
-│   │   └── validator.py
+│   │
+│   ├── reconciliation/
+│   │   ├── math/
+│   │   ├── date/
+│   │   ├── qr/
+│   │   ├── barcode/
+│   │   ├── regex/
+│   │   ├── checksum/
+│   │   └── external/
 │   │
 │   ├── graph.py
 │   ├── nodes.py
 │   └── state.py
 │
-├── verification/
-│   ├── math/
-│   ├── date/
-│   ├── qr/
-│   ├── barcode/
-│   ├── regex/
-│   ├── checksum/
-│   └── external/
-│
 ├── agents/
-│   ├── verification_agent.py
-│   ├── template_agent.py
-│   └── query_agent.py
 │
 ├── orchestration/
-│   └── graph.py
+│   └── runner.py
 │
 ├── storage/
 │   ├── postgres/
@@ -107,6 +128,5 @@ app/
 │
 │
 tests/
-└── test_l1.py
 │
 test_doc/

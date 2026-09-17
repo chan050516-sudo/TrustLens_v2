@@ -1,0 +1,1594 @@
+可以。基于我们上一轮已经确定的原则，我建议直接把它整理成 **TrustLens v2 Evidence IR 2.0**：不是继续堆 ontology，而是把 **Reconciliation / Web Grounding / Enterprise Grounding** 三种下游真正需要的 evidence 分开。
+
+这一版我会重点修正 Gemini Matrix Edition 的几个问题：
+
+* `table_type` 决定允许哪些 column。
+* payroll / legal / official 不再被粗暴塞进 `FLOW_IN/FLOW_OUT`。
+* `MEMO_NEUTRAL` 删除——Qwen 不负责判断某字段是否参与规则。
+* 保留 `String Decimal`，避免 float。
+* `COMPONENT` 使用有限 closed-world enum。
+* Enterprise grounding 的 **key type** closed-world，但 **key value** 完全开放。
+* Web grounding 完全 open-world。
+* Semantic Engine 不进入这个 IR。
+* source/bbox 保留，保证每一个 evidence 都能回指原文。
+* JSON Schema 负责结构约束，Pydantic 再负责矩阵宽度等跨字段 validation。
+
+下面这版可以作为你实际工程的 **schema v2.0 baseline**。
+
+---
+
+# 1. JSON Schema
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trustlens.dev/schema/evidence-ir/2.0",
+  "title": "TrustLens Evidence IR",
+  "description": "Evidence-only intermediate representation for deterministic reconciliation and grounding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document",
+    "reconciliation",
+    "grounding"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+
+    "document": {
+      "$ref": "#/$defs/Document"
+    },
+
+    "reconciliation": {
+      "$ref": "#/$defs/ReconciliationEvidence"
+    },
+
+    "grounding": {
+      "$ref": "#/$defs/GroundingEvidence"
+    }
+  },
+
+  "$defs": {
+
+    "DecimalStr": {
+      "type": "string",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$"
+    },
+
+    "CurrencyCode": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+
+    "ISODate": {
+      "type": "string",
+      "format": "date"
+    },
+
+    "ISODateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "BoundingBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x1",
+        "y1",
+        "x2",
+        "y2"
+      ],
+      "properties": {
+        "x1": {
+          "type": "number"
+        },
+        "y1": {
+          "type": "number"
+        },
+        "x2": {
+          "type": "number"
+        },
+        "y2": {
+          "type": "number"
+        }
+      }
+    },
+
+    "SourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "type": "integer",
+          "minimum": 1
+        },
+
+        "element_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+
+        "bbox": {
+          "$ref": "#/$defs/BoundingBox"
+        },
+
+        "source_text": {
+          "type": "string"
+        }
+      }
+    },
+
+    "CurrencyValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "properties": {
+        "amount": {
+          "$ref": "#/$defs/DecimalStr"
+        },
+        "currency": {
+          "$ref": "#/$defs/CurrencyCode"
+        }
+      }
+    },
+
+    "PercentageValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/DecimalStr"
+        },
+        "unit": {
+          "const": "PERCENT"
+        }
+      }
+    },
+
+    "QuantityValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/DecimalStr"
+        },
+        "unit": {
+          "type": "string"
+        }
+      }
+    },
+
+    "Document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_id",
+        "document_type"
+      ],
+      "properties": {
+        "document_id": {
+          "type": "string"
+        },
+
+        "document_type": {
+          "$ref": "#/$defs/DocumentType"
+        },
+
+        "page_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      }
+    },
+
+    "DocumentType": {
+      "type": "string",
+      "enum": [
+        "PAYSLIP",
+        "BANK_STATEMENT",
+        "INVOICE",
+        "QUOTATION",
+        "RECEIPT",
+        "E_RECEIPT",
+        "CERTIFICATE",
+        "RESUME",
+        "OFFICIAL_DOC",
+        "LEGAL_DOC"
+      ]
+    },
+
+    "ReconciliationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "global_facts",
+        "tables"
+      ],
+      "properties": {
+
+        "global_facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GlobalFact"
+          }
+        },
+
+        "tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReconciliationTable"
+          }
+        }
+      }
+    },
+
+    "GlobalFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "value"
+      ],
+      "properties": {
+
+        "role": {
+          "$ref": "#/$defs/GlobalFactRole"
+        },
+
+        "value": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CurrencyValue"
+            },
+            {
+              "$ref": "#/$defs/PercentageValue"
+            },
+            {
+              "$ref": "#/$defs/QuantityValue"
+            },
+            {
+              "$ref": "#/$defs/ISODate"
+            },
+            {
+              "$ref": "#/$defs/ISODateTime"
+            },
+            {
+              "$ref": "#/$defs/DecimalStr"
+            }
+          ]
+        },
+
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      }
+    },
+
+    "GlobalFactRole": {
+      "type": "string",
+      "enum": [
+
+        "OPENING_BALANCE",
+        "CLOSING_BALANCE",
+
+        "SUBTOTAL",
+        "DISCOUNT_AMOUNT",
+        "TAX_AMOUNT",
+        "SHIPPING_FEE",
+        "TOTAL_AMOUNT",
+
+        "AMOUNT_PAID",
+        "AMOUNT_DUE",
+
+        "GROSS_PAY",
+        "NET_PAY",
+        "EMPLOYEE_DEDUCTION_TOTAL",
+        "EMPLOYER_CONTRIBUTION_TOTAL",
+
+        "PRINCIPAL",
+        "INTEREST",
+        "PENALTY",
+        "COMPENSATION",
+
+        "QUANTITY",
+        "HOURS",
+        "DAYS",
+        "MONTHS",
+        "YEARS",
+
+        "TAX_RATE",
+        "DISCOUNT_RATE",
+        "INTEREST_RATE",
+        "PENALTY_RATE",
+
+        "ISSUE_DATE",
+        "DUE_DATE",
+        "PERIOD_START",
+        "PERIOD_END",
+        "VALID_FROM",
+        "VALID_UNTIL",
+        "DEADLINE",
+
+        "TRANSACTION_DATETIME",
+        "PAYMENT_DATETIME"
+      ]
+    },
+
+    "ReconciliationTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "table_type",
+        "columns",
+        "tuples"
+      ],
+      "properties": {
+
+        "id": {
+          "type": "string"
+        },
+
+        "table_type": {
+          "$ref": "#/$defs/TableType"
+        },
+
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+
+        "tuples": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+
+        "raw_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+
+        "source_element_ids": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      }
+    },
+
+    "TableType": {
+      "type": "string",
+      "enum": [
+        "BANK_TRANSACTIONS",
+        "PAYROLL_COMPONENTS",
+        "COMMERCIAL_LINES",
+        "EMPLOYMENT",
+        "EDUCATION",
+        "CERTIFICATE_VALIDITY",
+        "LEGAL_AMOUNTS",
+        "OFFICIAL_AMOUNTS"
+      ]
+    },
+
+    "BankColumn": {
+      "type": "string",
+      "enum": [
+        "EVENT_DATE",
+        "POSTING_DATE",
+        "DESC",
+        "REFERENCE",
+        "FLOW_IN",
+        "FLOW_OUT",
+        "FLOW_SIGNED",
+        "RUNNING_BALANCE"
+      ]
+    },
+
+    "PayrollColumn": {
+      "type": "string",
+      "enum": [
+        "COMPONENT",
+        "AMOUNT",
+        "RATE",
+        "QUANTITY",
+        "EVENT_DATE"
+      ]
+    },
+
+    "CommercialColumn": {
+      "type": "string",
+      "enum": [
+        "PRODUCT",
+        "PRODUCT_CODE",
+        "QUANTITY",
+        "UNIT",
+        "UNIT_PRICE",
+        "DISCOUNT_AMOUNT",
+        "DISCOUNT_RATE",
+        "ROW_TAX",
+        "TAX_RATE",
+        "ROW_TOTAL"
+      ]
+    },
+
+    "EmploymentColumn": {
+      "type": "string",
+      "enum": [
+        "START_DATE",
+        "END_DATE"
+      ]
+    },
+
+    "EducationColumn": {
+      "type": "string",
+      "enum": [
+        "START_DATE",
+        "END_DATE"
+      ]
+    },
+
+    "CertificateColumn": {
+      "type": "string",
+      "enum": [
+        "ISSUE_DATE",
+        "EXPIRY_DATE",
+        "VALID_FROM",
+        "VALID_UNTIL"
+      ]
+    },
+
+    "LegalColumn": {
+      "type": "string",
+      "enum": [
+        "COMPONENT",
+        "AMOUNT",
+        "RATE",
+        "EVENT_DATE",
+        "START_DATE",
+        "END_DATE",
+        "DEADLINE"
+      ]
+    },
+
+    "OfficialColumn": {
+      "type": "string",
+      "enum": [
+        "COMPONENT",
+        "AMOUNT",
+        "RATE",
+        "EVENT_DATE",
+        "START_DATE",
+        "END_DATE",
+        "DEADLINE"
+      ]
+    },
+
+    "PayrollComponent": {
+      "type": "string",
+      "enum": [
+        "BASIC_SALARY",
+        "OVERTIME_PAY",
+        "ALLOWANCE",
+        "BONUS",
+        "COMMISSION",
+        "OTHER_EARNING",
+
+        "EPF_EMPLOYEE",
+        "SOCSO_EMPLOYEE",
+        "EIS_EMPLOYEE",
+        "TAX_DEDUCTION",
+        "EMPLOYEE_DEDUCTION",
+        "OTHER_DEDUCTION",
+
+        "EPF_EMPLOYER",
+        "SOCSO_EMPLOYER",
+        "EIS_EMPLOYER",
+        "EMPLOYER_CONTRIBUTION",
+        "OTHER_CONTRIBUTION"
+      ]
+    },
+
+    "LegalComponent": {
+      "type": "string",
+      "enum": [
+        "PRINCIPAL",
+        "INTEREST",
+        "PENALTY",
+        "LEGAL_FEE",
+        "COMPENSATION",
+        "AWARD",
+        "CLAIM_AMOUNT",
+        "LIABILITY_AMOUNT"
+      ]
+    },
+
+    "OfficialComponent": {
+      "type": "string",
+      "enum": [
+        "TAX",
+        "DUTY",
+        "FEE",
+        "PENALTY",
+        "GRANT",
+        "BENEFIT",
+        "REFUND",
+        "ASSESSMENT",
+        "LIABILITY",
+        "AMOUNT_DUE",
+        "AMOUNT_PAID"
+      ]
+    },
+
+    "GroundingEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "web",
+        "enterprise"
+      ],
+      "properties": {
+
+        "web": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WebGroundingItem"
+          }
+        },
+
+        "enterprise": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EnterpriseGroundingItem"
+          }
+        }
+      }
+    },
+
+    "WebGroundingItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ],
+      "properties": {
+
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+
+        "value": {
+          "type": "string"
+        },
+
+        "normalized_value": {
+          "type": "string"
+        },
+
+        "query_hint": {
+          "type": "string"
+        },
+
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      }
+    },
+
+    "EnterpriseGroundingItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_type",
+        "keys"
+      ],
+      "properties": {
+
+        "entity_type": {
+          "$ref": "#/$defs/EnterpriseEntityType"
+        },
+
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/EnterpriseKey"
+          }
+        },
+
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      }
+    },
+
+    "EnterpriseEntityType": {
+      "type": "string",
+      "enum": [
+        "PERSON",
+        "ORGANIZATION",
+        "PRODUCT",
+        "EMPLOYEE",
+        "CUSTOMER",
+        "VENDOR",
+        "ACCOUNT",
+        "BANK",
+        "TRANSACTION",
+        "INVOICE",
+        "QUOTATION",
+        "RECEIPT",
+        "PURCHASE_ORDER",
+        "CONTRACT",
+        "CERTIFICATE",
+        "CASE",
+        "OTHER"
+      ]
+    },
+
+    "EnterpriseKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "value"
+      ],
+      "properties": {
+
+        "key": {
+          "$ref": "#/$defs/EnterpriseKeyType"
+        },
+
+        "value": {
+          "type": "string"
+        },
+
+        "normalized_value": {
+          "type": "string"
+        }
+      }
+    },
+
+    "EnterpriseKeyType": {
+      "type": "string",
+      "enum": [
+        "PERSON_ID",
+        "EMPLOYEE_ID",
+        "CUSTOMER_ID",
+        "VENDOR_ID",
+        "ORGANIZATION_ID",
+        "COMPANY_REGISTRATION_NO",
+
+        "PRODUCT_ID",
+        "PRODUCT_CODE",
+        "SKU",
+
+        "ACCOUNT_ID",
+        "ACCOUNT_NUMBER",
+        "BANK_ID",
+
+        "TRANSACTION_ID",
+        "TRANSACTION_REFERENCE",
+
+        "INVOICE_ID",
+        "INVOICE_NUMBER",
+
+        "QUOTATION_ID",
+        "QUOTATION_NUMBER",
+
+        "RECEIPT_ID",
+        "RECEIPT_NUMBER",
+
+        "PURCHASE_ORDER_ID",
+        "PURCHASE_ORDER_NUMBER",
+
+        "CONTRACT_ID",
+        "CONTRACT_NUMBER",
+
+        "CERTIFICATE_ID",
+        "CERTIFICATE_NUMBER",
+
+        "CASE_ID",
+        "CASE_NUMBER",
+
+        "OTHER_ID"
+      ]
+    }
+  }
+}
+```
+
+不过这里有一个重要问题：**上面的 JSON Schema 还没有真正做到 `table_type → columns` 的条件约束。**
+
+所以生产版我建议再加 `oneOf`，让 JSON Schema 本身知道：
+
+> `BANK_TRANSACTIONS` 只能出现 BankColumn，`PAYROLL_COMPONENTS` 只能出现 PayrollColumn……
+
+也就是说 `ReconciliationTable` 最终应该改成这种结构：
+
+```json
+"ReconciliationTable": {
+  "oneOf": [
+    {
+      "$ref": "#/$defs/BankTransactionTable"
+    },
+    {
+      "$ref": "#/$defs/PayrollTable"
+    },
+    {
+      "$ref": "#/$defs/CommercialTable"
+    },
+    {
+      "$ref": "#/$defs/EmploymentTable"
+    },
+    {
+      "$ref": "#/$defs/EducationTable"
+    },
+    {
+      "$ref": "#/$defs/CertificateTable"
+    },
+    {
+      "$ref": "#/$defs/LegalTable"
+    },
+    {
+      "$ref": "#/$defs/OfficialTable"
+    }
+  ]
+}
+```
+
+然后分别定义：
+
+```json
+"BankTransactionTable": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "table_type",
+    "columns",
+    "tuples"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "table_type": {
+      "const": "BANK_TRANSACTIONS"
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/BankColumn"
+      }
+    },
+    "tuples": {
+      "$ref": "#/$defs/Matrix"
+    },
+    "raw_headers": {
+      "$ref": "#/$defs/StringArray"
+    },
+    "source_element_ids": {
+      "$ref": "#/$defs/SourceMatrix"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceRef"
+    }
+  }
+}
+```
+
+其余 table 类型同理。
+
+---
+
+# 2. Pydantic Schema
+
+我反而建议 **Pydantic 才是 TrustLens 内部真正的 canonical schema**，JSON Schema 从 Pydantic 自动生成，而不是维护两套。
+
+```python
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
+from typing import Annotated, Literal, Union
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+# ============================================================
+# Primitive Types
+# ============================================================
+
+DecimalStr = Annotated[
+    str,
+    Field(pattern=r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
+]
+
+CurrencyCode = Annotated[
+    str,
+    Field(pattern=r"^[A-Z]{3}$")
+]
+
+
+# ============================================================
+# Source
+# ============================================================
+
+class BoundingBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class SourceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: int | None = Field(default=None, ge=1)
+    element_ids: list[str] = Field(default_factory=list)
+    bbox: BoundingBox | None = None
+    source_text: str | None = None
+
+
+# ============================================================
+# Values
+# ============================================================
+
+class CurrencyValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount: DecimalStr
+    currency: CurrencyCode
+
+
+class PercentageValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: DecimalStr
+    unit: Literal["PERCENT"] = "PERCENT"
+
+
+class QuantityValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: DecimalStr
+    unit: str | None = None
+
+
+# ============================================================
+# Document
+# ============================================================
+
+class DocumentType(str, Enum):
+    PAYSLIP = "PAYSLIP"
+    BANK_STATEMENT = "BANK_STATEMENT"
+    INVOICE = "INVOICE"
+    QUOTATION = "QUOTATION"
+    RECEIPT = "RECEIPT"
+    E_RECEIPT = "E_RECEIPT"
+    CERTIFICATE = "CERTIFICATE"
+    RESUME = "RESUME"
+    OFFICIAL_DOC = "OFFICIAL_DOC"
+    LEGAL_DOC = "LEGAL_DOC"
+
+
+class Document(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str
+    document_type: DocumentType
+    page_count: int | None = Field(default=None, ge=1)
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Global Facts
+# ============================================================
+
+class GlobalFactRole(str, Enum):
+
+    OPENING_BALANCE = "OPENING_BALANCE"
+    CLOSING_BALANCE = "CLOSING_BALANCE"
+
+    SUBTOTAL = "SUBTOTAL"
+    DISCOUNT_AMOUNT = "DISCOUNT_AMOUNT"
+    TAX_AMOUNT = "TAX_AMOUNT"
+    SHIPPING_FEE = "SHIPPING_FEE"
+    TOTAL_AMOUNT = "TOTAL_AMOUNT"
+
+    AMOUNT_PAID = "AMOUNT_PAID"
+    AMOUNT_DUE = "AMOUNT_DUE"
+
+    GROSS_PAY = "GROSS_PAY"
+    NET_PAY = "NET_PAY"
+    EMPLOYEE_DEDUCTION_TOTAL = "EMPLOYEE_DEDUCTION_TOTAL"
+    EMPLOYER_CONTRIBUTION_TOTAL = "EMPLOYER_CONTRIBUTION_TOTAL"
+
+    PRINCIPAL = "PRINCIPAL"
+    INTEREST = "INTEREST"
+    PENALTY = "PENALTY"
+    COMPENSATION = "COMPENSATION"
+
+    QUANTITY = "QUANTITY"
+    HOURS = "HOURS"
+    DAYS = "DAYS"
+    MONTHS = "MONTHS"
+    YEARS = "YEARS"
+
+    TAX_RATE = "TAX_RATE"
+    DISCOUNT_RATE = "DISCOUNT_RATE"
+    INTEREST_RATE = "INTEREST_RATE"
+    PENALTY_RATE = "PENALTY_RATE"
+
+    ISSUE_DATE = "ISSUE_DATE"
+    DUE_DATE = "DUE_DATE"
+    PERIOD_START = "PERIOD_START"
+    PERIOD_END = "PERIOD_END"
+    VALID_FROM = "VALID_FROM"
+    VALID_UNTIL = "VALID_UNTIL"
+    DEADLINE = "DEADLINE"
+
+    TRANSACTION_DATETIME = "TRANSACTION_DATETIME"
+    PAYMENT_DATETIME = "PAYMENT_DATETIME"
+
+
+GlobalFactValue = Union[
+    CurrencyValue,
+    PercentageValue,
+    QuantityValue,
+    date,
+    datetime,
+    DecimalStr,
+]
+
+
+class GlobalFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: GlobalFactRole
+    value: GlobalFactValue
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Table Components
+# ============================================================
+
+class PayrollComponent(str, Enum):
+
+    BASIC_SALARY = "BASIC_SALARY"
+    OVERTIME_PAY = "OVERTIME_PAY"
+    ALLOWANCE = "ALLOWANCE"
+    BONUS = "BONUS"
+    COMMISSION = "COMMISSION"
+    OTHER_EARNING = "OTHER_EARNING"
+
+    EPF_EMPLOYEE = "EPF_EMPLOYEE"
+    SOCSO_EMPLOYEE = "SOCSO_EMPLOYEE"
+    EIS_EMPLOYEE = "EIS_EMPLOYEE"
+    TAX_DEDUCTION = "TAX_DEDUCTION"
+    EMPLOYEE_DEDUCTION = "EMPLOYEE_DEDUCTION"
+    OTHER_DEDUCTION = "OTHER_DEDUCTION"
+
+    EPF_EMPLOYER = "EPF_EMPLOYER"
+    SOCSO_EMPLOYER = "SOCSO_EMPLOYER"
+    EIS_EMPLOYER = "EIS_EMPLOYER"
+    EMPLOYER_CONTRIBUTION = "EMPLOYER_CONTRIBUTION"
+    OTHER_CONTRIBUTION = "OTHER_CONTRIBUTION"
+
+
+class LegalComponent(str, Enum):
+
+    PRINCIPAL = "PRINCIPAL"
+    INTEREST = "INTEREST"
+    PENALTY = "PENALTY"
+    LEGAL_FEE = "LEGAL_FEE"
+    COMPENSATION = "COMPENSATION"
+    AWARD = "AWARD"
+    CLAIM_AMOUNT = "CLAIM_AMOUNT"
+    LIABILITY_AMOUNT = "LIABILITY_AMOUNT"
+
+
+class OfficialComponent(str, Enum):
+
+    TAX = "TAX"
+    DUTY = "DUTY"
+    FEE = "FEE"
+    PENALTY = "PENALTY"
+    GRANT = "GRANT"
+    BENEFIT = "BENEFIT"
+    REFUND = "REFUND"
+    ASSESSMENT = "ASSESSMENT"
+    LIABILITY = "LIABILITY"
+    AMOUNT_DUE = "AMOUNT_DUE"
+    AMOUNT_PAID = "AMOUNT_PAID"
+
+
+# ============================================================
+# Matrix
+# ============================================================
+
+Cell = str | None
+
+
+class MatrixBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    columns: list[str]
+    tuples: list[list[Cell]]
+
+    raw_headers: list[str] | None = None
+
+    source_element_ids: list[list[str | None]] | None = None
+
+    @model_validator(mode="after")
+    def validate_matrix(self):
+        width = len(self.columns)
+
+        for row in self.tuples:
+            if len(row) != width:
+                raise ValueError(
+                    f"Tuple width {len(row)} does not match "
+                    f"column width {width}"
+                )
+
+        if self.source_element_ids is not None:
+
+            if len(self.source_element_ids) != len(self.tuples):
+                raise ValueError(
+                    "source_element_ids row count must match tuples"
+                )
+
+            for row in self.source_element_ids:
+                if len(row) != width:
+                    raise ValueError(
+                        "source_element_ids row width must match columns"
+                    )
+
+        return self
+
+
+# ============================================================
+# Bank Table
+# ============================================================
+
+class BankColumn(str, Enum):
+
+    EVENT_DATE = "EVENT_DATE"
+    POSTING_DATE = "POSTING_DATE"
+    DESC = "DESC"
+    REFERENCE = "REFERENCE"
+    FLOW_IN = "FLOW_IN"
+    FLOW_OUT = "FLOW_OUT"
+    FLOW_SIGNED = "FLOW_SIGNED"
+    RUNNING_BALANCE = "RUNNING_BALANCE"
+
+
+class BankTransactionTable(MatrixBase):
+
+    id: str
+    table_type: Literal["BANK_TRANSACTIONS"] = "BANK_TRANSACTIONS"
+
+    columns: list[BankColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Payroll Table
+# ============================================================
+
+class PayrollColumn(str, Enum):
+
+    COMPONENT = "COMPONENT"
+    AMOUNT = "AMOUNT"
+    RATE = "RATE"
+    QUANTITY = "QUANTITY"
+    EVENT_DATE = "EVENT_DATE"
+
+
+class PayrollTable(MatrixBase):
+
+    id: str
+    table_type: Literal["PAYROLL_COMPONENTS"] = "PAYROLL_COMPONENTS"
+
+    columns: list[PayrollColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Commercial Table
+# ============================================================
+
+class CommercialColumn(str, Enum):
+
+    PRODUCT = "PRODUCT"
+    PRODUCT_CODE = "PRODUCT_CODE"
+    QUANTITY = "QUANTITY"
+    UNIT = "UNIT"
+    UNIT_PRICE = "UNIT_PRICE"
+    DISCOUNT_AMOUNT = "DISCOUNT_AMOUNT"
+    DISCOUNT_RATE = "DISCOUNT_RATE"
+    ROW_TAX = "ROW_TAX"
+    TAX_RATE = "TAX_RATE"
+    ROW_TOTAL = "ROW_TOTAL"
+
+
+class CommercialLinesTable(MatrixBase):
+
+    id: str
+    table_type: Literal["COMMERCIAL_LINES"] = "COMMERCIAL_LINES"
+
+    columns: list[CommercialColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Employment
+# ============================================================
+
+class EmploymentColumn(str, Enum):
+
+    START_DATE = "START_DATE"
+    END_DATE = "END_DATE"
+
+
+class EmploymentTable(MatrixBase):
+
+    id: str
+    table_type: Literal["EMPLOYMENT"] = "EMPLOYMENT"
+
+    columns: list[EmploymentColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Education
+# ============================================================
+
+class EducationColumn(str, Enum):
+
+    START_DATE = "START_DATE"
+    END_DATE = "END_DATE"
+
+
+class EducationTable(MatrixBase):
+
+    id: str
+    table_type: Literal["EDUCATION"] = "EDUCATION"
+
+    columns: list[EducationColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Certificate
+# ============================================================
+
+class CertificateColumn(str, Enum):
+
+    ISSUE_DATE = "ISSUE_DATE"
+    EXPIRY_DATE = "EXPIRY_DATE"
+    VALID_FROM = "VALID_FROM"
+    VALID_UNTIL = "VALID_UNTIL"
+
+
+class CertificateValidityTable(MatrixBase):
+
+    id: str
+    table_type: Literal["CERTIFICATE_VALIDITY"] = "CERTIFICATE_VALIDITY"
+
+    columns: list[CertificateColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Legal
+# ============================================================
+
+class LegalColumn(str, Enum):
+
+    COMPONENT = "COMPONENT"
+    AMOUNT = "AMOUNT"
+    RATE = "RATE"
+    EVENT_DATE = "EVENT_DATE"
+    START_DATE = "START_DATE"
+    END_DATE = "END_DATE"
+    DEADLINE = "DEADLINE"
+
+
+class LegalAmountsTable(MatrixBase):
+
+    id: str
+    table_type: Literal["LEGAL_AMOUNTS"] = "LEGAL_AMOUNTS"
+
+    columns: list[LegalColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Official
+# ============================================================
+
+class OfficialColumn(str, Enum):
+
+    COMPONENT = "COMPONENT"
+    AMOUNT = "AMOUNT"
+    RATE = "RATE"
+    EVENT_DATE = "EVENT_DATE"
+    START_DATE = "START_DATE"
+    END_DATE = "END_DATE"
+    DEADLINE = "DEADLINE"
+
+
+class OfficialAmountsTable(MatrixBase):
+
+    id: str
+    table_type: Literal["OFFICIAL_AMOUNTS"] = "OFFICIAL_AMOUNTS"
+
+    columns: list[OfficialColumn]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Union
+# ============================================================
+
+ReconciliationTable = Union[
+    BankTransactionTable,
+    PayrollTable,
+    CommercialLinesTable,
+    EmploymentTable,
+    EducationTable,
+    CertificateValidityTable,
+    LegalAmountsTable,
+    OfficialAmountsTable,
+]
+
+
+# ============================================================
+# Reconciliation
+# ============================================================
+
+class ReconciliationEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    global_facts: list[GlobalFact] = Field(default_factory=list)
+
+    tables: list[ReconciliationTable] = Field(default_factory=list)
+
+
+# ============================================================
+# Web Grounding
+# ============================================================
+
+class WebGroundingItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: str
+
+    normalized_value: str | None = None
+
+    query_hint: str | None = None
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Enterprise Grounding
+# ============================================================
+
+class EnterpriseEntityType(str, Enum):
+
+    PERSON = "PERSON"
+    ORGANIZATION = "ORGANIZATION"
+    PRODUCT = "PRODUCT"
+    EMPLOYEE = "EMPLOYEE"
+    CUSTOMER = "CUSTOMER"
+    VENDOR = "VENDOR"
+    ACCOUNT = "ACCOUNT"
+    BANK = "BANK"
+    TRANSACTION = "TRANSACTION"
+    INVOICE = "INVOICE"
+    QUOTATION = "QUOTATION"
+    RECEIPT = "RECEIPT"
+    PURCHASE_ORDER = "PURCHASE_ORDER"
+    CONTRACT = "CONTRACT"
+    CERTIFICATE = "CERTIFICATE"
+    CASE = "CASE"
+    OTHER = "OTHER"
+
+
+class EnterpriseKeyType(str, Enum):
+
+    PERSON_ID = "PERSON_ID"
+    EMPLOYEE_ID = "EMPLOYEE_ID"
+    CUSTOMER_ID = "CUSTOMER_ID"
+    VENDOR_ID = "VENDOR_ID"
+    ORGANIZATION_ID = "ORGANIZATION_ID"
+    COMPANY_REGISTRATION_NO = "COMPANY_REGISTRATION_NO"
+
+    PRODUCT_ID = "PRODUCT_ID"
+    PRODUCT_CODE = "PRODUCT_CODE"
+    SKU = "SKU"
+
+    ACCOUNT_ID = "ACCOUNT_ID"
+    ACCOUNT_NUMBER = "ACCOUNT_NUMBER"
+    BANK_ID = "BANK_ID"
+
+    TRANSACTION_ID = "TRANSACTION_ID"
+    TRANSACTION_REFERENCE = "TRANSACTION_REFERENCE"
+
+    INVOICE_ID = "INVOICE_ID"
+    INVOICE_NUMBER = "INVOICE_NUMBER"
+
+    QUOTATION_ID = "QUOTATION_ID"
+    QUOTATION_NUMBER = "QUOTATION_NUMBER"
+
+    RECEIPT_ID = "RECEIPT_ID"
+    RECEIPT_NUMBER = "RECEIPT_NUMBER"
+
+    PURCHASE_ORDER_ID = "PURCHASE_ORDER_ID"
+    PURCHASE_ORDER_NUMBER = "PURCHASE_ORDER_NUMBER"
+
+    CONTRACT_ID = "CONTRACT_ID"
+    CONTRACT_NUMBER = "CONTRACT_NUMBER"
+
+    CERTIFICATE_ID = "CERTIFICATE_ID"
+    CERTIFICATE_NUMBER = "CERTIFICATE_NUMBER"
+
+    CASE_ID = "CASE_ID"
+    CASE_NUMBER = "CASE_NUMBER"
+
+    OTHER_ID = "OTHER_ID"
+
+
+class EnterpriseKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: EnterpriseKeyType
+
+    value: str
+
+    normalized_value: str | None = None
+
+
+class EnterpriseGroundingItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: EnterpriseEntityType
+
+    keys: list[EnterpriseKey]
+
+    source: SourceRef | None = None
+
+
+# ============================================================
+# Grounding
+# ============================================================
+
+class GroundingEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    web: list[WebGroundingItem] = Field(default_factory=list)
+
+    enterprise: list[EnterpriseGroundingItem] = Field(default_factory=list)
+
+
+# ============================================================
+# Root
+# ============================================================
+
+class TrustLensEvidenceIR(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["2.0"] = "2.0"
+
+    document: Document
+
+    reconciliation: ReconciliationEvidence
+
+    grounding: GroundingEvidence
+```
+
+---
+
+## 3. 一个很重要的设计决定：Matrix 的 cell 为什么全部是 string/null？
+
+这是我建议你**保留**的。
+
+例如：
+
+```json
+{
+  "columns": [
+    "COMPONENT",
+    "AMOUNT",
+    "RATE"
+  ],
+  "tuples": [
+    ["BASIC_SALARY", "3000.00", null],
+    ["EPF_EMPLOYEE", "330.00", "11"]
+  ]
+}
+```
+
+不要变成：
+
+```json
+[
+  ["BASIC_SALARY", 3000.00, null],
+  ["EPF_EMPLOYEE", 330.00, 11]
+]
+```
+
+原因是你的 Matrix 是一个 **LLM extraction boundary**。
+
+Qwen 输出：
+
+```text
+"3000.00"
+```
+
+而不是：
+
+```text
+3000.0
+```
+
+然后 Reconciliation Engine 自己：
+
+```python
+Decimal("3000.00")
+```
+
+这样：
+
+**Qwen → Evidence IR → deterministic engine**
+
+中间没有 Python/JSON float 偷偷破坏 monetary precision 的可能。
+
+---
+
+# 4. 但还有一个地方我建议你不要现在过度设计
+
+就是 `COMPONENT`。
+
+例如 payroll：
+
+```text
+BASIC_SALARY
+ALLOWANCE
+EPF_EMPLOYEE
+SOCSO_EMPLOYEE
+...
+```
+
+这是合理的，因为 deterministic reconciliation **确实需要知道类别**。
+
+但千万不要继续膨胀成：
+
+```text
+BASIC_SALARY
+BASIC_SALARY_ADJUSTED
+BASIC_SALARY_PRORATED
+BASIC_SALARY_PREVIOUS_PERIOD
+...
+```
+
+这种 ontology。
+
+原则应该是：
+
+> **只有当下游 deterministic rule 无法在没有这个语义的情况下运行，才进入 closed-world enum。**
+
+否则：
+
+```text
+raw text → Semantic Engine
+```
+
+或者：
+
+```text
+open key-value → Web Grounding
+```
+
+---
+
+# 5. 最终 TrustLens v2 的数据流
+
+我认为现在已经可以非常清楚地画成：
+
+```text
+                    ┌──────────────────┐
+                    │   Original Doc   │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │   Qwen VLM       │
+                    │ extraction only  │
+                    └────────┬─────────┘
+                             │
+                 ┌───────────┼────────────┐
+                 │           │            │
+                 ▼           ▼            ▼
+        ┌────────────────┐ ┌──────────┐ ┌─────────────────┐
+        │ Reconciliation │ │ Grounding│ │ Semantic Engine │
+        │    Evidence    │ │ Evidence │ │  Original Text  │
+        └───────┬────────┘ └────┬─────┘ └────────┬────────┘
+                │               │                │
+                ▼               ├──── Web ───────┤
+        deterministic           │                │
+        rules only              └── Enterprise   │
+                │                                │
+                ▼                                ▼
+        arithmetic /                    LLM semantic
+        balance / dates /               reasoning
+        quantities
+```
+
+所以这个 schema 的核心不是“把所有 document knowledge 都结构化”。
+
+恰恰相反：
+
+> **把必须结构化的最小闭世界信息结构化；其余信息故意保持开放。**
+
+这会让 TrustLens v2 后面扩展到新的 document type 时非常舒服——你不是每增加一种 document 就重新建立一个庞大的 universal ontology。
