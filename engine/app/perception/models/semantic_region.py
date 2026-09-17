@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from .bbox import BBox
 
@@ -83,4 +83,13 @@ class SemanticRegion(BaseModel):
     reading_order_index: Optional[int] = Field(
         default=None,
         description="Docling iterate_items() 中的全局顺序索引（用于恢复阅读顺序）"
+    )
+
+    picture_classes: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Docling picture classification 结果，形如 "
+            "[{'class_name': 'logo', 'confidence': 0.97}, ...]。"
+            "仅 picture/chart 类型有值。"
+        ),
     )

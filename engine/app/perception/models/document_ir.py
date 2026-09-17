@@ -74,6 +74,16 @@ class DocumentElement(BaseModel):
     is_container_fragment: bool = Field(default=False)
     container_group_id: Optional[int] = Field(default=None)
 
+    # ★ 新增：picture/chart 的分类标签（来自 Docling picture classifier）
+    picture_classes: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "图片分类标签，形如 "
+            "[{'class_name': 'logo', 'confidence': 0.97}, ...]。"
+            "仅 element_type 为 picture/chart 时可能有值。"
+        ),
+    )
+
     # 局部冲突
     local_conflicts: List[Dict[str, Any]] = Field(default_factory=list)
 

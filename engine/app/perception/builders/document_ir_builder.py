@@ -80,14 +80,14 @@ class DocumentIRBuilder:
         # 背景：Docling 关闭 do_table_structure 后，会把 table 内每个 cell
         #      降级输出为一个独立 paragraph region。这些 region 会污染
         #      RegionAssigner 的匹配（小区域优先抢走 obs）。
-        # 策略：如果某 region 被任意 table bbox 覆盖 95%+，则丢弃之，
+        # 策略：如果某 region 被任意 table bbox 覆盖 85%+，则丢弃之，
         #      该区域的文本完全交给 TableReconstructor 处理。
         table_bboxes = [t.bbox for t in docling_tables]
         other_regions: List[SemanticRegion] = []
         suppressed_inside_table = 0
         for r in other_regions_raw:
             is_inside_table = any(
-                tb.intersection_over(r.bbox) > 0.95
+                tb.intersection_over(r.bbox) > 0.85
                 for tb in table_bboxes
             )
             if is_inside_table:
@@ -205,6 +205,7 @@ class DocumentIRBuilder:
                         observation_ids=frag_ids,
                         is_container_fragment=True,
                         container_group_id=region.container_group_id,
+                        picture_classes=region.picture_classes,   # ★ 可选
                     ))
                 # 容器本身不再生成 element
 
@@ -232,6 +233,7 @@ class DocumentIRBuilder:
                     source="docling",
                     text=text if text else None,
                     observation_ids=sorted_ids,
+                    picture_classes=region.picture_classes,
                 )
 
                 # 交叉验证（仅文本类 region）
@@ -322,6 +324,13 @@ class DocumentIRBuilder:
                 ),
                 "orphan_element_count": sum(
                     1 for e in elements if e.source == "fallback_orphan"
+                ),
+                "picture_element_count": sum(
+                    1 for e in elements if e.element_type in ("picture", "chart")
+                ),
+                "picture_classified_count": sum(
+                    1 for e in elements
+                    if e.picture_classes is not None and len(e.picture_classes) > 0
                 ),
                 "table_merged_both": table_stats["table_merged_both"],
                 "table_pymupdf_only": table_stats["table_pymupdf_only"],

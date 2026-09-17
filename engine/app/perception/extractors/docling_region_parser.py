@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 
 from app.core.document_ir import DocumentContext
 from app.perception.models.bbox import BBox
@@ -115,11 +115,12 @@ class DoclingRegionParser:
         except AttributeError:
             logger.warning("do_table_structure not available in this Docling version")
 
-        # 图片分类：我们只关心 picture bbox，不需要知道是 logo 还是 photo
+        # 图片分类：启用。非 VLM，使用 docling 自带的 DocumentFigureClassifier
+        # 首次启用会从 HuggingFace 下载模型，之后本地推理
         try:
-            pipeline_options.do_picture_classification = False
+            pipeline_options.do_picture_classification = True
         except AttributeError:
-            logger.warning("do_picture_classification not available")
+            logger.info("Enabling picture classification (will download model on first run)")
 
         # 图片描述：会跑 VLM，非常耗时
         try:
@@ -332,6 +333,7 @@ class DoclingRegionParser:
 
         docling_label = self._get_label(item)
         docling_text = self._extract_docling_text(item)
+        picture_classes = self._extract_picture_classes(item)
 
         return SemanticRegion(
             page=page_num,
@@ -339,6 +341,7 @@ class DoclingRegionParser:
             type=region_type,  # type: ignore[arg-type]
             docling_label=docling_label,
             docling_text=docling_text,
+            picture_classes=picture_classes,
             source="docling",
             confidence=0.8,
             raw_meta={
@@ -359,6 +362,53 @@ class DoclingRegionParser:
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
         return None
+
+    def _extract_picture_classes(self, item) -> Optional[List[Dict[str, Any]]]:
+        """
+        从 PictureItem.annotations 提取 Docling 的图片分类结果。
+
+        Docling 的结构大致是：
+            PictureItem.annotations: List[PictureClassificationData]
+            PictureClassificationData.predicted_classes: List[PictureClassificationClass]
+            PictureClassificationClass.class_name: str
+            PictureClassificationClass.confidence: float
+
+        为了兼容不同 Docling 版本，这里用鸭子类型 + 类型名判断，
+        不直接 import docling_core 的具体类。
+        """
+        cls_name = type(item).__name__
+        if cls_name != "PictureItem":
+            return None
+
+        annotations = getattr(item, "annotations", None)
+        if not annotations:
+            return None
+
+        result: List[Dict[str, Any]] = []
+        for annot in annotations:
+            annot_type = type(annot).__name__
+            # 兼容可能的命名：PictureClassificationData / PictureClassificationPrediction
+            if "PictureClassification" not in annot_type:
+                continue
+            predicted = getattr(annot, "predicted_classes", None) or []
+            for cls in predicted:
+                name = getattr(cls, "class_name", None)
+                if name is None:
+                    # 兜底：有些版本字段名可能不同
+                    name = getattr(cls, "label", None) or getattr(cls, "name", None)
+                if name is None:
+                    continue
+                conf = getattr(cls, "confidence", None)
+                try:
+                    conf_f = float(conf) if conf is not None else None
+                except (TypeError, ValueError):
+                    conf_f = None
+                result.append({
+                    "class_name": str(name),
+                    "confidence": conf_f,
+                })
+
+        return result if result else None
 
     def _classify_item(self, item) -> Optional[str]:
         try:
