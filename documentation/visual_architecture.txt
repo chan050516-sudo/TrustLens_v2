@@ -1,23 +1,47 @@
 纯色+平滑度+摩尔纹 → 0-1 score → camera / digital
 
 ## digital pdf
-https://share.gemini.google/nDmrn28iMien
+
 - PyMuPDF 提取原始 spans / chars
-1. 构建全页全局分布 (FontSize, Color, FontName) → 标记离群三元组
-2. 遍历每行计算 Span/Line 宽度比 → 标记 Micro-Span (碎裂篡改)
-3. Inter-character delta varience: 遍历数值字段计算字符 X 步进方差 → 标记间距挤压 (Kerning 异常)
-4. bbox overlap / copy-move detection
+
+#### 1. 全局样式分布基线（Global Baseline Profiling）
+对于合规系统生成的单据或合同，其排版系统（Typography System）熵值极低：
+* **构建直方图：** 统计整页所有 Span 的 `(font_name, font_size, font_color)` 三元组频次。
+* 正常文档的正文字号通常呈**强尖峰分布**（例如 90% 的 Span 集中在 `9.5pt`，少数标题在 `14pt`）。
+* 颜色通常收敛于固定的几个枚举值（如 `#000000` 或某固定的灰色 `#333333`）。
+* **异常判定：**
+如果某个数值字段的 Span，其 `font_size` 属于整页唯一的孤立浮点数（例如其他都是 `10.0pt`，只有它由于编辑器手动缩放变成了 `9.82pt`），或者颜色产生了细微偏差（例如全篇黑色是 `(0, 0, 0)`，只有它是从外部复制带来的 `(15, 15, 15)`），直接被高斯分布或 DBSCAN 判定为离群异常点。
+
+#### 2. Span / Line / Block 几何占比与碎裂度检测（Fragmentation Ratio）
+正如你提到的这两个比值，它们是捕获“局部文字微调”的最佳指标：
+$$\text{Ratio}_{\text{span\_to\_line}} = \frac{\text{Width}(\text{Span})}{\text{Width}(\text{Line})}, \quad \text{Ratio}_{\text{line\_to\_block}} = \frac{\text{Height}(\text{Line})}{\text{Height}(\text{Block})}$$
+* **孤立微型 Span（Micro-Span Injection）：**
+* 正常机器生成的文本行，整行通常由 1 个或极少数因中英文切换产生的 Span 构成。
+* 若某一行包含 5 个字符，却被切成了 3 个 Span，且其中某个 Span 的 `len(span["chars"]) == 1`（单字符孤立），同时：
+$$\text{Ratio}_{\text{span\_to\_line}} < 0.15$$
+* 这种极小的占比表明**有人在该行文字的中间挖孔插入或替换了字符**。
+
+#### 3. 字符间距与步进方差（Inter-Character Delta Variance）
+* 正常印刷体数字（如西文中的 Tabular Figures / 等宽数字）：
+连续数字字符的 X 轴步进距离 $\Delta x_i = \text{origin}[0]_{i+1} - \text{origin}[0]_i$ 应该保持严格的一致性（方差 $\sigma^2 \to 0$）。
+* 当插入篡改数字时，造假者无法做到像素级等距对齐：
+* 计算关键字段（如金额、日期）中字符序列间距的**变异系数（Coefficient of Variation, $CV = \frac{\sigma}{\mu}$）**。
+* 一旦发现某段紧凑数字串的 $CV$ 突变偏高，表明字符在排版几何上被人工位移扰动过。
+
+#### 4. bbox overlap / copy-move detection
 Detector	检测内容	产出类型
 Occlusion Detector	A covers B（覆盖率、Z 顺序、对象类型）	PDF_OBJECT_OCCLUSION
 Object Reuse Detector	A ≈ B（精确/近似/视觉对应）	PDF_OBJECT_REUSE
 Overlay Characterization	Overlay 的类型（image/text/vector/form）和不透明度	PDF_OVERLAY_CHARACTERIZATION
 Correlation Engine	将上述三者关联	PDF_COPY_MOVE_CORRELATION
-5. partial outlining
+
+#### 5. partial outlining
 文本行异常gap，page.get_drawing()
 正常表格的 Drawing 都是大矩形、横线、竖线（由简单的 l 划线或 re 矩形指令构成）。 
 字符转曲生成的 Drawing，必然包含大量的紧密三次贝塞尔曲线段（包含多个 c 操作符）与环状闭合路径，且外接矩形的长宽比完全符合字符特征。 
 一旦在文本行的空白间隙中捕捉到“字符尺寸的高密度闭合曲线群”，立即判定为转曲注入篡改。
-6. vector spoofing
+
+#### 6. vector spoofing
 检测算法：
 ​遍历 page.get_drawings()，筛选出所有极小尺寸的矢量元素（比如高度或宽度小于当前正文字号，例如 < 5\text{pt} 的线段或微型闭合块）。
 ​排除掉合规的下划线（下划线通常横跨整个 Span，宽度较长）。
