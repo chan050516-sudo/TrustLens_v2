@@ -66,12 +66,20 @@ class EvidenceType(str, Enum):
 
     HIDDEN_TEXT_DETECTED = "HIDDEN_TEXT_DETECTED"
 
+    # === L2 Visual - Digital PDF ===
+    PDF_SOURCE_TYPE = "PDF_SOURCE_TYPE"                                # source_type 判定（事实）
+    PDF_TYPOGRAPHY_OUTLIER = "PDF_TYPOGRAPHY_OUTLIER"                  # 字体/字号/颜色三元组离群
+    PDF_SPAN_FRAGMENTATION_ANOMALY = "PDF_SPAN_FRAGMENTATION_ANOMALY"  # span 碎裂 / 微 span
+    PDF_CHAR_SPACING_ANOMALY = "PDF_CHAR_SPACING_ANOMALY"              # 字符间距/步进方差异常
 
-    # L2 Visual Layer
-    VISUAL_ANOMALY = "VISUAL_ANOMALY"                     # 单个模型检测的异常区域
-    VISUAL_CONSENSUS = "VISUAL_CONSENSUS"                # 多模型空间重叠的共识异常
-    VISUAL_MODEL_SPECIFIC = "VISUAL_MODEL_SPECIFIC"      # 某个模型特有的信号
-    VISUAL_DISAGREEMENT = "VISUAL_DISAGREEMENT"          # 模型间分数分歧（观察性）
+    # 以下为 P3 预留，枚举先加上，避免后续改动扩散
+    PDF_OBJECT_OCCLUSION = "PDF_OBJECT_OCCLUSION"
+    PDF_OBJECT_REUSE = "PDF_OBJECT_REUSE"
+    PDF_OVERLAY_CHARACTERIZATION = "PDF_OVERLAY_CHARACTERIZATION"
+    PDF_COPY_MOVE_CORRELATION = "PDF_COPY_MOVE_CORRELATION"
+    PDF_PARTIAL_OUTLINING = "PDF_PARTIAL_OUTLINING"
+    PDF_VECTOR_SPOOFING = "PDF_VECTOR_SPOOFING"
+    PDF_DRAWING_ANOMALY = "PDF_DRAWING_ANOMALY"
 
 
 class Evidence(BaseModel):
