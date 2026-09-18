@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Dict, Any, Optional
 
-from app.forensics.visual.visual_ir import VisualForensicContext
+from app.forensics.visual_legacy.visual_ir import VisualForensicContext
 
 logger = logging.getLogger(__name__)
 

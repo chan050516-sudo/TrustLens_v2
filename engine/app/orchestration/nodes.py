@@ -12,7 +12,7 @@ from pathlib import Path
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
 from engine.app.orchestration.state import ForensicState
-from app.forensics.visual import (
+from app.forensics.visual_legacy import (
     VisualPreprocessor,
     VisualInferenceEngine,
     EvidenceExtractor,

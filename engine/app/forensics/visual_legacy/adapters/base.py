@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, List
 import numpy as np
 
-from app.forensics.visual.visual_ir import VisualModelOutput
+from app.forensics.visual_legacy.visual_ir import VisualModelOutput
 
 logger = logging.getLogger(__name__)
 

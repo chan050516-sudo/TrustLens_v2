@@ -12,7 +12,7 @@ from PIL import Image
 import io
 
 from app.core.document_ir import DocumentContext
-from app.forensics.visual.visual_ir import VisualInput, ImageSourceType
+from app.forensics.visual_legacy.visual_ir import VisualInput, ImageSourceType
 
 logger = logging.getLogger(__name__)
 

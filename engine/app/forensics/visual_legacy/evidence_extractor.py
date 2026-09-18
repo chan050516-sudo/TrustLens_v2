@@ -15,7 +15,7 @@ from scipy import ndimage
 from PIL import Image
 
 from app.core.evidence import Evidence, EvidenceType
-from app.forensics.visual.visual_ir import VisualInput, VisualModelOutput, VisualForensicContext
+from app.forensics.visual_legacy.visual_ir import VisualInput, VisualModelOutput, VisualForensicContext
 
 logger = logging.getLogger(__name__)
 

@@ -14,8 +14,8 @@ import torch.nn.functional as F
 from torchvision import transforms
 
 from .base import BaseVisualAdapter, get_external_model_path, isolated_import
-from app.forensics.visual.visual_ir import VisualModelOutput
-from app.forensics.visual.exceptions import ModelNotFoundError, ModelLoadError, InferenceError
+from app.forensics.visual_legacy.visual_ir import VisualModelOutput
+from app.forensics.visual_legacy.exceptions import ModelNotFoundError, ModelLoadError, InferenceError
 
 logger = logging.getLogger(__name__)
 CATNET_WEIGHT_PATH = "weights/CAT_full_v2.pth"

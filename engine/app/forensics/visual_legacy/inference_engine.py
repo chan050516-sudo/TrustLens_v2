@@ -8,9 +8,9 @@ import time
 from typing import List, Dict, Optional, Any, Type
 from pathlib import Path
 
-from app.forensics.visual.visual_ir import VisualInput, VisualModelOutput
-from app.forensics.visual.adapters import BaseVisualAdapter, TruForAdapter, CATNetAdapter, MVSSAdapter
-from app.forensics.visual.exceptions import VisualForensicsError, ModelLoadError, InferenceError
+from app.forensics.visual_legacy.visual_ir import VisualInput, VisualModelOutput
+from app.forensics.visual_legacy.adapters import BaseVisualAdapter, TruForAdapter, CATNetAdapter, MVSSAdapter
+from app.forensics.visual_legacy.exceptions import VisualForensicsError, ModelLoadError, InferenceError
 
 logger = logging.getLogger(__name__)
 
