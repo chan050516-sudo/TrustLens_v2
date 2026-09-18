@@ -100,22 +100,22 @@ app/
 │   │
 │   ├── template/
 │   │
-│   ├── reconciliation/
-│   │   ├── math/
-│   │   ├── date/
-│   │   ├── qr/
-│   │   ├── barcode/
-│   │   ├── regex/
-│   │   ├── checksum/
-│   │   └── external/
-│   │
-│   ├── graph.py
-│   ├── nodes.py
-│   └── state.py
+│   └── reconciliation/
+│       ├── math/
+│       ├── date/
+│       ├── qr/
+│       ├── barcode/
+│       ├── regex/
+│       ├── checksum/
+│       └── external/
 │
 ├── agents/
 │
 ├── orchestration/
+│   ├── __init__.py
+│   ├── graph.py
+│   ├── nodes.py
+│   ├── state.py
 │   └── runner.py
 │
 ├── storage/

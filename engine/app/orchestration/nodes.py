@@ -1,4 +1,4 @@
-# engine/app/forensics/nodes.py
+# engine/app/orchestration/nodes.py
 """
 LangGraph 节点函数
 每个节点对应一个 Layer 或一个处理步骤
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
-from app.forensics.state import ForensicState
+from engine.app.orchestration.state import ForensicState
 from app.forensics.visual import (
     VisualPreprocessor,
     VisualInferenceEngine,
@@ -39,52 +39,26 @@ class ForensicNodes:
     async def ingest(state: ForensicState) -> ForensicState:
         """
         文档加载节点
-        负责：读取文件、计算哈希、检测 MIME 类型、提取基础元数据
+        负责：MIME 检测、SHA256、页数/尺寸探测
         """
         logger.info(f"Node: ingest - {state.context.file_path}")
         state.current_stage = "ingest"
-        
+
         try:
             from app.ingestion.loader import DocumentLoader
-            from app.ingestion.detector import MimeDetector
-            
-            # 如果 context 还没有 mime_type，检测它
-            if not state.context.mime_type:
-                state.context.mime_type = MimeDetector.detect(state.context.file_path)
-            
-            # 如果还没有 SHA256，计算它
-            if not state.context.custom_metadata.get("sha256"):
-                import hashlib
-                sha256 = hashlib.sha256()
-                with open(state.context.file_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(8192), b""):
-                        sha256.update(chunk)
-                state.context.custom_metadata["sha256"] = sha256.hexdigest()
-            
-            # 如果是 PDF，获取页数
-            if state.context.mime_type == "application/pdf":
-                try:
-                    import fitz
-                    doc = fitz.open(state.context.file_path)
-                    state.context.custom_metadata["page_count"] = len(doc)
-                    doc.close()
-                except Exception as e:
-                    state.add_error("ingest", f"PDF page count failed: {e}")
-            
-            # 如果是图片，获取尺寸
-            if state.context.mime_type and state.context.mime_type.startswith("image/"):
-                try:
-                    from PIL import Image
-                    with Image.open(state.context.file_path) as img:
-                        state.context.custom_metadata["image_width"] = img.width
-                        state.context.custom_metadata["image_height"] = img.height
-                except Exception as e:
-                    state.add_error("ingest", f"Image size extraction failed: {e}")
-                    
+
+            loaded = DocumentLoader.load(
+                state.context.file_path,
+                mime_type=state.context.mime_type,
+            )
+            # 就地更新 context（保留原对象引用）
+            state.context.mime_type = loaded.mime_type
+            state.context.custom_metadata.update(loaded.custom_metadata)
+
         except Exception as e:
             logger.exception(f"Ingest failed: {e}")
             state.add_error("ingest", str(e))
-        
+
         return state
     
     # ============= 节点 2: 格式路由 =============
@@ -96,6 +70,64 @@ class ForensicNodes:
         """
         logger.info(f"Node: route_by_type - {state.context.mime_type}")
         state.current_stage = "route"
+        return state
+
+    # ============= 节点 2.5: Perception 结构解析 =============
+    @staticmethod
+    async def perception(state: ForensicState) -> ForensicState:
+        """
+        Perception 结构解析节点
+
+        路由：
+          - image/*      → PerceptionPipeline.run()
+          - application/pdf → MultiPagePdfOrchestrator.run()
+
+        产物：state.document_ir
+        """
+        logger.info(f"Node: perception - {state.context.file_path}")
+        state.current_stage = "perception"
+
+        mime = state.context.mime_type or ""
+        is_image = mime.startswith("image/")
+        is_pdf = (mime == "application/pdf")
+
+        if not (is_image or is_pdf):
+            logger.warning(f"Perception skipped for MIME: {mime}")
+            state.document_ir = None
+            return state
+
+        loop = asyncio.get_event_loop()
+
+        try:
+            if is_image:
+                from app.perception.pipeline import PerceptionPipeline
+                pipeline = PerceptionPipeline(docling_do_ocr=True)
+                doc_ir = await loop.run_in_executor(
+                    None, pipeline.run, state.context,
+                )
+            else:  # is_pdf
+                from app.perception.orchestration import MultiPagePdfOrchestrator
+                orch = MultiPagePdfOrchestrator(
+                    non_native_workers=4,
+                    dpi=200,
+                )
+                doc_ir = await loop.run_in_executor(
+                    None, orch.run, state.context,
+                )
+
+            state.document_ir = doc_ir
+            logger.info(
+                f"Perception produced: "
+                f"{len(doc_ir.observations)} obs, "
+                f"{len(doc_ir.elements)} elements, "
+                f"{len(doc_ir.conflicts)} conflicts"
+            )
+
+        except Exception as e:
+            logger.exception(f"Perception failed: {e}")
+            state.add_error("perception", str(e))
+            state.document_ir = None
+
         return state
     
     # ============= 节点 3: L1 元数据分析 =============
@@ -312,13 +344,31 @@ class ForensicNodes:
     # ============= 节点 9: 生成最终报告 =============
     @staticmethod
     async def finalize(state: ForensicState) -> ForensicState:
-        """
-        最终报告生成节点
-        组装所有结果，生成结构化报告
-        """
         logger.info(f"Node: finalize")
         state.current_stage = "finalize"
-        
+
+        # ★ 新增：perception 摘要
+        perception_summary = None
+        if state.document_ir is not None:
+            di = state.document_ir
+            perception_summary = {
+                "page_count": di.page_count,
+                "observation_count": len(di.observations),
+                "element_count": len(di.elements),
+                "conflict_count": len(di.conflicts),
+                "element_type_distribution": {
+                    t: sum(1 for e in di.elements if e.element_type == t)
+                    for t in {e.element_type for e in di.elements}
+                },
+                "table_count": sum(
+                    1 for e in di.elements if e.element_type == "table"
+                ),
+                "picture_classified_count": sum(
+                    1 for e in di.elements
+                    if getattr(e, "picture_classes", None)
+                ),
+            }
+
         state.final_report = {
             "document": {
                 "name": state.context.file_name,
@@ -339,12 +389,13 @@ class ForensicNodes:
                     "L4": len(state.l4_evidences),
                 }
             },
+            "perception": perception_summary,   # ★ 新增
             "document_type": state.document_type,
             "template_id": state.template_id,
             "errors": state.errors,
             "evidences": [ev.dict() for ev in state.all_evidences],
         }
-        
+
         return state
     
     # ============= 辅助方法 =============

@@ -1,4 +1,4 @@
-# engine/app/forensics/graph.py
+# engine/app/orchestration/graph.py
 """
 LangGraph 取证编排图
 定义节点、边、条件路由
@@ -8,8 +8,8 @@ from typing import Literal, Optional, Dict, Any
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint import MemorySaver
 
-from app.forensics.state import ForensicState
-from app.forensics.nodes import ForensicNodes
+from engine.app.orchestration.state import ForensicState
+from engine.app.orchestration.nodes import ForensicNodes
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class ForensicGraph:
         # 2. 添加节点
         builder.add_node("ingest", ForensicNodes.ingest)
         builder.add_node("route_by_type", ForensicNodes.route_by_type)
+        builder.add_node("perception", ForensicNodes.perception) 
         builder.add_node("l1_metadata", ForensicNodes.l1_metadata)
         builder.add_node("l2_visual", ForensicNodes.l2_visual)
         builder.add_node("l3_semantic", ForensicNodes.l3_semantic)
@@ -52,6 +53,7 @@ class ForensicGraph:
         # ===== 并行分派：L1, L2, L3 同时启动 =====
         # 注意：LangGraph 中，当一个节点有多个出边指向不同节点时，
         # 这些目标节点会并行执行（如果资源允许）。
+        builder.add_edge("route_by_type", "perception")
         builder.add_edge("route_by_type", "l1_metadata")
         builder.add_edge("route_by_type", "l2_visual")
         builder.add_edge("route_by_type", "l3_semantic")
@@ -107,6 +109,7 @@ class ForensicGraph:
         
         initial_state = {
             "context": doc_context,
+            "document_ir": None,     # ★ 新增
             "l1_evidences": [],
             "l2_evidences": [],
             "l3_evidences": [],
@@ -152,6 +155,7 @@ class ForensicGraph:
         
         initial_state = {
             "context": doc_context,
+            "document_ir": None,     # ★ 新增
             "l1_evidences": [],
             "l2_evidences": [],
             "l3_evidences": [],

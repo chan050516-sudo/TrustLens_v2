@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, AsyncIterator
 
 from app.core.document_ir import DocumentContext
-from app.forensics.graph import get_forensic_graph
+from engine.app.orchestration.graph import get_forensic_graph
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,11 @@ class ForensicRunner:
         graph = get_forensic_graph()
         result = await graph.run(context)
         
-        return result.get("final_report", {}) or result
+        # ★ 可选：把 document_ir 也暴露出去
+        report = result.get("final_report", {}) or result
+        if result.get("document_ir") is not None:
+            report["_document_ir"] = result["document_ir"]
+        return report
     
     @classmethod
     async def analyze_stream(

@@ -1,4 +1,4 @@
-# engine/app/forensics/state.py
+# engine/app/orchestration/state.py
 """
 LangGraph 状态定义
 跨所有 Layer 共享的状态对象
@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
+from app.perception.models.document_ir import DocumentIR
 
 
 class ForensicState(BaseModel):
@@ -16,6 +17,9 @@ class ForensicState(BaseModel):
     
     # 输入
     context: DocumentContext
+
+    # ★ 新增：Perception 产出
+    document_ir: Optional[DocumentIR] = None
     
     # 各层证据累积
     l1_evidences: List[Evidence] = field(default_factory=list)   # Metadata
