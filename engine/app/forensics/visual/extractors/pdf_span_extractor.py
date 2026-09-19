@@ -103,7 +103,11 @@ class PdfSpanExtractor:
         line_id: int,
         span_index: int,
     ) -> Optional[SpanIR]:
-        text = span_dict.get("text", "")
+        # rawdict 的 span 不含 "text"，需从 chars 重建
+        chars_raw = span_dict.get("chars", []) or []
+        text = span_dict.get("text")
+        if text is None:
+            text = "".join(ch.get("c", "") for ch in chars_raw)
         if len(text.strip()) < self.min_text_len:
             return None
 
@@ -117,7 +121,7 @@ class PdfSpanExtractor:
         origin = (float(origin[0]), float(origin[1]))
 
         chars: List[CharIR] = []
-        for ch in span_dict.get("chars", []):
+        for ch in chars_raw:
             c = ch.get("c", "")
             if not c:
                 continue

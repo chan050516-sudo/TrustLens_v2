@@ -98,25 +98,60 @@ class VisualContextBuilder:
     def _describe(self, a: VisualAnomalyIR, obs_text: Optional[str]) -> str:
         text_ref = f" on observation \"{obs_text[:60]}\"" if obs_text else ""
         d = a.detail or {}
-        if a.anomaly_type == "PDF_TYPOGRAPHY_OUTLIER":
+        t = a.anomaly_type
+
+        if t == "PDF_TYPOGRAPHY_OUTLIER":
             reasons = ", ".join(d.get("reasons", []))
-            return (
-                f"Typography outlier{text_ref} on page {a.page} "
-                f"(reasons: {reasons})."
-            )
-        if a.anomaly_type == "PDF_SPAN_FRAGMENTATION_ANOMALY":
-            return (
-                f"Span fragmentation anomaly{text_ref} on page {a.page} "
-                f"(reason: {d.get('reason')})."
-            )
-        if a.anomaly_type == "PDF_CHAR_SPACING_ANOMALY":
+            return f"Typography outlier{text_ref} on page {a.page} (reasons: {reasons})."
+
+        if t == "PDF_SPAN_FRAGMENTATION_ANOMALY":
+            return f"Span fragmentation anomaly{text_ref} on page {a.page} (reason: {d.get('reason')})."
+
+        if t == "PDF_CHAR_SPACING_ANOMALY":
             cv = d.get("cv")
+            if isinstance(cv, (int, float)):
+                return f"Character spacing anomaly{text_ref} on page {a.page} (CV={cv:.4f})."
+            return f"Character spacing anomaly{text_ref} on page {a.page}."
+
+        if t == "PDF_OBJECT_OCCLUSION":
             return (
-                f"Character spacing anomaly{text_ref} on page {a.page} "
-                f"(CV={cv:.4f})." if isinstance(cv, (int, float)) else
-                f"Character spacing anomaly{text_ref} on page {a.page}."
+                f"Occlusion on page {a.page}: {d.get('occluder_type')} "
+                f"over {d.get('occluded_type')} (coverage={d.get('coverage')})."
             )
-        return f"{a.anomaly_type}{text_ref} on page {a.page}."
+
+        if t == "PDF_OBJECT_REUSE":
+            return (
+                f"Object reuse on page {a.page} "
+                f"(reason={d.get('reason')}, text={d.get('text')})."
+            )
+
+        if t == "PDF_OVERLAY_CHARACTERIZATION":
+            return (
+                f"Overlay characterization on page {a.page}: "
+                f"type={d.get('overlay_type')}, opacity={d.get('opacity')}."
+            )
+
+        if t == "PDF_COPY_MOVE_CORRELATION":
+            return (
+                f"Copy-move correlation on page {a.page} "
+                f"(occluder={d.get('occluder_id')}, occluded={d.get('occluded_id')}, "
+                f"coverage={d.get('coverage')})."
+            )
+
+        if t == "PDF_PARTIAL_OUTLINING":
+            return (
+                f"Partial outlining on page {a.page} "
+                f"(bezier_count={d.get('bezier_count')}, "
+                f"aspect_ratio={d.get('aspect_ratio')})."
+            )
+
+        if t == "PDF_VECTOR_SPOOFING":
+            return (
+                f"Vector spoofing on page {a.page} "
+                f"(hit_chars={d.get('hit_count')})."
+            )
+
+        return f"{t}{text_ref} on page {a.page}."
 
     @staticmethod
     def _global_style(visual_ir: VisualIR) -> Dict[str, Any]:

@@ -34,6 +34,10 @@ from app.forensics.visual.utils.evidence_mapper import (
     anomaly_to_evidence,
     source_type_to_evidence,
 )
+from app.forensics.visual.analyzers.overlap_analyzer import OverlapAnalyzer
+from app.forensics.visual.analyzers.outlining_analyzer import OutliningAnalyzer
+from app.forensics.visual.analyzers.vector_spoofing_analyzer import VectorSpoofingAnalyzer
+from app.forensics.visual.extractors.pdf_image_extractor import PdfImageExtractor
 
 
 class VisualEngine:
@@ -42,6 +46,7 @@ class VisualEngine:
         source_detector: Optional[SourceTypeDetector] = None,
         span_extractor: Optional[PdfSpanExtractor] = None,
         drawing_extractor: Optional[PdfDrawingExtractor] = None,
+        image_extractor: Optional[PdfImageExtractor] = None,
         analyzers: Optional[List[BaseVisualAnalyzer]] = None,
         context_builder: Optional[VisualContextBuilder] = None,
         debug_dump_dir: Optional[Path] = None,
@@ -49,14 +54,18 @@ class VisualEngine:
         self.source_detector = source_detector or SourceTypeDetector()
         self.span_extractor = span_extractor or PdfSpanExtractor()
         self.drawing_extractor = drawing_extractor or PdfDrawingExtractor()
+        self.image_extractor = image_extractor or PdfImageExtractor()
         self.analyzers = analyzers or [
+            # 顺序：样式 → 碎裂 → 间距 → 重叠 → 转曲 → 矢量伪造
             TypographyAnalyzer(),
             FragmentationAnalyzer(),
             CharSpacingAnalyzer(),
+            OverlapAnalyzer(),
+            OutliningAnalyzer(),
+            VectorSpoofingAnalyzer(),
         ]
         self.context_builder = context_builder or VisualContextBuilder()
         self.debug_dump_dir = Path(debug_dump_dir) if debug_dump_dir else None
-
         self._errors: List[str] = []
 
     # ---------- public ----------
@@ -80,11 +89,9 @@ class VisualEngine:
             # 本阶段只处理 digital_pdf
             return evidences, None
 
-        # 2. extract
+        # 2. 提取：span + drawings + images
         try:
-            pages_ir = self.span_extractor.extract(
-                Path(context.file_path), document_ir=document_ir,
-            )
+            pages_ir = self.span_extractor.extract(Path(context.file_path), document_ir=document_ir)
         except Exception as e:
             self._errors.append(f"PdfSpanExtractor failed: {e}")
             return evidences, None
@@ -95,9 +102,15 @@ class VisualEngine:
             self._errors.append(f"PdfDrawingExtractor failed: {e}")
             drawings_by_page = {}
 
-        # 合并 drawings 到 VisualPageIR
+        try:
+            images_by_page = self.image_extractor.extract(Path(context.file_path))
+        except Exception as e:
+            self._errors.append(f"PdfImageExtractor failed: {e}")
+            images_by_page = {}
+
         for p in pages_ir:
             p.drawings = drawings_by_page.get(p.page, [])
+            p.images = images_by_page.get(p.page, [])
 
         # 3. VisualIR
         visual_ir = VisualIR(

@@ -6,6 +6,8 @@ PdfDrawingExtractor — 从 page.get_drawings() 提取 DrawingIR。
 """
 from pathlib import Path
 from typing import Dict, List, Optional
+import hashlib
+from typing import Any, List
 
 import fitz
 import hashlib
@@ -79,7 +81,7 @@ class PdfDrawingExtractor:
                     has_rect = True
 
             is_micro = bbox.width < self.micro_size_threshold or bbox.height < self.micro_size_threshold
-            items_hash = self._hash_items(items)
+            items_hash = self._hash_items(items, bbox)
 
             fill = d.get("fill")
             stroke = d.get("stroke")
@@ -110,20 +112,49 @@ class PdfDrawingExtractor:
         except Exception:
             return None
 
-    @staticmethod
-    def _hash_items(items) -> str:
-        """指令序列哈希：操作符 + 量化坐标，用于 reuse 检测。"""
-        parts: list[str] = []
+
+    # 替换原来的 _hash_items
+    def _hash_items(self, items: List[Any], bbox: "BBox") -> str:
+        """
+        基于形状的哈希：操作符 + 相对 bbox 归一化后的坐标（平移不变）。
+
+        关键：PyMuPDF 的 item 里是 Point / Rect / Quad 对象，不是 int/float/tuple，
+        必须用 hasattr 检测并展开，否则坐标会全部丢失。
+        """
+        parts: List[str] = []
         for it in items:
             if not it:
                 continue
             op = it[0]
             parts.append(str(op))
             for v in it[1:]:
-                if isinstance(v, (int, float)):
-                    parts.append(f"{round(float(v), 2):.2f}")
-                elif isinstance(v, (list, tuple)):
-                    for x in v:
-                        if isinstance(x, (int, float)):
-                            parts.append(f"{round(float(x), 2):.2f}")
+                parts.extend(self._format_coords(v, bbox))
         return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _format_coords(v: Any, bbox: "BBox") -> List[str]:
+        """从 Point / Rect / Quad / list / number 中提取坐标并归一化。"""
+        out: List[str] = []
+        # Point
+        if hasattr(v, "x") and hasattr(v, "y"):
+            out.append(f"{float(v.x) - bbox.x0:.2f}")
+            out.append(f"{float(v.y) - bbox.y0:.2f}")
+            return out
+        # Rect
+        if hasattr(v, "x0") and hasattr(v, "y0") and hasattr(v, "x1") and hasattr(v, "y1"):
+            out.append(f"{float(v.x0) - bbox.x0:.2f}")
+            out.append(f"{float(v.y0) - bbox.y0:.2f}")
+            out.append(f"{float(v.x1) - bbox.x0:.2f}")
+            out.append(f"{float(v.y1) - bbox.y0:.2f}")
+            return out
+        # 裸数字（例如 re 的 orientation，通常为 1 / -1）
+        if isinstance(v, (int, float)):
+            out.append(f"{float(v):.2f}")
+            return out
+        # list / tuple（可能是嵌套）
+        if isinstance(v, (list, tuple)):
+            for x in v:
+                out.extend(PdfDrawingExtractor._format_coords(x, bbox))
+            return out
+        # 兜底：能 str 就 str
+        return out
