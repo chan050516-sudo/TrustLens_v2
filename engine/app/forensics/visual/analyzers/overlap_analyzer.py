@@ -1,16 +1,11 @@
 """
 OverlapAnalyzer — bbox overlap / copy-move detection。
 
-对应 visual_architecture.txt 第 4 节，包含四个子检测器：
+四个子检测器：
 1. Occlusion Detector        -> PDF_OBJECT_OCCLUSION
-2. Object Reuse Detector     -> PDF_OBJECT_REUSE
+2. Object Reuse Detector     -> PDF_OBJECT_REUSE（只做 vector / image）
 3. Overlay Characterization  -> PDF_OVERLAY_CHARACTERIZATION
 4. Correlation Engine        -> PDF_COPY_MOVE_CORRELATION
-
-关键设计（TDR-12 ~ TDR-16）：
-- 统一对象抽象：text / vector / image
-- 不做 z-order 完美重建，用几何覆盖 + 类型启发式
-- 保守：只在覆盖率极高时才给高置信度
 """
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,7 +15,7 @@ from app.forensics.visual.models.visual_ir import (
     DrawingIR, ImageIR, SpanIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
 from app.forensics.visual.utils.geometry_helpers import (
-    bboxes_intersect, bbox_center, coverage_of,
+    bboxes_intersect, bbox_union, coverage_of, intersection_area,
 )
 from app.perception.models.bbox import BBox
 
@@ -31,7 +26,7 @@ class OverlapObject:
     obj_type: str          # "text" | "vector" | "image"
     page: int
     bbox: BBox
-    ref: Any               # SpanIR | DrawingIR | ImageIR
+    ref: Any
     observation_id: Optional[int] = None
 
 
@@ -40,23 +35,38 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
 
     def __init__(
         self,
-        occlusion_coverage_threshold: float = 0.85,
-        occlusion_min_area: float = 20.0,       # pt^2
-        reuse_size_tol: float = 0.02,           # 2%
-        text_reuse_min_len: int = 2,            # 文本至少 2 字符才参与 reuse
-        reuse_min_items: int = 3,          # 绘图至少这么多个 item 才参与 reuse
-        reuse_max_group_size: int = 3,     # 同 hash 在一页里出现 > N 次 → 视作结构，跳过
-        reuse_min_position_delta: float = 3.0,  # 两个 reuse 对象的位置差至少要这么多 pt
+        # occlusion
+        occlusion_coverage_threshold: float = 0.9,
+        occlusion_min_area: float = 20.0,
+        occlusion_min_text_len: int = 3,
+        vector_fill_opacity_min: float = 0.9,
+        text_color_diff_min: int = 100,
+        # reuse
+        reuse_size_tol: float = 0.02,
+        reuse_min_items: int = 5,
+        reuse_min_bezier: int = 3,
+        reuse_max_group_size: int = 2,
+        reuse_min_position_delta: float = 20.0,
     ):
         self.occlusion_coverage_threshold = occlusion_coverage_threshold
         self.occlusion_min_area = occlusion_min_area
+        self.occlusion_min_text_len = occlusion_min_text_len
+        self.vector_fill_opacity_min = vector_fill_opacity_min
+        self.text_color_diff_min = text_color_diff_min
+
         self.reuse_size_tol = reuse_size_tol
-        self.text_reuse_min_len = text_reuse_min_len
-        self.reuse_min_items = reuse_min_items                     # ← 必须有
-        self.reuse_max_group_size = reuse_max_group_size           # ← 必须有
+        self.reuse_min_items = reuse_min_items
+        self.reuse_min_bezier = reuse_min_bezier
+        self.reuse_max_group_size = reuse_max_group_size
         self.reuse_min_position_delta = reuse_min_position_delta
 
+        self.document_ir: Optional[Any] = None
+
     # ---------- public ----------
+
+    def set_document_ir(self, document_ir: Optional[Any]) -> None:
+        """由 VisualEngine 在 analyze() 前注入。"""
+        self.document_ir = document_ir
 
     def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
         anomalies: List[VisualAnomalyIR] = []
@@ -64,7 +74,6 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             objects = self._collect_objects(page_ir)
             if not objects:
                 continue
-
             occlusions = self._detect_occlusions(objects, page_ir)
             reuses = self._detect_reuse(objects, page_ir)
             overlays = self._characterize_overlays(occlusions, objects, page_ir)
@@ -114,15 +123,10 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         n = len(objects)
         for i in range(n):
             a = objects[i]
-            if a.obj_type not in ("vector", "image", "text"):
-                continue
             for j in range(n):
                 if i == j:
                     continue
                 b = objects[j]
-                # a 覆盖 b：
-                # - a 不能是 text 覆盖 text 之外的情况（text-on-text 允许）
-                # - b 被 a 覆盖的比例超过阈值
                 if not self._is_valid_occluder(a, b):
                     continue
                 if b.bbox.area < self.occlusion_min_area:
@@ -132,8 +136,7 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
                 cov = coverage_of(b.bbox, a.bbox)
                 if cov < self.occlusion_coverage_threshold:
                     continue
-                # 避免重复记录（i,j）和（j,i）：
-                # 只保留 b.area < a.area 且覆盖率高的方向
+                # 只保留大覆盖小
                 if a.bbox.area < b.bbox.area:
                     continue
 
@@ -159,25 +162,79 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
     def _is_valid_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
         if a.obj_id == b.obj_id:
             return False
-        # 类型规则
+        # thin-line over thin-line 排除（表格双线边框等）
+        if a.obj_type == "vector" and b.obj_type == "vector":
+            if (min(a.bbox.width, a.bbox.height) < 1.0
+                    and min(b.bbox.width, b.bbox.height) < 1.0):
+                return False
         if a.obj_type == "vector":
-            ref: DrawingIR = a.ref
-            if not ref.has_fill:
-                return False
-            if ref.fill_opacity is not None and ref.fill_opacity < 0.3:
-                return False
-            return b.obj_type in ("text", "vector", "image")
+            return self._is_valid_vector_occluder(a, b)
         if a.obj_type == "image":
-            return b.obj_type in ("text", "vector")
+            return self._is_valid_image_occluder(a, b)
         if a.obj_type == "text":
-            # 只对 text-on-text 生效（隐藏文本场景）
-            return b.obj_type == "text"
+            return self._is_valid_text_occluder(a, b)
         return False
 
+    def _is_valid_vector_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
+        d: DrawingIR = a.ref
+        if not d.has_fill:
+            return False
+        if d.fill_opacity is not None and d.fill_opacity < self.vector_fill_opacity_min:
+            return False
+        if min(a.bbox.width, a.bbox.height) < 1.0:
+            return False
+        if b.obj_type not in ("text", "vector", "image"):
+            return False
+        if b.obj_type == "text":
+            if len(b.ref.text.strip()) < self.occlusion_min_text_len:
+                return False
+        return True
+
+    def _is_valid_image_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
+        if b.obj_type not in ("text", "vector"):
+            return False
+        return self._is_suspicious_image(a)
+
+    def _is_valid_text_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
+        if b.obj_type != "text":
+            return False
+        sa: SpanIR = a.ref
+        sb: SpanIR = b.ref
+        if len(sb.text.strip()) < self.occlusion_min_text_len:
+            return False
+        color_diff = self._color_channel_max_diff(sa.font_color, sb.font_color)
+        if color_diff < self.text_color_diff_min:
+            return False
+        return True
+
+    def _is_suspicious_image(self, img_obj: OverlapObject) -> bool:
+        """图片是否可疑：DocumentIR 未确认它是合法 picture/chart。"""
+        if self.document_ir is None:
+            return True
+        elements = getattr(self.document_ir, "elements", None) or []
+        for elem in elements:
+            if getattr(elem, "page", None) != img_obj.page:
+                continue
+            elem_type = getattr(elem, "element_type", "")
+            if elem_type not in ("picture", "chart"):
+                continue
+            elem_bbox = getattr(elem, "bbox", None)
+            if elem_bbox is None:
+                continue
+            inter = intersection_area(elem_bbox, img_obj.bbox)
+            img_area = max(img_obj.bbox.area, 1e-6)
+            if inter / img_area > 0.5:
+                return False
+        return True
+
+    @staticmethod
+    def _color_channel_max_diff(c1: int, c2: int) -> int:
+        r1, g1, b1 = (c1 >> 16) & 0xFF, (c1 >> 8) & 0xFF, c1 & 0xFF
+        r2, g2, b2 = (c2 >> 16) & 0xFF, (c2 >> 8) & 0xFF, c2 & 0xFF
+        return max(abs(r1 - r2), abs(g1 - g2), abs(b1 - b2))
+
     def _occlusion_confidence(self, a: OverlapObject, b: OverlapObject, cov: float) -> float:
-        # 基础置信度随覆盖率上升
         base = 0.6 if cov >= 0.95 else 0.5
-        # 覆盖对象越不透明越高
         if a.obj_type == "vector":
             op = a.ref.fill_opacity
             if op is not None:
@@ -187,7 +244,6 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
                     base -= 0.15
         if a.obj_type == "image":
             base += 0.1
-        # 被覆盖对象是 text 更严重（说明覆盖了内容）
         if b.obj_type == "text":
             base += 0.05
         return max(0.0, min(1.0, base))
@@ -199,18 +255,9 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         objects: List[OverlapObject],
         page_ir: VisualPageIR,
     ) -> List[VisualAnomalyIR]:
-        """
-        分组 → 组内两两比对 → 产出 reuse anomaly。
-
-        分组 key 按类型不同：
-        - text   : (text, font_name, font_size, font_color, 量化 bbox 尺寸)
-        - vector : items_hash
-        - image  : digest
-        组大小 > reuse_max_group_size 时整组跳过（结构元素）。
-        """
         from collections import defaultdict
 
-        groups: dict = defaultdict(list)
+        groups: Dict = defaultdict(list)
         for obj in objects:
             key = self._reuse_group_key(obj)
             if key is None:
@@ -222,46 +269,34 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             if len(group) < 2:
                 continue
             if len(group) > self.reuse_max_group_size:
-                # 出现次数太多 → 结构性元素，跳过
                 continue
-
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
                     a, b = group[i], group[j]
                     if not self._is_reuse_pair(a, b):
                         continue
                     anomalies.append(self._reuse_anomaly(a, b, self._reuse_reason(a)))
+
+        # 去重
         seen = set()
         deduped: List[VisualAnomalyIR] = []
-        for a in anomalies:
-            key = frozenset((
-                a.detail.get("obj_a_id"),
-                a.detail.get("obj_b_id"),
-            ))
-            if key in seen:
+        for x in anomalies:
+            k = frozenset((x.detail.get("obj_a_id"), x.detail.get("obj_b_id")))
+            if k in seen:
                 continue
-            seen.add(key)
-            deduped.append(a)
+            seen.add(k)
+            deduped.append(x)
         return deduped
 
     def _reuse_group_key(self, obj: OverlapObject):
+        # text reuse 已删除 —— 文本重复在 B2B 发票上是正常排版
         if obj.obj_type == "text":
-            s: SpanIR = obj.ref
-            if len(s.text.strip()) < self.text_reuse_min_len:
-                return None
-            return (
-                "text",
-                s.text,
-                s.font_name,
-                round(s.font_size, 2),
-                s.font_color,
-                round(s.bbox.width, 1),
-                round(s.bbox.height, 1),
-            )
+            return None
         if obj.obj_type == "vector":
             d: DrawingIR = obj.ref
-            # 结构过滤：简单线条/矩形不参与
-            if not self._is_reusable_drawing(d):
+            if d.item_count < self.reuse_min_items:
+                return None
+            if d.bezier_count < self.reuse_min_bezier:
                 return None
             if d.items_hash is None:
                 return None
@@ -273,26 +308,8 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             return ("image", img.digest)
         return None
 
-    def _is_reusable_drawing(self, d: DrawingIR) -> bool:
-        """
-        只有“足够复杂”的绘图才可能作为被 copy 的内容。
-        - 简单线条（has_line 且无 bezier 且 item_count <= 2）→ 排除
-        - 简单矩形轮廓（has_rect 且无 bezier 且 item_count <= 1）→ 排除
-        - item_count < reuse_min_items → 排除
-        """
-        if d.item_count < self.reuse_min_items:
-            return False
-        if d.has_line and not d.has_bezier and d.item_count <= 2:
-            return False
-        if d.has_rect and not d.has_bezier and d.item_count <= 1:
-            return False
-        return True
-
     def _is_reuse_pair(self, a: OverlapObject, b: OverlapObject) -> bool:
-        if a.obj_type == "text":
-            if not self._is_text_reuse(a, b):
-                return False
-        elif a.obj_type == "vector":
+        if a.obj_type == "vector":
             if not self._is_vector_reuse(a, b):
                 return False
         elif a.obj_type == "image":
@@ -300,10 +317,7 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
                 return False
         else:
             return False
-        # 位置必须显著不同：两个完全重叠的对象不算 copy-move
-        if not self._positions_distinct(a.bbox, b.bbox):
-            return False
-        return True
+        return self._positions_distinct(a.bbox, b.bbox)
 
     def _positions_distinct(self, a: BBox, b: BBox) -> bool:
         dx = abs(a.x0 - b.x0)
@@ -312,26 +326,9 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
 
     @staticmethod
     def _reuse_reason(obj: OverlapObject) -> str:
-        if obj.obj_type == "text":
-            return "text_exact"
         if obj.obj_type == "vector":
             return "vector_instruction_match"
         return "image_digest_match"
-
-    def _is_text_reuse(self, a: OverlapObject, b: OverlapObject) -> bool:
-        sa: SpanIR = a.ref
-        sb: SpanIR = b.ref
-        if len(sa.text.strip()) < self.text_reuse_min_len:
-            return False
-        if sa.text != sb.text:
-            return False
-        if sa.font_name != sb.font_name:
-            return False
-        if abs(sa.font_size - sb.font_size) > 0.01:
-            return False
-        if sa.font_color != sb.font_color:
-            return False
-        return self._similar_size(sa.bbox, sb.bbox)
 
     def _is_vector_reuse(self, a: OverlapObject, b: OverlapObject) -> bool:
         da: DrawingIR = a.ref
@@ -357,8 +354,6 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         return dw <= self.reuse_size_tol and dh <= self.reuse_size_tol
 
     def _reuse_anomaly(self, a: OverlapObject, b: OverlapObject, reason: str) -> VisualAnomalyIR:
-        # 用两个 bbox 的并集作为 location
-        from app.forensics.visual.utils.geometry_helpers import bbox_union
         union = bbox_union(a.bbox, b.bbox)
         return VisualAnomalyIR(
             page=a.page,
@@ -366,16 +361,13 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             anomaly_type="PDF_OBJECT_REUSE",
             confidence=0.7,
             observation_id=a.observation_id or b.observation_id,
-            span_ids=[
-                o.obj_id for o in (a, b) if o.obj_type == "text"
-            ],
+            span_ids=[],
             detail={
                 "reason": reason,
                 "obj_a_id": a.obj_id,
                 "obj_a_type": a.obj_type,
                 "obj_b_id": b.obj_id,
                 "obj_b_type": b.obj_type,
-                "text": a.ref.text if a.obj_type == "text" else None,
             },
         )
 
@@ -400,15 +392,11 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
                 d: DrawingIR = occluder.ref
                 opacity = d.fill_opacity if d.fill_opacity is not None else d.stroke_opacity
                 fill_color = d.fill_color
-            # 只在有意义的场景（非默认不透明度）产出 characterization
-            # 让下游能看到「这不是完全不透明的覆盖」
             is_interesting = (
                 opacity is not None and 0.0 < opacity < 1.0
             ) or overlay_type == "image"
-
             if not is_interesting:
                 continue
-
             anomalies.append(VisualAnomalyIR(
                 page=occluder.page,
                 bbox=occluder.bbox,
@@ -434,7 +422,6 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         reuses: List[VisualAnomalyIR],
         page_ir: VisualPageIR,
     ) -> List[VisualAnomalyIR]:
-        # 构造 reuse 的对 (idA, idB)
         reuse_pairs = set()
         for r in reuses:
             a = r.detail.get("obj_a_id")

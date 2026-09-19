@@ -128,6 +128,14 @@ class VisualEngine:
         # 4. analyzers
         all_anomalies = []
         for analyzer in self.analyzers:
+            # 注入 document_ir（仅对有 set_document_ir 的分析器生效）
+            if hasattr(analyzer, "set_document_ir"):
+                try:
+                    analyzer.set_document_ir(document_ir)
+                except Exception as e:
+                    self._errors.append(
+                        f"{analyzer.__class__.__name__}.set_document_ir failed: {e}"
+                    )
             try:
                 anomalies = analyzer.analyze(visual_ir)
                 all_anomalies.extend(anomalies)

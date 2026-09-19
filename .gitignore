@@ -220,6 +220,7 @@ __marimo__/
 
 test_doc/
 test_results/
+debug/
 
 weights/
 *.pth

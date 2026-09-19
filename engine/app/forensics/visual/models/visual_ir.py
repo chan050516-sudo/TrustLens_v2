@@ -131,6 +131,9 @@ class VisualPageIR(BaseModel):
     orphan_spans: List[SpanIR] = Field(default_factory=list)
     drawings: List[DrawingIR] = Field(default_factory=list)
     images: List[ImageIR] = Field(default_factory=list)
+    # ---- NEW ----
+    element_spans: Dict[str, List[SpanIR]] = Field(default_factory=dict)   # element_id -> spans
+    element_types: Dict[str, str] = Field(default_factory=dict)            # element_id -> element_type
     style_baseline: Optional[StyleBaselineIR] = None
     anomalies: List[VisualAnomalyIR] = Field(default_factory=list)
     model_config = ConfigDict(arbitrary_types_allowed=True)

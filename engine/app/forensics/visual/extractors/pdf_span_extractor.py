@@ -48,7 +48,10 @@ class PdfSpanExtractor:
                     continue
                 page_num = pidx + 1
                 page = doc[pidx]
-                page_ir = self._extract_page(page, page_num, obs_by_page.get(page_num, []))
+                page_ir = self._extract_page(
+                    page, page_num, obs_by_page.get(page_num, []),
+                    document_ir=document_ir,          # NEW
+                )
                 results.append(page_ir)
             return results
         finally:
@@ -79,13 +82,14 @@ class PdfSpanExtractor:
         page: "fitz.Page",
         page_num: int,
         observations: List[tuple],
+        document_ir: Optional[Any] = None,          # NEW
     ) -> VisualPageIR:
         rect = page.rect
         page_ir = VisualPageIR(page=page_num, width=float(rect.width), height=float(rect.height))
 
         raw = page.get_text("rawdict")
         for bi, block in enumerate(raw.get("blocks", [])):
-            if block.get("type") != 0:   # 只处理文本块
+            if block.get("type") != 0:
                 continue
             for li, line in enumerate(block.get("lines", [])):
                 for si, span_dict in enumerate(line.get("spans", [])):
@@ -93,7 +97,49 @@ class PdfSpanExtractor:
                     if span is None:
                         continue
                     self._attach_span(span, observations, page_ir)
+
+        # NEW: 按 element 分组
+        self._attach_elements(page_ir, document_ir, page_num)
         return page_ir
+
+    # ---------- NEW ----------
+
+    def _attach_elements(
+        self,
+        page_ir: VisualPageIR,
+        document_ir: Optional[Any],
+        page_num: int,
+    ) -> None:
+        """
+        用 DocumentIR 的 elements 把 span 按语义单元分组。
+
+        逻辑：
+        - 遍历 document_ir.elements，取本页的 element
+        - 建 obs_id -> element_id 反查
+        - 遍历 observation_spans，把 spans 分配到对应 element
+        """
+        if document_ir is None:
+            return
+
+        elements = getattr(document_ir, "elements", None) or []
+        if not elements:
+            return
+
+        obs_to_element: Dict[int, str] = {}
+        for elem_idx, elem in enumerate(elements):
+            if getattr(elem, "page", None) != page_num:
+                continue
+            elem_id = f"e{elem_idx}"
+            page_ir.element_types[elem_id] = getattr(elem, "element_type", "unknown")
+            obs_ids = getattr(elem, "observation_ids", None) or []
+            for obs_id in obs_ids:
+                obs_to_element[int(obs_id)] = elem_id
+
+        for obs_id, spans in page_ir.observation_spans.items():
+            elem_id = obs_to_element.get(obs_id)
+            if elem_id is None:
+                continue
+            page_ir.element_spans.setdefault(elem_id, []).extend(spans)
 
     def _build_span(
         self,
