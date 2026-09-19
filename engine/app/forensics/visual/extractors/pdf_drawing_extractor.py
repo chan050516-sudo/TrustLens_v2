@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import fitz
-
+import hashlib
 from app.forensics.visual.models.visual_ir import DrawingIR
 from app.perception.models.bbox import BBox
 
@@ -64,6 +64,9 @@ class PdfDrawingExtractor:
             has_bezier = False
             has_line = False
             has_rect = False
+            bezier_count = 0
+            has_bezier = has_line = has_rect = False
+
             for it in items:
                 if not it:
                     continue
@@ -76,6 +79,7 @@ class PdfDrawingExtractor:
                     has_rect = True
 
             is_micro = bbox.width < self.micro_size_threshold or bbox.height < self.micro_size_threshold
+            items_hash = self._hash_items(items)
 
             fill = d.get("fill")
             stroke = d.get("stroke")
@@ -90,6 +94,8 @@ class PdfDrawingExtractor:
                 has_fill=fill is not None,
                 has_stroke=stroke is not None,
                 is_micro=is_micro,
+                bezier_count=bezier_count,
+                items_hash=items_hash,
                 stroke_opacity=self._safe_float(d.get("stroke_opacity")),
                 fill_opacity=self._safe_float(d.get("fill_opacity")),
                 fill_color=tuple(fill) if isinstance(fill, (list, tuple)) else None,
@@ -103,3 +109,21 @@ class PdfDrawingExtractor:
             return float(v) if v is not None else None
         except Exception:
             return None
+
+    @staticmethod
+    def _hash_items(items) -> str:
+        """指令序列哈希：操作符 + 量化坐标，用于 reuse 检测。"""
+        parts: list[str] = []
+        for it in items:
+            if not it:
+                continue
+            op = it[0]
+            parts.append(str(op))
+            for v in it[1:]:
+                if isinstance(v, (int, float)):
+                    parts.append(f"{round(float(v), 2):.2f}")
+                elif isinstance(v, (list, tuple)):
+                    for x in v:
+                        if isinstance(x, (int, float)):
+                            parts.append(f"{round(float(x), 2):.2f}")
+        return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:16]

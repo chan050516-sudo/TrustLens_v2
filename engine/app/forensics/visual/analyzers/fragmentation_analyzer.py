@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from app.forensics.visual.utils.geometry_helpers import bbox_union
 from app.forensics.visual.models.visual_ir import (
     SpanIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -92,7 +93,7 @@ class FragmentationAnalyzer(BaseVisualAnalyzer):
                     # 用一个整体 bbox 表示这条 line 的异常
                     line_bbox = line_spans[0].bbox
                     for s in line_spans[1:]:
-                        line_bbox = line_bbox.union(s.bbox) if hasattr(line_bbox, "union") else line_bbox
+                        line_bbox = bbox_union(line_bbox, s.bbox)
                     anomalies.append(VisualAnomalyIR(
                         page=line_spans[0].page,
                         bbox=line_bbox,

@@ -66,6 +66,18 @@ class SpanIR(BaseModel):
         return (self.page, self.block_id, self.line_id)
 
 
+class ImageIR(BaseModel):
+    """PDF 内嵌图像（来自 page.get_image_info()）。"""
+    image_id: str
+    page: int
+    bbox: BBox
+    width: int                 # 像素宽
+    height: int                # 像素高
+    xref: Optional[int] = None
+    digest: Optional[str] = None   # PyMuPDF 提供的原始字节 md5
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 class DrawingIR(BaseModel):
     """PyMuPDF page.get_drawings() 的轻量化表示。"""
     drawing_id: str
@@ -78,6 +90,8 @@ class DrawingIR(BaseModel):
     has_fill: bool = False
     has_stroke: bool = False
     is_micro: bool = False        # 宽或高 < MICRO_THRESHOLD
+    bezier_count: int = 0                 # NEW
+    items_hash: Optional[str] = None      # NEW：指令序列哈希，用于 reuse
     stroke_opacity: Optional[float] = None
     fill_opacity: Optional[float] = None
     fill_color: Optional[Tuple[float, ...]] = None
@@ -116,6 +130,7 @@ class VisualPageIR(BaseModel):
     observation_spans: Dict[int, List[SpanIR]] = Field(default_factory=dict)
     orphan_spans: List[SpanIR] = Field(default_factory=list)
     drawings: List[DrawingIR] = Field(default_factory=list)
+    images: List[ImageIR] = Field(default_factory=list)
     style_baseline: Optional[StyleBaselineIR] = None
     anomalies: List[VisualAnomalyIR] = Field(default_factory=list)
     model_config = ConfigDict(arbitrary_types_allowed=True)

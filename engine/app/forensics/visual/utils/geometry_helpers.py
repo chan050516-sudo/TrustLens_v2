@@ -50,3 +50,35 @@ def bbox_center(bbox: BBox) -> Tuple[float, float]:
 def bbox_aspect_ratio(bbox: BBox) -> float:
     h = max(bbox.height, 1e-6)
     return bbox.width / h
+
+
+# ---------- 新增：bbox 组合与覆盖 ----------
+
+def bbox_union(a: BBox, b: BBox) -> BBox:
+    return BBox(
+        x0=min(a.x0, b.x0),
+        y0=min(a.y0, b.y0),
+        x1=max(a.x1, b.x1),
+        y1=max(a.y1, b.y1),
+    )
+
+
+def bboxes_intersect(a: BBox, b: BBox) -> bool:
+    return not (a.x1 <= b.x0 or b.x1 <= a.x0 or a.y1 <= b.y0 or b.y1 <= a.y0)
+
+
+def intersection_area(a: BBox, b: BBox) -> float:
+    ix0 = max(a.x0, b.x0)
+    iy0 = max(a.y0, b.y0)
+    ix1 = min(a.x1, b.x1)
+    iy1 = min(a.y1, b.y1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    return (ix1 - ix0) * (iy1 - iy0)
+
+
+def coverage_of(target: BBox, cover: BBox) -> float:
+    """target 被 cover 覆盖的比例（交集 / target 面积）。"""
+    inter = intersection_area(target, cover)
+    area = max(target.width * target.height, 1e-6)
+    return inter / area
