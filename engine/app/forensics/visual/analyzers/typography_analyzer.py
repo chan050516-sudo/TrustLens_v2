@@ -1,15 +1,19 @@
 """
-TypographyAnalyzer — 全局样式分布基线。
+TypographyAnalyzer — 三层样式分布基线。
 
-方法：对数频率空间 + MAD，自适应识别"统计上稀有"的 bar。
+三层独立检测（不是嵌套）：
+- 全局：跨文档的字体/字号/颜色稀有 bar
+- 页级：单页内的稀有 bar（能捕获 page1 用 page2 dominant 字体的攻击）
+- Element 级：语义单元内的稀有 bar（能捕获 element 间排版体系不一致）
 
-产出：
-- 写回 VisualPageIR.style_baseline
-- PDF_TYPOGRAPHY_OUTLIER：单个 span 的三元组落在稀有 bar
+关键设计：
+- 直方图权重用 char count，不是 span count（避免"长 span 被当 outlier"）
+- 三层结果独立产出后合并：同一 span 被多层命中 → 合并 reasons，标注 scopes
+- Element type 降权：header/footer/title/... 命中 outlier 时降 confidence，不完全忽略
 """
 import math
-from collections import Counter
-from typing import List, Optional, Set
+from collections import Counter, defaultdict
+from typing import Dict, List, Optional, Set
 
 from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
@@ -18,43 +22,227 @@ from app.forensics.visual.models.visual_ir import (
 from app.forensics.visual.utils.geometry_helpers import mad, median
 
 
+# 天然允许排版异常的元素类型：这些类型命中 outlier 时降权
+ALLOWED_ANOMALY_ELEMENT_TYPES = frozenset({
+    "header", "footer",
+    "title", "caption", "footnote", "reference",
+    "index", "formula", "code", "marker",
+    "handwritten", "gradient_text",
+})
+
+
 class TypographyAnalyzer(BaseVisualAnalyzer):
     name = "TypographyAnalyzer"
 
     def __init__(
         self,
-        rare_k: float = 3.5,                    # log 空间 modified z-score 阈值
+        rare_k: float = 3.5,
         min_spans_for_baseline: int = 5,
-        min_distinct_bars: int = 3,             # 直方图至少这么多个 bar 才做稀有检测
+        min_distinct_bars: int = 3,
+        min_total_chars: int = 30,                    # char-based 阈值
         size_key_precision: int = 2,
+        enable_page_scope: bool = True,
+        enable_element_scope: bool = True,
+        normal_confidence: float = 0.7,
+        allowed_type_confidence: float = 0.3,
+        multi_scope_confidence_bonus: float = 0.15,   # 多层命中加分
     ):
         self.rare_k = rare_k
         self.min_spans_for_baseline = min_spans_for_baseline
         self.min_distinct_bars = min_distinct_bars
+        self.min_total_chars = min_total_chars
         self.size_key_precision = size_key_precision
+        self.enable_page_scope = enable_page_scope
+        self.enable_element_scope = enable_element_scope
+        self.normal_confidence = normal_confidence
+        self.allowed_type_confidence = allowed_type_confidence
+        self.multi_scope_confidence_bonus = multi_scope_confidence_bonus
+
+    # ================================================================
+    # 入口
+    # ================================================================
 
     def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
-        anomalies: List[VisualAnomalyIR] = []
+        # ---- Step 1: 全局 obs_lookup ----
+        obs_lookup = self._build_global_obs_lookup(visual_ir)
+
+        # ---- Step 2: 收集所有 span ----
+        all_spans: List[SpanIR] = []
         for page_ir in visual_ir.pages:
-            spans = page_ir.iter_all_spans()
-            if len(spans) < self.min_spans_for_baseline:
+            all_spans.extend(page_ir.iter_all_spans())
+
+        if len(all_spans) < self.min_spans_for_baseline:
+            # 文档太小，仅写页级 baseline 供调试
+            for page_ir in visual_ir.pages:
+                page_ir.style_baseline = self._build_baseline(
+                    page_ir.page, page_ir.iter_all_spans()
+                )
+            return []
+
+        # ---- Step 3: 三层分析 ----
+
+        # 3a. 全局
+        global_baseline = self._build_baseline(0, all_spans)
+        visual_ir.metadata["global_style_baseline"] = global_baseline.model_dump()
+        global_anomalies = self._scope_analyze(
+            all_spans, scope="global", scope_id=None, obs_lookup=obs_lookup,
+        )
+
+        # 3b. 页级
+        page_anomalies: List[VisualAnomalyIR] = []
+        if self.enable_page_scope:
+            for page_ir in visual_ir.pages:
+                page_spans = page_ir.iter_all_spans()
+                page_ir.style_baseline = self._build_baseline(
+                    page_ir.page, page_spans
+                )
+                if len(page_spans) < self.min_spans_for_baseline:
+                    continue
+                page_anomalies.extend(self._scope_analyze(
+                    page_spans, scope="page", scope_id=page_ir.page,
+                    obs_lookup=obs_lookup,
+                ))
+
+        # 3c. Element 级
+        element_anomalies: List[VisualAnomalyIR] = []
+        if self.enable_element_scope:
+            for page_ir in visual_ir.pages:
+                for elem_id, elem_spans in page_ir.element_spans.items():
+                    if len(elem_spans) < self.min_spans_for_baseline:
+                        continue
+                    element_anomalies.extend(self._scope_analyze(
+                        elem_spans, scope="element", scope_id=elem_id,
+                        obs_lookup=obs_lookup,
+                    ))
+
+        # ---- Step 4: 合并 ----
+        merged = self._merge_anomalies(
+            global_anomalies, page_anomalies, element_anomalies
+        )
+
+        # ---- Step 5: Element type 降权 ----
+        span_to_elem_type = self._build_span_element_type_map(visual_ir)
+        for a in merged:
+            span_id = a.span_ids[0] if a.span_ids else None
+            elem_type = span_to_elem_type.get(span_id) if span_id else None
+            if elem_type:
+                a.detail["element_type"] = elem_type
+                if elem_type in ALLOWED_ANOMALY_ELEMENT_TYPES:
+                    a.detail["allowed_type"] = True
+                    a.confidence = self.allowed_type_confidence
+        return merged
+
+    # ================================================================
+    # 单层分析
+    # ================================================================
+
+    def _scope_analyze(
+        self,
+        spans: List[SpanIR],
+        scope: str,
+        scope_id,
+        obs_lookup: Dict[str, int],
+    ) -> List[VisualAnomalyIR]:
+        """
+        在给定 span 集合内建直方图 → 找稀有 bar → 报异常。
+        直方图权重：char count（不是 span count）。
+        """
+        # ---- 建直方图 ----
+        size_hist: Counter = Counter()
+        name_hist: Counter = Counter()
+        color_hist: Counter = Counter()
+        for s in spans:
+            n = len(s.text)
+            if n == 0:
                 continue
-            baseline = self._build_baseline(page_ir.page, spans)
-            page_ir.style_baseline = baseline
-            anomalies.extend(self._detect_outliers(spans, baseline, page_ir))
+            size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
+            size_hist[size_key] += n
+            name_hist[s.font_name] += n
+            color_hist[str(s.font_color)] += n
+
+        total_chars = sum(size_hist.values())
+        if total_chars < self.min_total_chars:
+            return []
+
+        # ---- 稀有 bar ----
+        rare_sizes = self._find_rare_bars(size_hist)
+        rare_names = self._find_rare_bars(name_hist)
+        rare_colors = self._find_rare_bars(color_hist)
+
+        if not (rare_sizes or rare_names or rare_colors):
+            return []
+
+        # ---- 逐 span 判定 ----
+        anomalies: List[VisualAnomalyIR] = []
+        for s in spans:
+            reasons: List[str] = []
+            metrics: dict = {}
+
+            size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
+            if size_key in rare_sizes:
+                reasons.append("font_size_outlier")
+                metrics["font_size"] = s.font_size
+            if s.font_name in rare_names:
+                reasons.append("font_name_outlier")
+                metrics["font_name"] = s.font_name
+            if str(s.font_color) in rare_colors:
+                reasons.append("font_color_outlier")
+                metrics["font_color"] = s.font_color
+
+            if not reasons:
+                continue
+
+            anomalies.append(VisualAnomalyIR(
+                page=s.page,
+                bbox=s.bbox,
+                anomaly_type="PDF_TYPOGRAPHY_OUTLIER",
+                confidence=self.normal_confidence,
+                observation_id=obs_lookup.get(s.span_id),
+                span_ids=[s.span_id],
+                detail={
+                    "reasons": reasons,
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "text": s.text,
+                    "char_count": len(s.text),
+                    **metrics,
+                },
+            ))
         return anomalies
 
-    # ---------- baseline ----------
+    # ================================================================
+    # 稀有 bar 检测（log 空间 + MAD）
+    # ================================================================
+
+    def _find_rare_bars(self, histogram: dict) -> Set[str]:
+        if len(histogram) < self.min_distinct_bars:
+            return set()
+        counts = [c for c in histogram.values() if c > 0]
+        if len(counts) < self.min_distinct_bars:
+            return set()
+
+        log_counts = [math.log(c) for c in counts]
+        med = median(log_counts)
+        m = mad(log_counts)
+        threshold = med - self.rare_k * max(m, 0.1) / 0.6745
+        return {v for v, c in histogram.items() if math.log(c) < threshold}
+
+    # ================================================================
+    # baseline（仅用于调试和下游读取）
+    # ================================================================
 
     def _build_baseline(self, page: int, spans: List[SpanIR]) -> StyleBaselineIR:
         size_hist: Counter = Counter()
         name_hist: Counter = Counter()
         color_hist: Counter = Counter()
         for s in spans:
+            n = len(s.text)
+            if n == 0:
+                continue
             size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
-            size_hist[size_key] += 1
-            name_hist[s.font_name] += 1
-            color_hist[str(s.font_color)] += 1
+            size_hist[size_key] += n
+            name_hist[s.font_name] += n
+            color_hist[str(s.font_color)] += n
 
         return StyleBaselineIR(
             page=page,
@@ -67,84 +255,76 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
             span_count=len(spans),
         )
 
-    # ---------- outliers ----------
+    # ================================================================
+    # 合并三层
+    # ================================================================
 
-    def _detect_outliers(
+    def _merge_anomalies(
         self,
-        spans: List[SpanIR],
-        baseline: StyleBaselineIR,
-        page_ir: VisualPageIR,
+        global_anoms: List[VisualAnomalyIR],
+        page_anoms: List[VisualAnomalyIR],
+        element_anoms: List[VisualAnomalyIR],
     ) -> List[VisualAnomalyIR]:
-        rare_sizes = self._find_rare_bars(baseline.font_size_histogram)
-        rare_names = self._find_rare_bars(baseline.font_name_histogram)
-        rare_colors = self._find_rare_bars(baseline.font_color_histogram)
+        """
+        同一 span 被多层命中 → 合并：
+        - reasons 取并集
+        - scopes 列表保留所有命中的层
+        - confidence 随层数加分
+        """
+        by_span: Dict[str, VisualAnomalyIR] = {}
 
-        obs_lookup = self._build_obs_lookup(page_ir)
-        anomalies: List[VisualAnomalyIR] = []
-
-        for s in spans:
-            reasons: List[str] = []
-            metrics: dict = {}
-
-            size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
-            if size_key in rare_sizes:
-                reasons.append("font_size_outlier")
-                metrics["font_size"] = s.font_size
-            if s.font_name in rare_names:
-                reasons.append("font_name_outlier")
-                metrics["font_name"] = s.font_name
-            color_key = str(s.font_color)
-            if color_key in rare_colors:
-                reasons.append("font_color_outlier")
-                metrics["font_color"] = s.font_color
-
-            if not reasons:
+        for a in global_anoms + page_anoms + element_anoms:
+            span_id = a.span_ids[0] if a.span_ids else None
+            if span_id is None:
                 continue
 
-            anomalies.append(VisualAnomalyIR(
-                page=s.page,
-                bbox=s.bbox,
-                anomaly_type="PDF_TYPOGRAPHY_OUTLIER",
-                confidence=0.7,
-                observation_id=obs_lookup.get(s.span_id),
-                span_ids=[s.span_id],
-                detail={"reasons": reasons, "text": s.text, **metrics},
-            ))
-        return anomalies
+            if span_id not in by_span:
+                # 首次命中：初始化 scopes 列表
+                a.detail["scopes"] = [a.detail.get("scope")]
+                by_span[span_id] = a
+                continue
 
-    # ---------- rare bar detection ----------
+            # 已存在：合并
+            existing = by_span[span_id]
+            existing.detail.setdefault("scopes", []).append(a.detail.get("scope"))
+            # reasons 并集
+            old_reasons = set(existing.detail.get("reasons", []))
+            new_reasons = set(a.detail.get("reasons", []))
+            existing.detail["reasons"] = sorted(old_reasons | new_reasons)
+            # 合并 metrics（以第一条为主，不覆盖）
+            for k, v in a.detail.items():
+                if k not in existing.detail and k not in ("reasons", "scopes", "scope", "scope_id"):
+                    existing.detail[k] = v
 
-    def _find_rare_bars(self, histogram: dict) -> Set[str]:
-        """
-        在频次直方图中找"统计上稀有"的 bar。
+        # 计算 confidence
+        for a in by_span.values():
+            scopes = a.detail.get("scopes", [])
+            extra = len(scopes) - 1
+            if extra > 0:
+                a.confidence = min(1.0, a.confidence + extra * self.multi_scope_confidence_bonus)
 
-        方法：
-        - 对频次取 log（压缩长尾）
-        - 在 log 空间用 modified z-score 找左尾
-        - MAD 自适应：分布越集中，阈值越紧；分布越分散，阈值越宽
-        """
-        if len(histogram) < self.min_distinct_bars:
-            return set()
+        return list(by_span.values())
 
-        counts = [c for c in histogram.values() if c > 0]
-        if len(counts) < self.min_distinct_bars:
-            return set()
+    # ================================================================
+    # 辅助
+    # ================================================================
 
-        log_counts = [math.log(c) for c in counts]
-        med = median(log_counts)
-        m = mad(log_counts)
-        # 0.1 防止 MAD=0 时阈值退化为 0（所有频次相同时）
-        threshold = med - self.rare_k * max(m, 0.1) / 0.6745
+    def _build_global_obs_lookup(self, visual_ir: VisualIR) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for page_ir in visual_ir.pages:
+            for obs_idx, spans in page_ir.observation_spans.items():
+                for s in spans:
+                    out[s.span_id] = obs_idx
+        return out
 
-        return {v for v, c in histogram.items() if math.log(c) < threshold}
-
-    # ---------- helpers ----------
-
-    def _build_obs_lookup(self, page_ir: VisualPageIR) -> dict:
-        out = {}
-        for obs_idx, spans in page_ir.observation_spans.items():
-            for s in spans:
-                out[s.span_id] = obs_idx
+    def _build_span_element_type_map(self, visual_ir: VisualIR) -> Dict[str, str]:
+        """span_id -> element_type 反查。"""
+        out: Dict[str, str] = {}
+        for page_ir in visual_ir.pages:
+            for elem_id, elem_spans in page_ir.element_spans.items():
+                elem_type = page_ir.element_types.get(elem_id, "unknown")
+                for s in elem_spans:
+                    out[s.span_id] = elem_type
         return out
 
     @staticmethod
