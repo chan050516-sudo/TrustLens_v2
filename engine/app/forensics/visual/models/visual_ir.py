@@ -10,7 +10,7 @@ VisualIR — Visual Engine 的内部中间表示。
 """
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -74,7 +74,7 @@ class ImageIR(BaseModel):
     width: int                 # 像素宽
     height: int                # 像素高
     xref: Optional[int] = None
-    digest: Optional[str] = None   # PyMuPDF 提供的原始字节 md5
+    digest: Optional[Union[str, bytes]] = None   # PyMuPDF 提供的原始字节 md5
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 

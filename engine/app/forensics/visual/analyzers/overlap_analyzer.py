@@ -162,6 +162,13 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
     def _is_valid_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
         if a.obj_id == b.obj_id:
             return False
+        
+        # ---- 新增：被覆盖的是细线 → 无意义 ----
+        # 无论 occluder 是什么类型，被覆盖的是一条 < 1pt 的线都不是有效信号
+        if b.obj_type == "vector":
+            if min(b.bbox.width, b.bbox.height) < 1.0:
+                return False
+            
         # thin-line over thin-line 排除（表格双线边框等）
         if a.obj_type == "vector" and b.obj_type == "vector":
             if (min(a.bbox.width, a.bbox.height) < 1.0

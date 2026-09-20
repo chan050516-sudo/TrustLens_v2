@@ -19,7 +19,7 @@ from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
 from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
 from app.forensics.visual.analyzers.char_spacing_analyzer import CharSpacingAnalyzer
-from app.forensics.visual.analyzers.fragmentation_analyzer import FragmentationAnalyzer
+# from app.forensics.visual.analyzers.fragmentation_analyzer import FragmentationAnalyzer
 from app.forensics.visual.analyzers.typography_analyzer import TypographyAnalyzer
 from app.forensics.visual.context.visual_context_builder import VisualContextBuilder
 from app.forensics.visual.extractors.pdf_drawing_extractor import PdfDrawingExtractor
@@ -58,7 +58,7 @@ class VisualEngine:
         self.analyzers = analyzers or [
             # 顺序：样式 → 碎裂 → 间距 → 重叠 → 转曲 → 矢量伪造
             TypographyAnalyzer(),
-            FragmentationAnalyzer(),
+            # FragmentationAnalyzer(),
             CharSpacingAnalyzer(),
             OverlapAnalyzer(),
             OutliningAnalyzer(),

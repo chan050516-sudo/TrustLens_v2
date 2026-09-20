@@ -12,6 +12,7 @@ TypographyAnalyzer — 三层样式分布基线。
 - Element type 降权：header/footer/title/... 命中 outlier 时降 confidence，不完全忽略
 """
 import math
+import unicodedata
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Set
 
@@ -41,6 +42,7 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         min_distinct_bars: int = 3,
         min_total_chars: int = 30,                    # char-based 阈值
         size_key_precision: int = 2,
+        min_bar_char_count: int = 2,
         enable_page_scope: bool = True,
         enable_element_scope: bool = True,
         normal_confidence: float = 0.7,
@@ -52,6 +54,7 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         self.min_distinct_bars = min_distinct_bars
         self.min_total_chars = min_total_chars
         self.size_key_precision = size_key_precision
+        self.min_bar_char_count = min_bar_char_count
         self.enable_page_scope = enable_page_scope
         self.enable_element_scope = enable_element_scope
         self.normal_confidence = normal_confidence
@@ -152,9 +155,9 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         name_hist: Counter = Counter()
         color_hist: Counter = Counter()
         for s in spans:
-            n = len(s.text)
-            if n == 0:
+            if not self._is_meaningful_span(s):
                 continue
+            n = len(s.text)
             size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
             size_hist[size_key] += n
             name_hist[s.font_name] += n
@@ -215,17 +218,20 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
     # ================================================================
 
     def _find_rare_bars(self, histogram: dict) -> Set[str]:
-        if len(histogram) < self.min_distinct_bars:
-            return set()
-        counts = [c for c in histogram.values() if c > 0]
-        if len(counts) < self.min_distinct_bars:
+        # 先剔除 char count 太少的 bar（fallback 字体、装饰符号字体等）
+        filtered = {
+            k: v for k, v in histogram.items()
+            if v >= self.min_bar_char_count
+        }
+        if len(filtered) < self.min_distinct_bars:
             return set()
 
+        counts = list(filtered.values())
         log_counts = [math.log(c) for c in counts]
         med = median(log_counts)
         m = mad(log_counts)
         threshold = med - self.rare_k * max(m, 0.1) / 0.6745
-        return {v for v, c in histogram.items() if math.log(c) < threshold}
+        return {v for v, c in filtered.items() if math.log(c) < threshold}
 
     # ================================================================
     # baseline（仅用于调试和下游读取）
@@ -348,3 +354,38 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
             return int(counter.most_common(1)[0][0])
         except Exception:
             return None
+
+    # ================================================================
+    # 意义判定
+    # ================================================================
+
+    def _is_meaningful_span(self, s: SpanIR) -> bool:
+        """
+        判断 span 是否值得参与 Typography 统计。
+
+        只跳纯标点/符号/空白的 span。
+        短 span（1-2 字符）如果是字母/数字，仍参与统计
+        —— 攻击者篡改的往往就是这类极短的数值字段。
+        """
+        text = s.text.strip()
+        if not text:
+            return False
+        if self._is_only_punct_or_symbol(text):
+            return False
+        return True
+
+    @staticmethod
+    def _is_only_punct_or_symbol(text: str) -> bool:
+        """
+        Unicode 类别判定：P* / S* / Z* 视为纯标点符号。
+        覆盖所有语言的标点（各种引号、破折号、括号、项目符号）。
+        """
+        if not text:
+            return True
+        for ch in text:
+            if ch.isspace():
+                continue
+            cat = unicodedata.category(ch)
+            if not (cat.startswith("P") or cat.startswith("S") or cat.startswith("Z")):
+                return False
+        return True

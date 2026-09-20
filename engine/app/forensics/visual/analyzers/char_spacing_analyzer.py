@@ -110,20 +110,60 @@ class CharSpacingAnalyzer(BaseVisualAnalyzer):
         chars = span.chars
         if len(chars) < 2:
             return []
+        
         out: List[dict] = []
+        
+        # 定义具有天然负空间/易穿插特征的字符集
+        PUNCTUATIONS = {',', '.', ':', ';', "'", '"', '-', '!', '?'}
+        RIGHT_HANGING_CHARS = {'T', 'F', 'P', 'V', 'W', 'Y', 'r', 'v', 'w', 'y', '4', 'A', 'L'}
+
         for i in range(len(chars) - 1):
             c1 = chars[i]
             c2 = chars[i + 1]
+            
+            # 忽略空格
             if c1.char.isspace() or c2.char.isspace():
                 continue
+                
             gap = c2.bbox.x0 - c1.bbox.x1
-            if gap < self.negative_gap_threshold:
+            
+            # 1. 计算动态基准字宽 (取两字符中较窄者的宽度)
+            min_char_w = max(min(c1.bbox.width, c2.bbox.width), 1.0)
+            
+            # 2. 动态自适应阈值计算 (默认允许 12% 窄字宽的穿插)
+            ratio = 0.12
+            
+            # 3. 针对已知排版规律进行阈值松弛
+            is_punct_kerning = c2.char in PUNCTUATIONS
+            is_overhang_kerning = c1.char in RIGHT_HANGING_CHARS
+            
+            if is_punct_kerning and is_overhang_kerning:
+                # 典型如 "4," 或 "r." 或 "T:"，穿插度最高
+                ratio = 0.45
+            elif is_punct_kerning or is_overhang_kerning:
+                # 单侧匹配，如一般字母后接逗号，或 T 后接普通字母
+                ratio = 0.28
+
+            dynamic_threshold = -max(ratio * min_char_w, abs(self.negative_gap_threshold))
+            
+            # 4. 判断是否超出合理排版容差
+            if gap < dynamic_threshold:
+                # 5. 二维垂直安全校验：若字符在 Y 轴上完全错开，豁免假阳性
+                # 计算 Y 轴重合高度 (y0 为顶，y1 为底)
+                y_overlap = min(c1.bbox.y1, c2.bbox.y1) - max(c1.bbox.y0, c2.bbox.y0)
+                if is_punct_kerning and y_overlap < 0.2 * min(c1.bbox.height, c2.bbox.height):
+                    # 标点符号与前字在 Y 轴实质重合极低（标点落在角落），不视为异常
+                    continue
+
                 out.append({
                     "pair_index": i,
                     "left_char": c1.char,
                     "right_char": c2.char,
                     "gap": round(gap, 3),
+                    "threshold": round(dynamic_threshold, 3),
+                    "min_width": round(min_char_w, 3)
                 })
+                
         return out
 
     # ================================================================

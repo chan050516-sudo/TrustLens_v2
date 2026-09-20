@@ -8,6 +8,7 @@ fallback：无 element 时按 line_key 分组。
 - PDF_SPAN_FRAGMENTATION_ANOMALY
 """
 import math
+import unicodedata
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
@@ -80,6 +81,14 @@ class FragmentationAnalyzer(BaseVisualAnalyzer):
         if len(group_spans) < 2:
             return []
 
+        # ---- NEW: 先把纯标点/符号 span 剔除 ----
+        content_spans = [
+            s for s in group_spans
+            if not self._is_only_punct_or_symbol(s.text)
+        ]
+        if len(content_spans) < 2:
+            return []
+
         total_chars = sum(max(len(s.text), 1) for s in group_spans)
 
         # 组太小 → 走兜底：单字符孤立检查
@@ -94,8 +103,8 @@ class FragmentationAnalyzer(BaseVisualAnalyzer):
 
         anomalies: List[VisualAnomalyIR] = []
 
-        # 逐 span 判定
-        for s in group_spans:
+        # 逐 span 判定（只对 content_spans，因为它们已经是过滤过的）
+        for s in content_spans:
             L = max(len(s.text), 1)
             if math.log(L) < threshold:
                 anomalies.append(VisualAnomalyIR(
@@ -118,11 +127,11 @@ class FragmentationAnalyzer(BaseVisualAnalyzer):
                 ))
 
         # 组级：极端碎裂
-        avg_len = total_chars / len(group_spans)
-        if (len(group_spans) >= self.over_fragmented_min_count
+        avg_len = total_chars / len(content_spans)
+        if (len(content_spans) >= self.over_fragmented_min_count
                 and avg_len < self.over_fragmented_avg_len):
-            union_bbox = group_spans[0].bbox
-            for s in group_spans[1:]:
+            union_bbox = content_spans[0].bbox
+            for s in content_spans[1:]:
                 union_bbox = bbox_union(union_bbox, s.bbox)
             anomalies.append(VisualAnomalyIR(
                 page=group_spans[0].page,
@@ -186,3 +195,20 @@ class FragmentationAnalyzer(BaseVisualAnalyzer):
             for s in spans:
                 out[s.span_id] = obs_idx
         return out
+
+    @staticmethod
+    def _is_only_punct_or_symbol(text: str) -> bool:
+        """
+        判断文本是否只由标点、符号、分隔符组成（无任何字母/数字/CJK）。
+        用于过滤 Smart Quote、破折号、括号等天然碎裂 span。
+        """
+        if not text:
+            return True
+        for ch in text:
+            if ch.isspace():
+                continue
+            cat = unicodedata.category(ch)
+            # P* = 标点, S* = 符号, Z* = 分隔符
+            if not (cat.startswith("P") or cat.startswith("S") or cat.startswith("Z")):
+                return False
+        return True
