@@ -273,6 +273,7 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         size_hist: Counter = Counter()
         name_hist: Counter = Counter()
         color_hist: Counter = Counter()
+
         for s in spans:
             if not self._is_meaningful_span(s):
                 continue
@@ -292,6 +293,18 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
 
         if not (rare_sizes or rare_names or rare_colors):
             return []
+
+        # ---- 逐 span 判定 ----
+        # 先计算每个 triple 的 char_count / pct
+        triple_char_count: Dict[Tuple[str, float, int], int] = defaultdict(int)
+        for s in spans:
+            if not self._is_meaningful_span(s):
+                continue
+            key = (s.font_name, round(s.font_size, self.size_key_precision), s.font_color)
+            triple_char_count[key] += len(s.text)
+
+        distinct_triple_count = len(triple_char_count)
+        grand_total_chars = max(sum(triple_char_count.values()), 1)
 
         anomalies: List[VisualAnomalyIR] = []
         for s in spans:
@@ -315,6 +328,10 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
             if not reasons:
                 continue
 
+            triple_key = (s.font_name, round(s.font_size, self.size_key_precision), s.font_color)
+            triple_cc = triple_char_count.get(triple_key, len(s.text))
+            triple_pct = triple_cc / grand_total_chars
+
             anomalies.append(VisualAnomalyIR(
                 page=s.page,
                 bbox=s.bbox,
@@ -327,7 +344,15 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
                     "scope": scope,
                     "scope_id": scope_id,
                     "text": s.text,
-                    "char_count": len(s.text),
+                    "span_char_count": len(s.text),
+                    "triple_char_count": triple_cc,
+                    "triple_pct": round(triple_pct, 6),
+                    "baseline": {
+                        "scope": scope,
+                        "total_char_count": grand_total_chars,
+                        "distinct_triple_count": distinct_triple_count,
+                        "rare_threshold_pct": self.context_rare_pct_threshold,
+                    },
                     **metrics,
                 },
             ))

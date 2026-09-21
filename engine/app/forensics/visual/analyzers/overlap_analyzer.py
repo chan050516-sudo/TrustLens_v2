@@ -257,13 +257,34 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
                     detail={
                         "occluder_id": a.obj_id,
                         "occluder_type": a.obj_type,
+                        "occluder_bbox": [a.bbox.x0, a.bbox.y0, a.bbox.x1, a.bbox.y1],
+                        "occluder_observation_id": a.observation_id,
+                        "occluder_fill_opacity": self._safe_occluder_opacity(a),
+                        "occluder_fill_color": self._safe_occluder_fill_color(a),
                         "occluded_id": b.obj_id,
                         "occluded_type": b.obj_type,
-                        "coverage": round(cov, 4),
+                        "occluded_bbox": [b.bbox.x0, b.bbox.y0, b.bbox.x1, b.bbox.y1],
+                        "occluded_observation_id": b.observation_id,
                         "occluded_text": b.ref.text if b.obj_type == "text" else None,
+                        "coverage": round(cov, 4),
                     },
                 ))
         return anomalies
+
+    @staticmethod
+    def _safe_occluder_opacity(a: "OverlapObject") -> Optional[float]:
+        if a.obj_type == "vector":
+            d: DrawingIR = a.ref
+            return d.fill_opacity if d.fill_opacity is not None else d.stroke_opacity
+        return None
+
+    @staticmethod
+    def _safe_occluder_fill_color(a: "OverlapObject") -> Optional[List[float]]:
+        if a.obj_type == "vector":
+            d: DrawingIR = a.ref
+            if d.fill_color is not None:
+                return list(d.fill_color)
+        return None
 
     def _is_valid_occluder(self, a: OverlapObject, b: OverlapObject) -> bool:
         if a.obj_id == b.obj_id:
@@ -466,8 +487,27 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         dh = abs(ha - hb) / max(ha, hb)
         return dw <= self.reuse_size_tol and dh <= self.reuse_size_tol
 
-    def _reuse_anomaly(self, a: OverlapObject, b: OverlapObject, reason: str) -> VisualAnomalyIR:
+    def _reuse_anomaly(self, a: "OverlapObject", b: "OverlapObject", reason: str) -> VisualAnomalyIR:
         union = bbox_union(a.bbox, b.bbox)
+        detail: Dict[str, Any] = {
+            "reason": reason,
+            "obj_type": a.obj_type,
+            "obj_a_id": a.obj_id,
+            "obj_a_bbox": [a.bbox.x0, a.bbox.y0, a.bbox.x1, a.bbox.y1],
+            "obj_a_observation_id": a.observation_id,
+            "obj_b_id": b.obj_id,
+            "obj_b_bbox": [b.bbox.x0, b.bbox.y0, b.bbox.x1, b.bbox.y1],
+            "obj_b_observation_id": b.observation_id,
+            "position_delta_pt": [
+                round(abs(a.bbox.x0 - b.bbox.x0), 3),
+                round(abs(a.bbox.y0 - b.bbox.y0), 3),
+            ],
+        }
+        if a.obj_type == "vector":
+            da: DrawingIR = a.ref
+            detail["item_count"] = da.item_count
+            detail["bezier_count"] = da.bezier_count
+
         return VisualAnomalyIR(
             page=a.page,
             bbox=union,
@@ -475,13 +515,7 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             confidence=0.7,
             observation_id=a.observation_id or b.observation_id,
             span_ids=[],
-            detail={
-                "reason": reason,
-                "obj_a_id": a.obj_id,
-                "obj_a_type": a.obj_type,
-                "obj_b_id": b.obj_id,
-                "obj_b_type": b.obj_type,
-            },
+            detail=detail,
         )
 
     # ---------- 4.3 Overlay Characterization ----------

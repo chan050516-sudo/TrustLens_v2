@@ -64,22 +64,38 @@ class OutliningAnalyzer(BaseVisualAnalyzer):
             for line_spans in by_line.values():
                 if not self._center_in_line_gap(cx, cy, line_spans):
                     continue
+
+                line_obs_ids = []
+                for s in line_spans:
+                    oid = obs_lookup.get(s.span_id)
+                    if oid is not None and oid not in line_obs_ids:
+                        line_obs_ids.append(oid)
+
+                line_bbox = line_spans[0].bbox
+                from app.forensics.visual.utils.geometry_helpers import bbox_union
+                for s in line_spans[1:]:
+                    line_bbox = bbox_union(line_bbox, s.bbox)
+
                 anomalies.append(VisualAnomalyIR(
                     page=d.page,
                     bbox=d.bbox,
                     anomaly_type="PDF_PARTIAL_OUTLINING",
                     confidence=0.8,
-                    observation_id=None,   # 不属于任何 observation
+                    observation_id=None,
                     span_ids=[s.span_id for s in line_spans],
                     detail={
                         "reason": "bezier_cluster_in_line_gap",
+                        "drawing_id": d.drawing_id,
+                        "drawing_bbox": [d.bbox.x0, d.bbox.y0, d.bbox.x1, d.bbox.y1],
                         "bezier_count": d.bezier_count,
                         "aspect_ratio": round(bbox_aspect_ratio(d.bbox), 3),
-                        "drawing_id": d.drawing_id,
                         "line_span_ids": [s.span_id for s in line_spans],
+                        "line_observation_ids": line_obs_ids,
+                        "line_bbox": [line_bbox.x0, line_bbox.y0, line_bbox.x1, line_bbox.y1],
+                        "line_text": "".join(s.text for s in line_spans),
                     },
                 ))
-                break   # 每条 drawing 只报一次
+                break
         return anomalies
 
     def _aspect_ratio_ok(self, d: DrawingIR) -> bool:

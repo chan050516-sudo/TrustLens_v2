@@ -69,9 +69,17 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
         micro_threshold = min(self.micro_size_threshold_pt, ref_size * 0.6)
 
         structural_bboxes = self._collect_structural_bboxes(page_ir)
-        chars: List[CharIR] = [c for s in page_ir.iter_all_spans() for c in s.chars]
-        if not chars:
+
+        # 收集 chars 时携带 span_id
+        char_records: List[Tuple[CharIR, str]] = []
+        for s in page_ir.iter_all_spans():
+            for c in s.chars:
+                char_records.append((c, s.span_id))
+
+        if not char_records:
             return [], []
+
+        obs_lookup = self._build_obs_lookup(page_ir)
 
         candidates = [
             d for d in page_ir.drawings
@@ -88,7 +96,7 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
             in_structural = self._in_structural_zone(d, structural_bboxes)
 
             hits: List[dict] = []
-            for c in chars:
+            for c, span_id in char_records:
                 if not bboxes_intersect(d.bbox, c.bbox):
                     continue
                 cov = coverage_of(c.bbox, d.bbox)
@@ -98,25 +106,12 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
                     "char": c.char,
                     "char_bbox": [c.bbox.x0, c.bbox.y0, c.bbox.x1, c.bbox.y1],
                     "coverage": round(cov, 4),
+                    "observation_id": obs_lookup.get(span_id),
                 })
 
             max_cov = max((h["coverage"] for h in hits), default=0.0)
 
-            # context: 记录所有候选（含未命中 / 落在结构区的）
-            context_candidates.append({
-                "drawing_id": d.drawing_id,
-                "page": d.page,
-                "bbox": [d.bbox.x0, d.bbox.y0, d.bbox.x1, d.bbox.y1],
-                "size_pt": [round(d.bbox.width, 3), round(d.bbox.height, 3)],
-                "in_structural_zone": in_structural,
-                "hit_count": len(hits),
-                "max_coverage": round(max_cov, 4),
-            })
-
-            # evidence: 只报未落在结构区且命中阈值
-            if in_structural:
-                continue
-            if max_cov <= 0.0:
+            if in_structural or not hits:
                 continue
 
             anomalies.append(VisualAnomalyIR(
@@ -129,15 +124,27 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
                 detail={
                     "reason": "micro_vector_over_character",
                     "drawing_id": d.drawing_id,
-                    "drawing_size_pt": [d.bbox.width, d.bbox.height],
+                    "drawing_bbox": [d.bbox.x0, d.bbox.y0, d.bbox.x1, d.bbox.y1],
+                    "drawing_size_pt": [round(d.bbox.width, 3), round(d.bbox.height, 3)],
                     "has_fill": d.has_fill,
                     "has_stroke": d.has_stroke,
                     "hit_chars": hits[:5],
                     "hit_count": len(hits),
+                    "max_coverage": round(max_cov, 4),
+                    "reference_font_size": round(ref_size, 3),
+                    "micro_threshold_pt": round(micro_threshold, 3),
                 },
             ))
 
         return anomalies, context_candidates
+
+    @staticmethod
+    def _build_obs_lookup(page_ir: VisualPageIR) -> dict:
+        out = {}
+        for obs_idx, spans in page_ir.observation_spans.items():
+            for s in spans:
+                out[s.span_id] = obs_idx
+        return out
 
     # ---------- structural zone ----------
 
