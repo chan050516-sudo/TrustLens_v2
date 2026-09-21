@@ -2,12 +2,13 @@
 VisualContext — 视觉层的 LLM 上下文（对应 Metadata 层的 ForensicContext）。
 
 设计原则：
-- 只含清洗后的高密度信息，不含全量 span/char 原始数据。
-- 下游 Detective LLM 只消费本对象；VisualIR 不进 prompt。
+- source / page_summaries / global_style_profile 是结构性摘要。
+- analyzer_contexts 是各 Analyzer 贡献的"中性观察"，供 Detective LLM 推理。
+- 异常判定结果不在此对象中，走 Evidence 通道。
 """
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
 from app.forensics.visual.models.visual_ir import SourceType
 
@@ -30,23 +31,9 @@ class VisualPageSummary(BaseModel):
     anomaly_count: int = 0
 
 
-class VisualAnomalyItem(BaseModel):
-    """清洗后的异常项，给 LLM 看。"""
-    page: int
-    bbox: List[float]                       # [x0, y0, x1, y1]
-    anomaly_type: str
-    severity: str                           # low / medium / high
-    confidence: float
-    observation_id: Optional[int] = None
-    observation_text: Optional[str] = None
-    description: str
-    metrics: Dict[str, Any] = Field(default_factory=dict)
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
 class VisualContext(BaseModel):
     source: VisualSourceInfo
     page_summaries: List[VisualPageSummary] = Field(default_factory=list)
-    anomalies: List[VisualAnomalyItem] = Field(default_factory=list)
+    analyzer_contexts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     global_style_profile: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)

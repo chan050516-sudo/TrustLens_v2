@@ -113,10 +113,9 @@ class PdfSpanExtractor:
         """
         用 DocumentIR 的 elements 把 span 按语义单元分组。
 
-        逻辑：
-        - 遍历 document_ir.elements，取本页的 element
-        - 建 obs_id -> element_id 反查
-        - 遍历 observation_spans，把 spans 分配到对应 element
+        - element_types: e{i} -> element_type
+        - element_roi:   e{i} -> reading_order_index（fallback 到 elem_idx）
+        - element_spans: e{i} -> [SpanIR]
         """
         if document_ir is None:
             return
@@ -131,6 +130,13 @@ class PdfSpanExtractor:
                 continue
             elem_id = f"e{elem_idx}"
             page_ir.element_types[elem_id] = getattr(elem, "element_type", "unknown")
+
+            roi = getattr(elem, "reading_order_index", None)
+            if isinstance(roi, int) and roi >= 0:
+                page_ir.element_roi[elem_id] = roi
+            else:
+                page_ir.element_roi[elem_id] = elem_idx   # fallback
+
             obs_ids = getattr(elem, "observation_ids", None) or []
             for obs_id in obs_ids:
                 obs_to_element[int(obs_id)] = elem_id

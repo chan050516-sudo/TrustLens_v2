@@ -2,20 +2,20 @@
 Native PDF Visual Engine 端到端冒烟测试。
 
 用法：
-    python engine/tests/test_nativepdf_visual.py <pdf_path> [--debug-dir DIR] [--with-perception]
+    python engine/tests/test_nativepdf_visual.py <pdf_path> [--with-perception]
     python engine/tests/test_nativepdf_visual.py            # 使用默认 test_doc
 
 输出：
-- Terminal 打印：source_type / 页摘要 / 全部 Evidence / VisualContext anomalies / engine errors
-- 可选：VisualIR debug 落盘
+- Source / Evidence Summary / Evidence Detail
+- VisualContext（page summaries / global style / analyzer_contexts）
+- Engine Errors
 """
 import argparse
 import sys
-
 import traceback
 from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,10 +47,68 @@ def _s(section: str) -> None:
 
 
 def _safe_enum_str(x) -> str:
-    """e.type 可能是 str（use_enum_values=True）或 Enum，统一成 str。"""
     if hasattr(x, "value"):
         return x.value
     return str(x)
+
+
+def _fmt_value(
+    obj: Any,
+    indent: int = 0,
+    max_str: int = 200,
+    max_items: int = 8,
+    max_depth: int = 5,
+) -> str:
+    """
+    通用递归 pretty print：
+    - dict / list 展开
+    - 长字符串截断
+    - 长 list 只显示前 max_items 项
+    - 超过 max_depth 只显示类型
+    """
+    sp = "  " * indent
+
+    if obj is None:
+        return "None"
+    if isinstance(obj, (bool, int, float)):
+        return repr(obj)
+    if isinstance(obj, str):
+        if len(obj) > max_str:
+            return repr(obj[:max_str] + f"...(+{len(obj) - max_str})")
+        return repr(obj)
+
+    if max_depth <= 0:
+        return f"<{type(obj).__name__}>"
+
+    if isinstance(obj, dict):
+        if not obj:
+            return "{}"
+        lines = ["{"]
+        for k, v in obj.items():
+            sub = _fmt_value(v, indent + 1, max_str, max_items, max_depth - 1)
+            lines.append(f"{sp}  {k!r}: {sub}")
+        lines.append(f"{sp}}}")
+        return "\n".join(lines)
+
+    if isinstance(obj, (list, tuple)):
+        if not obj:
+            return "[]"
+        n = len(obj)
+        items = obj[:max_items]
+        lines = ["["]
+        for i, v in enumerate(items):
+            sub = _fmt_value(v, indent + 1, max_str, max_items, max_depth - 1)
+            lines.append(f"{sp}  [{i}] {sub}")
+        if n > max_items:
+            lines.append(f"{sp}  ... ({n - max_items} more)")
+        lines.append(f"{sp}]")
+        return "\n".join(lines)
+
+    return repr(obj)
+
+
+def _section_header(title: str, indent: int = 1) -> str:
+    return f"{'  ' * indent}--- {title} ---"
 
 
 # ------------------------------------------------------------------ #
@@ -60,10 +118,10 @@ def _safe_enum_str(x) -> str:
 def find_default_pdf() -> Optional[Path]:
     """在常见位置找第一个 PDF。"""
     candidates = [
-        _REPO_ROOT / "test_doc",
-        _REPO_ROOT / "engine" / "test_doc",
-        _REPO_ROOT / "tests" / "test_doc",
-        _REPO_ROOT / "tests",
+        PROJECT_ROOT / "test_doc",
+        PROJECT_ROOT / "engine" / "test_doc",
+        PROJECT_ROOT / "tests" / "test_doc",
+        PROJECT_ROOT / "tests",
     ]
     for d in candidates:
         if not d.exists():
@@ -74,21 +132,15 @@ def find_default_pdf() -> Optional[Path]:
     return None
 
 
-def run(
-    pdf_path: Path,
-    debug_dir: Optional[Path] = None,
-    with_perception: bool = False,
-) -> int:
+def run(pdf_path: Path, with_perception: bool = False) -> int:
     _p("Visual Engine · Native PDF Smoke Test")
     print(f"  PDF       : {pdf_path}")
-    print(f"  Debug dir : {debug_dir if debug_dir else '(disabled)'}")
     print(f"  Perception: {'on' if with_perception else 'off'}")
 
     if not pdf_path.exists():
         print(f"\n[FATAL] PDF not found: {pdf_path}")
         return 2
 
-    # ---------- DocumentContext ----------
     ctx = DocumentContext(file_path=pdf_path, mime_type="application/pdf")
 
     # ---------- 可选：跑 Perception ----------
@@ -109,7 +161,7 @@ def run(
 
     # ---------- VisualEngine ----------
     _s("Running VisualEngine ...")
-    engine = VisualEngine(debug_dump_dir=debug_dir)
+    engine = VisualEngine()
     try:
         evidences, vctx = engine.analyze(context=ctx, document_ir=document_ir)
     except Exception as e:
@@ -125,7 +177,6 @@ def run(
         print(f"  confidence : {s.confidence}")
         print(f"  reason     : {s.reason}")
     else:
-        # 非 digital_pdf 时 vctx 为 None，从 evidences 找
         for e in evidences:
             if _safe_enum_str(e.type) == "PDF_SOURCE_TYPE":
                 print(f"  {e.description}")
@@ -143,25 +194,39 @@ def run(
 
     # ---------- 3. Evidence Detail ----------
     _p("3. Evidence Detail")
-    for i, e in enumerate(evidences, 1):
-        etype = _safe_enum_str(e.type)
-        loc = e.location or {}
-        page = loc.get("page")
-        bbox = loc.get("bbox")
-        bbox_s = f"[{', '.join(f'{v:.1f}' for v in bbox)}]" if bbox else "-"
-        print(f"  [{i:>3}] {etype}")
-        print(f"        conf={e.confidence:.2f}  page={page}  bbox={bbox_s}")
-        if e.description:
-            print(f"        desc: {e.description}")
-        # 打印 value 摘要
-        val = e.value
-        if isinstance(val, dict):
-            keys = ", ".join(list(val.keys())[:6])
-            print(f"        value keys: {keys}")
-        elif val is not None:
-            print(f"        value: {str(val)[:120]}")
+    if not evidences:
+        print("  (no evidence)")
+    else:
+        for i, e in enumerate(evidences, 1):
+            etype = _safe_enum_str(e.type)
+            loc = e.location or {}
+            page = loc.get("page")
+            bbox = loc.get("bbox")
+            bbox_s = (
+                f"[{', '.join(f'{v:.2f}' for v in bbox)}]" if bbox else "-"
+            )
+            print(f"  [{i:>3}] {etype}")
+            print(f"        conf       : {e.confidence:.3f}")
+            print(f"        source     : {e.source}")
+            print(f"        page       : {page}")
+            print(f"        bbox       : {bbox_s}")
+            if e.description:
+                print(f"        description: {e.description}")
+            if e.value is not None:
+                print(f"        value      :")
+                val_str = _fmt_value(e.value, indent=5, max_depth=6)
+                for line in val_str.split("\n"):
+                    print(line)
+            if e.raw_data:
+                print(f"        raw_data   :")
+                raw_str = _fmt_value(e.raw_data, indent=5, max_depth=4)
+                for line in raw_str.split("\n"):
+                    print(line)
+            if e.generated_at:
+                print(f"        generated  : {e.generated_at.isoformat()}")
+            print()
 
-    # ---------- 4. VisualContext Pages ----------
+    # ---------- 4. VisualContext · Page Summaries ----------
     _p("4. VisualContext · Page Summaries")
     if vctx is None:
         print("  (no VisualContext)")
@@ -173,71 +238,64 @@ def run(
                 f"  p{ps.page}: {ps.width:.0f}x{ps.height:.0f}  "
                 f"spans={ps.span_count}  drawings={ps.drawing_count}  "
                 f"anomalies={ps.anomaly_count}  "
-                f"font={ps.dominant_font}@{ps.dominant_font_size}"
+                f"font={ps.dominant_font}@{ps.dominant_font_size}  "
+                f"color={ps.dominant_font_color}"
             )
 
-    # ---------- 5. VisualContext Anomalies ----------
-    _p("5. VisualContext · Anomalies")
-    if vctx is None:
-        print("  (no VisualContext)")
-    elif not vctx.anomalies:
-        print("  (no anomalies)")
-    else:
-        # 先按类型聚合
-        by_type = Counter(a.anomaly_type for a in vctx.anomalies)
-        print("  by type:")
-        for t, c in by_type.most_common():
-            print(f"    {c:>4}  {t}")
-
-        print()
-        print("  detail:")
-        for i, a in enumerate(vctx.anomalies, 1):
-            bbox_s = f"[{', '.join(f'{v:.1f}' for v in a.bbox)}]"
-            obs_ref = f" obs#{a.observation_id}" if a.observation_id is not None else ""
-            print(f"  [{i:>3}] [{a.severity:<6}] {a.anomaly_type} @p{a.page}{obs_ref}")
-            print(f"        bbox={bbox_s}  conf={a.confidence:.2f}")
-            print(f"        {a.description}")
-            if a.metrics:
-                # 只挑少量关键 metrics
-                keys_of_interest = [
-                    "reasons", "reason", "cv", "coverage",
-                    "occluder_type", "occluded_type",
-                    "overlay_type", "opacity",
-                    "bezier_count", "aspect_ratio", "hit_count",
-                ]
-                parts = []
-                for k in keys_of_interest:
-                    if k in a.metrics:
-                        parts.append(f"{k}={a.metrics[k]}")
-                if parts:
-                    print(f"        metrics: {'  '.join(parts)}")
-
-    # ---------- 6. Global Style Profile ----------
-    _p("6. Global Style Profile")
+    # ---------- 5. VisualContext · Global Style Profile ----------
+    _p("5. VisualContext · Global Style Profile")
     if vctx is None:
         print("  (no VisualContext)")
     else:
         gp = vctx.global_style_profile or {}
-        for k, v in gp.items():
-            print(f"  {k}: {v}")
+        if not gp:
+            print("  (empty)")
+        else:
+            for k, v in gp.items():
+                print(f"  {k}: {v}")
 
-    # ---------- 7. Engine Errors ----------
-    _p("7. Engine Errors")
+    # ---------- 6. VisualContext · Analyzer Contexts ----------
+    _p("6. VisualContext · Analyzer Contexts")
+    if vctx is None:
+        print("  (no VisualContext)")
+    elif not vctx.analyzer_contexts:
+        print("  (no analyzer contexts)")
+    else:
+        for analyzer_name, ctx_data in vctx.analyzer_contexts.items():
+            _s(f"Analyzer: {analyzer_name}")
+            if not ctx_data:
+                print("  (empty)")
+                continue
+            ctx_str = _fmt_value(
+                ctx_data,
+                indent=1,
+                max_str=150,
+                max_items=8,
+                max_depth=6,
+            )
+            for line in ctx_str.split("\n"):
+                print(line)
+
+    # ---------- 7. VisualContext · Metadata ----------
+    _p("7. VisualContext · Metadata")
+    if vctx is None:
+        print("  (no VisualContext)")
+    else:
+        md = vctx.metadata or {}
+        if not md:
+            print("  (empty)")
+        else:
+            for k, v in md.items():
+                print(f"  {k}: {v}")
+
+    # ---------- 8. Engine Errors ----------
+    _p("8. Engine Errors")
     errs = engine.get_errors()
     if not errs:
         print("  (none)")
     else:
         for i, err in enumerate(errs, 1):
             print(f"  [{i}] {err}")
-
-    # ---------- 8. Debug Dump ----------
-    if debug_dir:
-        _p("8. Debug Dump")
-        if vctx is not None:
-            dump = debug_dir / "visual_ir.json"
-            print(f"  {dump}  exists={dump.exists()}")
-        else:
-            print(f"  (no dump; source_type != digital_pdf)")
 
     print()
     print(BAR)
@@ -254,8 +312,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Native PDF Visual Engine Smoke Test")
     parser.add_argument("pdf", nargs="?", type=str, default=None,
                         help="Path to PDF. If omitted, auto-discover in test_doc/.")
-    parser.add_argument("--debug-dir", type=str, default=None,
-                        help="If set, dump VisualIR JSON here.")
     parser.add_argument("--with-perception", action="store_true",
                         help="Also run PerceptionPipeline to produce DocumentIR.")
     args = parser.parse_args()
@@ -269,8 +325,7 @@ def main() -> int:
             return 1
         pdf_path = pdf_path.resolve()
 
-    debug_dir = Path(args.debug_dir).expanduser().resolve() if args.debug_dir else None
-    return run(pdf_path, debug_dir=debug_dir, with_perception=args.with_perception)
+    return run(pdf_path, with_perception=args.with_perception)
 
 
 if __name__ == "__main__":

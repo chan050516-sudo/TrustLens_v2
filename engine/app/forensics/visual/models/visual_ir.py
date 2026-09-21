@@ -134,6 +134,7 @@ class VisualPageIR(BaseModel):
     # ---- NEW ----
     element_spans: Dict[str, List[SpanIR]] = Field(default_factory=dict)   # element_id -> spans
     element_types: Dict[str, str] = Field(default_factory=dict)            # element_id -> element_type
+    element_roi: Dict[str, int] = Field(default_factory=dict)   # NEW: e{i} -> reading_order_index
     style_baseline: Optional[StyleBaselineIR] = None
     anomalies: List[VisualAnomalyIR] = Field(default_factory=list)
     model_config = ConfigDict(arbitrary_types_allowed=True)

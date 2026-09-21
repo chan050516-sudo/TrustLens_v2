@@ -12,7 +12,7 @@ OutliningAnalyzer — partial outlining（局部字符转曲注入）。
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
     DrawingIR, SpanIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -34,11 +34,11 @@ class OutliningAnalyzer(BaseVisualAnalyzer):
         self.aspect_ratio_range = aspect_ratio_range
         self.y_tolerance = y_tolerance
 
-    def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
+    def analyze(self, visual_ir: VisualIR) -> "AnalyzerResult":
         anomalies: List[VisualAnomalyIR] = []
         for page_ir in visual_ir.pages:
             anomalies.extend(self._analyze_page(page_ir))
-        return anomalies
+        return AnalyzerResult(anomalies=anomalies, context={})
 
     def _analyze_page(self, page_ir: VisualPageIR) -> List[VisualAnomalyIR]:
         # 候选：含足量贝塞尔的 drawing

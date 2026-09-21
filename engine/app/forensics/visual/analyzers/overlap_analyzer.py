@@ -9,8 +9,8 @@ OverlapAnalyzer — bbox overlap / copy-move detection。
 """
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-
-from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from collections import defaultdict
+from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
     DrawingIR, ImageIR, SpanIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -68,12 +68,15 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
         """由 VisualEngine 在 analyze() 前注入。"""
         self.document_ir = document_ir
 
-    def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
+    def analyze(self, visual_ir: VisualIR) -> "AnalyzerResult":
         anomalies: List[VisualAnomalyIR] = []
+        context_by_page: Dict[str, Any] = {}
+
         for page_ir in visual_ir.pages:
             objects = self._collect_objects(page_ir)
             if not objects:
                 continue
+
             occlusions = self._detect_occlusions(objects, page_ir)
             reuses = self._detect_reuse(objects, page_ir)
             overlays = self._characterize_overlays(occlusions, objects, page_ir)
@@ -83,7 +86,110 @@ class OverlapAnalyzer(BaseVisualAnalyzer):
             anomalies.extend(reuses)
             anomalies.extend(overlays)
             anomalies.extend(correlations)
-        return anomalies
+
+            # context
+            context_by_page[str(page_ir.page)] = self._build_context_for_page(
+                page_ir, objects
+            )
+
+        return AnalyzerResult(
+            anomalies=anomalies,
+            context={"by_page": context_by_page},
+        )
+
+    # ================================================================
+    # Context
+    # ================================================================
+
+    def _build_context_for_page(
+        self,
+        page_ir: VisualPageIR,
+        objects: List["OverlapObject"],
+    ) -> Dict[str, Any]:
+        obj_pool = {"text": 0, "vector": 0, "image": 0}
+        for o in objects:
+            obj_pool[o.obj_type] = obj_pool.get(o.obj_type, 0) + 1
+
+        return {
+            "object_pool": obj_pool,
+            "near_occlusions": self._find_near_occlusions(objects),
+            "duplicate_groups": self._find_duplicate_groups(objects),
+        }
+
+    def _find_near_occlusions(
+        self,
+        objects: List["OverlapObject"],
+        near_lower: float = 0.7,
+    ) -> List[dict]:
+        out: List[dict] = []
+        seen = set()
+        n = len(objects)
+        for i in range(n):
+            a = objects[i]
+            for j in range(n):
+                if i == j:
+                    continue
+                b = objects[j]
+                if not self._is_valid_occluder(a, b):
+                    continue
+                if b.bbox.area < self.occlusion_min_area:
+                    continue
+                if not bboxes_intersect(a.bbox, b.bbox):
+                    continue
+                cov = coverage_of(b.bbox, a.bbox)
+                if cov < near_lower or cov >= self.occlusion_coverage_threshold:
+                    continue
+                if a.bbox.area < b.bbox.area:
+                    continue
+                pair_key = (a.obj_id, b.obj_id)
+                if pair_key in seen:
+                    continue
+                seen.add(pair_key)
+                out.append({
+                    "occluder_id": a.obj_id,
+                    "occluder_type": a.obj_type,
+                    "occluded_id": b.obj_id,
+                    "occluded_type": b.obj_type,
+                    "coverage": round(cov, 4),
+                    "occluded_text": b.ref.text if b.obj_type == "text" else None,
+                })
+                if len(out) >= 20:
+                    return out
+        return out
+
+    def _find_duplicate_groups(
+        self,
+        objects: List["OverlapObject"],
+        max_groups: int = 20,
+        max_members_per_group: int = 10,
+    ) -> List[dict]:
+        groups = defaultdict(list)
+        for obj in objects:
+            key = self._reuse_group_key(obj)
+            if key is None:
+                continue
+            groups[key].append(obj)
+
+        out: List[dict] = []
+        for key, group in groups.items():
+            if len(group) < 2:
+                continue
+            members = []
+            for obj in group[:max_members_per_group]:
+                members.append({
+                    "obj_id": obj.obj_id,
+                    "bbox": [obj.bbox.x0, obj.bbox.y0, obj.bbox.x1, obj.bbox.y1],
+                })
+            out.append({
+                "key": str(key),
+                "obj_type": group[0].obj_type,
+                "member_count": len(group),
+                "members": members,
+                "truncated": len(group) > max_members_per_group,
+            })
+            if len(out) >= max_groups:
+                break
+        return out
 
     # ---------- object pool ----------
 

@@ -13,7 +13,7 @@ VisualEngine — Digital PDF Visual Engine 顶层入口。
 返回：(List[Evidence], Optional[VisualContext])
 """
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 from app.core.document_ir import DocumentContext
 from app.core.evidence import Evidence
@@ -127,8 +127,8 @@ class VisualEngine:
 
         # 4. analyzers
         all_anomalies = []
+        analyzer_contexts: Dict[str, Any] = {}
         for analyzer in self.analyzers:
-            # 注入 document_ir（仅对有 set_document_ir 的分析器生效）
             if hasattr(analyzer, "set_document_ir"):
                 try:
                     analyzer.set_document_ir(document_ir)
@@ -137,8 +137,10 @@ class VisualEngine:
                         f"{analyzer.__class__.__name__}.set_document_ir failed: {e}"
                     )
             try:
-                anomalies = analyzer.analyze(visual_ir)
-                all_anomalies.extend(anomalies)
+                result = analyzer.analyze(visual_ir)
+                all_anomalies.extend(result.anomalies)
+                if result.context:
+                    analyzer_contexts[analyzer.name] = result.context
             except Exception as e:
                 self._errors.append(f"{analyzer.__class__.__name__} failed: {e}")
 
@@ -158,7 +160,11 @@ class VisualEngine:
 
         # 6. VisualContext
         try:
-            vctx = self.context_builder.build(visual_ir, document_ir=document_ir)
+            vctx = self.context_builder.build(
+                visual_ir,
+                document_ir=document_ir,
+                analyzer_contexts=analyzer_contexts,
+            )
         except Exception as e:
             self._errors.append(f"VisualContextBuilder failed: {e}")
             vctx = None

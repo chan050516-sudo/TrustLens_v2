@@ -14,9 +14,9 @@ TypographyAnalyzer — 三层样式分布基线。
 import math
 import unicodedata
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
     SpanIR, StyleBaselineIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -37,17 +37,23 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
 
     def __init__(
         self,
+        # ---- anomaly 判定 ----
         rare_k: float = 3.5,
         min_spans_for_baseline: int = 5,
         min_distinct_bars: int = 3,
-        min_total_chars: int = 30,                    # char-based 阈值
+        min_total_chars: int = 30,
         size_key_precision: int = 2,
         min_bar_char_count: int = 2,
         enable_page_scope: bool = True,
         enable_element_scope: bool = True,
         normal_confidence: float = 0.7,
         allowed_type_confidence: float = 0.3,
-        multi_scope_confidence_bonus: float = 0.15,   # 多层命中加分
+        multi_scope_confidence_bonus: float = 0.15,
+        # ---- context 专用 ----
+        context_rare_pct_threshold: float = 0.02,
+        context_rare_char_threshold: int = 30,
+        context_max_rare_bins: int = 10,
+        context_max_spans_per_bin: int = 10,
     ):
         self.rare_k = rare_k
         self.min_spans_for_baseline = min_spans_for_baseline
@@ -60,83 +66,201 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         self.normal_confidence = normal_confidence
         self.allowed_type_confidence = allowed_type_confidence
         self.multi_scope_confidence_bonus = multi_scope_confidence_bonus
+        self.context_rare_pct_threshold = context_rare_pct_threshold
+        self.context_rare_char_threshold = context_rare_char_threshold
+        self.context_max_rare_bins = context_max_rare_bins
+        self.context_max_spans_per_bin = context_max_spans_per_bin
 
     # ================================================================
     # 入口
     # ================================================================
 
-    def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
-        # ---- Step 1: 全局 obs_lookup ----
+    def analyze(self, visual_ir: VisualIR) -> AnalyzerResult:
         obs_lookup = self._build_global_obs_lookup(visual_ir)
 
-        # ---- Step 2: 收集所有 span ----
         all_spans: List[SpanIR] = []
         for page_ir in visual_ir.pages:
             all_spans.extend(page_ir.iter_all_spans())
 
-        if len(all_spans) < self.min_spans_for_baseline:
-            # 文档太小，仅写页级 baseline 供调试
-            for page_ir in visual_ir.pages:
-                page_ir.style_baseline = self._build_baseline(
-                    page_ir.page, page_ir.iter_all_spans()
-                )
-            return []
+        # ---- anomaly 判定 ----
+        anomalies: List[VisualAnomalyIR] = []
+        if len(all_spans) >= self.min_spans_for_baseline:
+            global_baseline = self._build_baseline(0, all_spans)
+            visual_ir.metadata["global_style_baseline"] = global_baseline.model_dump()
+            global_anomalies = self._scope_analyze(
+                all_spans, scope="global", scope_id=None, obs_lookup=obs_lookup,
+            )
 
-        # ---- Step 3: 三层分析 ----
-
-        # 3a. 全局
-        global_baseline = self._build_baseline(0, all_spans)
-        visual_ir.metadata["global_style_baseline"] = global_baseline.model_dump()
-        global_anomalies = self._scope_analyze(
-            all_spans, scope="global", scope_id=None, obs_lookup=obs_lookup,
-        )
-
-        # 3b. 页级
-        page_anomalies: List[VisualAnomalyIR] = []
-        if self.enable_page_scope:
-            for page_ir in visual_ir.pages:
-                page_spans = page_ir.iter_all_spans()
-                page_ir.style_baseline = self._build_baseline(
-                    page_ir.page, page_spans
-                )
-                if len(page_spans) < self.min_spans_for_baseline:
-                    continue
-                page_anomalies.extend(self._scope_analyze(
-                    page_spans, scope="page", scope_id=page_ir.page,
-                    obs_lookup=obs_lookup,
-                ))
-
-        # 3c. Element 级
-        element_anomalies: List[VisualAnomalyIR] = []
-        if self.enable_element_scope:
-            for page_ir in visual_ir.pages:
-                for elem_id, elem_spans in page_ir.element_spans.items():
-                    if len(elem_spans) < self.min_spans_for_baseline:
+            page_anomalies: List[VisualAnomalyIR] = []
+            if self.enable_page_scope:
+                for page_ir in visual_ir.pages:
+                    page_spans = page_ir.iter_all_spans()
+                    page_ir.style_baseline = self._build_baseline(
+                        page_ir.page, page_spans
+                    )
+                    if len(page_spans) < self.min_spans_for_baseline:
                         continue
-                    element_anomalies.extend(self._scope_analyze(
-                        elem_spans, scope="element", scope_id=elem_id,
+                    page_anomalies.extend(self._scope_analyze(
+                        page_spans, scope="page", scope_id=page_ir.page,
                         obs_lookup=obs_lookup,
                     ))
 
-        # ---- Step 4: 合并 ----
-        merged = self._merge_anomalies(
-            global_anomalies, page_anomalies, element_anomalies
-        )
+            element_anomalies: List[VisualAnomalyIR] = []
+            if self.enable_element_scope:
+                for page_ir in visual_ir.pages:
+                    for elem_id, elem_spans in page_ir.element_spans.items():
+                        if len(elem_spans) < self.min_spans_for_baseline:
+                            continue
+                        element_anomalies.extend(self._scope_analyze(
+                            elem_spans, scope="element", scope_id=elem_id,
+                            obs_lookup=obs_lookup,
+                        ))
 
-        # ---- Step 5: Element type 降权 ----
-        span_to_elem_type = self._build_span_element_type_map(visual_ir)
-        for a in merged:
-            span_id = a.span_ids[0] if a.span_ids else None
-            elem_type = span_to_elem_type.get(span_id) if span_id else None
-            if elem_type:
-                a.detail["element_type"] = elem_type
-                if elem_type in ALLOWED_ANOMALY_ELEMENT_TYPES:
-                    a.detail["allowed_type"] = True
-                    a.confidence = self.allowed_type_confidence
-        return merged
+            anomalies = self._merge_anomalies(
+                global_anomalies, page_anomalies, element_anomalies
+            )
+
+            span_to_elem_type = self._build_span_element_type_map(visual_ir)
+            for a in anomalies:
+                span_id = a.span_ids[0] if a.span_ids else None
+                elem_type = span_to_elem_type.get(span_id) if span_id else None
+                if elem_type:
+                    a.detail["element_type"] = elem_type
+                    if elem_type in ALLOWED_ANOMALY_ELEMENT_TYPES:
+                        a.detail["allowed_type"] = True
+                        a.confidence = self.allowed_type_confidence
+
+        # ---- context ----
+        context = self._build_context(visual_ir, obs_lookup)
+
+        return AnalyzerResult(anomalies=anomalies, context=context)
 
     # ================================================================
-    # 单层分析
+    # Context 构造
+    # ================================================================
+
+    def _build_context(
+        self,
+        visual_ir: VisualIR,
+        obs_lookup: Dict[str, int],
+    ) -> Dict[str, Any]:
+        # Global
+        all_spans: List[SpanIR] = []
+        for page_ir in visual_ir.pages:
+            all_spans.extend(page_ir.iter_all_spans())
+        global_ctx = self._build_scope_context(all_spans, obs_lookup)
+
+        # By page
+        by_page: Dict[str, Any] = {}
+        for page_ir in visual_ir.pages:
+            page_spans = page_ir.iter_all_spans()
+            by_page[str(page_ir.page)] = self._build_scope_context(page_spans, obs_lookup)
+
+        # By table element
+        by_table_element: Dict[str, Any] = {}
+        for page_ir in visual_ir.pages:
+            for elem_id, elem_spans in page_ir.element_spans.items():
+                elem_type = page_ir.element_types.get(elem_id, "unknown")
+                if elem_type != "table":
+                    continue
+                roi = page_ir.element_roi.get(elem_id)
+                if roi is None:
+                    continue
+                ctx = self._build_scope_context(elem_spans, obs_lookup)
+                ctx["element_type"] = "table"
+                ctx["element_id"] = elem_id
+                by_table_element[str(roi)] = ctx
+
+        return {
+            "global": global_ctx,
+            "by_page": by_page,
+            "by_table_element": by_table_element,
+        }
+
+    def _build_scope_context(
+        self,
+        spans: List[SpanIR],
+        obs_lookup: Dict[str, int],
+    ) -> Dict[str, Any]:
+        meaningful = [s for s in spans if self._is_meaningful_span(s)]
+        if not meaningful:
+            return {"total_span_count": 0, "total_char_count": 0, "triples": []}
+
+        total_chars = sum(len(s.text) for s in meaningful)
+        total_spans = len(meaningful)
+
+        triple_map: Dict[Tuple[str, float, int], List[SpanIR]] = defaultdict(list)
+        for s in meaningful:
+            key = (s.font_name, round(s.font_size, self.size_key_precision), s.font_color)
+            triple_map[key].append(s)
+
+        triples_data: List[dict] = []
+        rare_entries: List[dict] = []
+        spans_data_cache: Dict[Tuple[str, float, int], List[SpanIR]] = {}
+
+        for key, t_spans in triple_map.items():
+            font_name, font_size, font_color = key
+            char_count = sum(len(s.text) for s in t_spans)
+            span_count = len(t_spans)
+            pct = char_count / max(total_chars, 1)
+            is_rare = (pct < self.context_rare_pct_threshold
+                       or char_count < self.context_rare_char_threshold)
+
+            entry = {
+                "font_name": font_name,
+                "font_size": font_size,
+                "font_color": font_color,
+                "char_count": char_count,
+                "span_count": span_count,
+                "pct": round(pct, 4),
+                "is_rare": is_rare,
+            }
+            if is_rare:
+                spans_data_cache[key] = t_spans
+                rare_entries.append(entry)
+            triples_data.append(entry)
+
+        # triples 排序：char_count 降序（dominant 在前）
+        triples_data.sort(key=lambda t: t["char_count"], reverse=True)
+
+        # rare bins 排序：char_count 升序
+        rare_entries.sort(key=lambda t: t["char_count"])
+        keep_keys: Set[Tuple[str, float, int]] = set()
+        for e in rare_entries[:self.context_max_rare_bins]:
+            keep_keys.add((e["font_name"], e["font_size"], e["font_color"]))
+
+        # 回填 spans
+        for t in triples_data:
+            if not t["is_rare"]:
+                continue
+            key = (t["font_name"], t["font_size"], t["font_color"])
+            if key not in keep_keys:
+                t["spans_omitted"] = True
+                continue
+            sorted_spans = sorted(spans_data_cache[key], key=lambda s: len(s.text))
+            spans_out = []
+            for s in sorted_spans[:self.context_max_spans_per_bin]:
+                spans_out.append({
+                    "span_id": s.span_id,
+                    "page": s.page,
+                    "bbox": [s.bbox.x0, s.bbox.y0, s.bbox.x1, s.bbox.y1],
+                    "observation_id": obs_lookup.get(s.span_id),
+                    "text": s.text,
+                    "text_len": len(s.text),
+                })
+            t["spans"] = spans_out
+            if len(sorted_spans) > self.context_max_spans_per_bin:
+                t["truncated"] = True
+                t["total_spans_in_bin"] = len(sorted_spans)
+
+        return {
+            "total_span_count": total_spans,
+            "total_char_count": total_chars,
+            "triples": triples_data,
+        }
+
+    # ================================================================
+    # Anomaly 判定（保持原逻辑）
     # ================================================================
 
     def _scope_analyze(
@@ -146,11 +270,6 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         scope_id,
         obs_lookup: Dict[str, int],
     ) -> List[VisualAnomalyIR]:
-        """
-        在给定 span 集合内建直方图 → 找稀有 bar → 报异常。
-        直方图权重：char count（不是 span count）。
-        """
-        # ---- 建直方图 ----
         size_hist: Counter = Counter()
         name_hist: Counter = Counter()
         color_hist: Counter = Counter()
@@ -167,7 +286,6 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         if total_chars < self.min_total_chars:
             return []
 
-        # ---- 稀有 bar ----
         rare_sizes = self._find_rare_bars(size_hist)
         rare_names = self._find_rare_bars(name_hist)
         rare_colors = self._find_rare_bars(color_hist)
@@ -175,9 +293,11 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         if not (rare_sizes or rare_names or rare_colors):
             return []
 
-        # ---- 逐 span 判定 ----
         anomalies: List[VisualAnomalyIR] = []
         for s in spans:
+            if not self._is_meaningful_span(s):
+                continue
+
             reasons: List[str] = []
             metrics: dict = {}
 
@@ -242,9 +362,9 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         name_hist: Counter = Counter()
         color_hist: Counter = Counter()
         for s in spans:
-            n = len(s.text)
-            if n == 0:
+            if not self._is_meaningful_span(s):
                 continue
+            n = len(s.text)
             size_key = f"{round(s.font_size, self.size_key_precision):.{self.size_key_precision}f}"
             size_hist[size_key] += n
             name_hist[s.font_name] += n
@@ -278,14 +398,11 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         - confidence 随层数加分
         """
         by_span: Dict[str, VisualAnomalyIR] = {}
-
         for a in global_anoms + page_anoms + element_anoms:
             span_id = a.span_ids[0] if a.span_ids else None
             if span_id is None:
                 continue
-
             if span_id not in by_span:
-                # 首次命中：初始化 scopes 列表
                 a.detail["scopes"] = [a.detail.get("scope")]
                 by_span[span_id] = a
                 continue
@@ -308,8 +425,31 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
             extra = len(scopes) - 1
             if extra > 0:
                 a.confidence = min(1.0, a.confidence + extra * self.multi_scope_confidence_bonus)
-
         return list(by_span.values())
+
+    # ================================================================
+    # 意义判定
+    # ================================================================
+
+    def _is_meaningful_span(self, s: SpanIR) -> bool:
+        text = s.text.strip()
+        if not text:
+            return False
+        if self._is_only_punct_or_symbol(text):
+            return False
+        return True
+
+    @staticmethod
+    def _is_only_punct_or_symbol(text: str) -> bool:
+        if not text:
+            return True
+        for ch in text:
+            if ch.isspace():
+                continue
+            cat = unicodedata.category(ch)
+            if not (cat.startswith("P") or cat.startswith("S") or cat.startswith("Z")):
+                return False
+        return True
 
     # ================================================================
     # 辅助
@@ -324,7 +464,6 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
         return out
 
     def _build_span_element_type_map(self, visual_ir: VisualIR) -> Dict[str, str]:
-        """span_id -> element_type 反查。"""
         out: Dict[str, str] = {}
         for page_ir in visual_ir.pages:
             for elem_id, elem_spans in page_ir.element_spans.items():
@@ -354,38 +493,3 @@ class TypographyAnalyzer(BaseVisualAnalyzer):
             return int(counter.most_common(1)[0][0])
         except Exception:
             return None
-
-    # ================================================================
-    # 意义判定
-    # ================================================================
-
-    def _is_meaningful_span(self, s: SpanIR) -> bool:
-        """
-        判断 span 是否值得参与 Typography 统计。
-
-        只跳纯标点/符号/空白的 span。
-        短 span（1-2 字符）如果是字母/数字，仍参与统计
-        —— 攻击者篡改的往往就是这类极短的数值字段。
-        """
-        text = s.text.strip()
-        if not text:
-            return False
-        if self._is_only_punct_or_symbol(text):
-            return False
-        return True
-
-    @staticmethod
-    def _is_only_punct_or_symbol(text: str) -> bool:
-        """
-        Unicode 类别判定：P* / S* / Z* 视为纯标点符号。
-        覆盖所有语言的标点（各种引号、破折号、括号、项目符号）。
-        """
-        if not text:
-            return True
-        for ch in text:
-            if ch.isspace():
-                continue
-            cat = unicodedata.category(ch)
-            if not (cat.startswith("P") or cat.startswith("S") or cat.startswith("Z")):
-                return False
-        return True

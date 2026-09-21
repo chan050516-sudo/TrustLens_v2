@@ -7,9 +7,8 @@ VectorSpoofingAnalyzer — 微型矢量笔画干预。
 3. 排除落在结构区域内的候选
 4. 剩余候选与 char bbox 相交
 """
-from typing import Any, List, Optional
-
-from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from typing import Any, List, Optional, Tuple
+from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
     CharIR, DrawingIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -42,42 +41,52 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
     def set_document_ir(self, document_ir: Optional[Any]) -> None:
         self.document_ir = document_ir
 
-    def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
-        anomalies: List[VisualAnomalyIR] = []
-        for page_ir in visual_ir.pages:
-            anomalies.extend(self._analyze_page(page_ir))
-        return anomalies
+    def analyze(self, visual_ir: VisualIR) -> "AnalyzerResult":
+        from app.forensics.visual.analyzers.base import AnalyzerResult
 
-    def _analyze_page(self, page_ir: VisualPageIR) -> List[VisualAnomalyIR]:
+        anomalies: List[VisualAnomalyIR] = []
+        all_candidates: List[dict] = []
+
+        for page_ir in visual_ir.pages:
+            page_anomalies, page_candidates = self._analyze_page(page_ir)
+            anomalies.extend(page_anomalies)
+            all_candidates.extend(page_candidates)
+
+        # 上限保护
+        if len(all_candidates) > 50:
+            all_candidates = all_candidates[:50]
+
+        return AnalyzerResult(
+            anomalies=anomalies,
+            context={"micro_vector_candidates": all_candidates},
+        )
+
+    def _analyze_page(
+        self,
+        page_ir: VisualPageIR,
+    ) -> Tuple[List[VisualAnomalyIR], List[dict]]:
         ref_size = self._reference_font_size(page_ir)
         micro_threshold = min(self.micro_size_threshold_pt, ref_size * 0.6)
 
-        # 1. 前置：结构区域
         structural_bboxes = self._collect_structural_bboxes(page_ir)
-
-        # 2. 收集 chars
         chars: List[CharIR] = [c for s in page_ir.iter_all_spans() for c in s.chars]
         if not chars:
-            return []
+            return [], []
 
-        # 3. 筛选微型矢量候选
         candidates = [
             d for d in page_ir.drawings
             if self._is_micro(d, micro_threshold)
             and not self._is_underline_like(d)
         ]
-
-        # 4. 排除落在结构区域内的候选
-        candidates = [
-            d for d in candidates
-            if not self._in_structural_zone(d, structural_bboxes)
-        ]
         if not candidates:
-            return []
+            return [], []
 
-        # 5. 与 char 相交
         anomalies: List[VisualAnomalyIR] = []
+        context_candidates: List[dict] = []
+
         for d in candidates:
+            in_structural = self._in_structural_zone(d, structural_bboxes)
+
             hits: List[dict] = []
             for c in chars:
                 if not bboxes_intersect(d.bbox, c.bbox):
@@ -90,8 +99,26 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
                     "char_bbox": [c.bbox.x0, c.bbox.y0, c.bbox.x1, c.bbox.y1],
                     "coverage": round(cov, 4),
                 })
-            if not hits:
+
+            max_cov = max((h["coverage"] for h in hits), default=0.0)
+
+            # context: 记录所有候选（含未命中 / 落在结构区的）
+            context_candidates.append({
+                "drawing_id": d.drawing_id,
+                "page": d.page,
+                "bbox": [d.bbox.x0, d.bbox.y0, d.bbox.x1, d.bbox.y1],
+                "size_pt": [round(d.bbox.width, 3), round(d.bbox.height, 3)],
+                "in_structural_zone": in_structural,
+                "hit_count": len(hits),
+                "max_coverage": round(max_cov, 4),
+            })
+
+            # evidence: 只报未落在结构区且命中阈值
+            if in_structural:
                 continue
+            if max_cov <= 0.0:
+                continue
+
             anomalies.append(VisualAnomalyIR(
                 page=d.page,
                 bbox=d.bbox,
@@ -109,7 +136,8 @@ class VectorSpoofingAnalyzer(BaseVisualAnalyzer):
                     "hit_count": len(hits),
                 },
             ))
-        return anomalies
+
+        return anomalies, context_candidates
 
     # ---------- structural zone ----------
 

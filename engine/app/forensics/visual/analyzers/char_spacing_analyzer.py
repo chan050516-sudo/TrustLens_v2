@@ -21,7 +21,7 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-from app.forensics.visual.analyzers.base import BaseVisualAnalyzer
+from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
     CharIR, SpanIR, VisualAnomalyIR, VisualIR, VisualPageIR,
 )
@@ -63,19 +63,63 @@ class CharSpacingAnalyzer(BaseVisualAnalyzer):
         self.aspect_mad_k = aspect_mad_k
         self.aspect_abs_min_delta = aspect_abs_min_delta
 
-    def analyze(self, visual_ir: VisualIR) -> List[VisualAnomalyIR]:
+    def analyze(self, visual_ir: VisualIR) -> "AnalyzerResult":
         anomalies: List[VisualAnomalyIR] = []
 
-        # A: 逐页 overlap（局部几何）
         if self.enable_overlap:
             for page_ir in visual_ir.pages:
                 anomalies.extend(self._check_overlap_page(page_ir))
 
-        # B & C: 全局（跨页）numeric glyph 分析
         if self.enable_numeric_glyph_outlier or self.enable_aspect_anomaly:
             anomalies.extend(self._check_numeric_glyphs(visual_ir))
 
-        return anomalies
+        context = self._build_context(visual_ir)
+        return AnalyzerResult(anomalies=anomalies, context=context)
+
+    def _build_context(self, visual_ir: VisualIR) -> Dict:
+        """
+        数字 glyph 分组统计。
+        key = (font_name, size, style_bits, digit)
+        """
+        from collections import defaultdict
+
+        buckets: Dict[Tuple[str, float, int, str], List[CharIR]] = defaultdict(list)
+        for page_ir in visual_ir.pages:
+            for s in page_ir.iter_all_spans():
+                style = self._style_bits(s.flags)
+                size_key = round(s.font_size, self.size_key_precision)
+                for c in s.chars:
+                    if len(c.char) == 1 and c.char.isdigit():
+                        buckets[(s.font_name, size_key, style, c.char)].append(c)
+
+        groups_out: List[dict] = []
+        for (font_name, font_size, style_bits, digit), chars in buckets.items():
+            widths = [c.bbox.width for c in chars if c.bbox.width > 0]
+            if not widths:
+                continue
+            aspects = []
+            for c in chars:
+                h = max(c.bbox.height, 1e-6)
+                aspects.append(c.bbox.width / h)
+
+            groups_out.append({
+                "font_name": font_name,
+                "font_size": font_size,
+                "style_bits": style_bits,
+                "digit": digit,
+                "sample_count": len(chars),
+                "width_median": round(median(widths), 4),
+                "width_mad": round(mad(widths), 4),
+                "width_min": round(min(widths), 4),
+                "width_max": round(max(widths), 4),
+                "aspect_median": round(median(aspects), 4),
+                "aspect_mad": round(mad(aspects), 4),
+            })
+
+        # 排序：先按 font_name/size，再按 digit
+        groups_out.sort(key=lambda g: (g["font_name"], g["font_size"], g["digit"]))
+
+        return {"numeric_glyph_groups": groups_out}
 
     # ================================================================
     # A. Char Overlap
