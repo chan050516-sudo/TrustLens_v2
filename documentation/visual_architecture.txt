@@ -50,17 +50,40 @@ Correlation Engine	将上述三者关联	PDF_COPY_MOVE_CORRELATION
 
 
 ## digital image
+
 1. character profile
-(剪枝)只注重ocr observation的数字textblock，切割出character level的方格
+(剪枝)只筛选出ocr observation为数字占大部分的textblock，切割出character level的方格，register到ocr的数字
+按0-9分类， 进行 glyph embedding vector (Dinov2 / ViT) 聚类。
+然后：
 - Stroke Width Transform (考虑待定)
 - PCA: character orientation, baseline orientation, stroke orientation distribution
 - Black Level: median darkness
-- glyph embedding vector (Dinov2 / ViT)
+内部进行MAD检测outlier。
+例子：
+[文档内所有字符 '0' (共 14 个)]
+               │
+               ▼
+【阶段 1: 字体子簇发现 (Sub-Cluster Discovery)】
+   - 提取每个 '0' 的 Glyph Embedding (DINOv2 / ViT 向量)
+   - 降维或直接做近邻图聚类 (DBSCAN / 基于余弦距离的层次聚类)
+   - 自动产出自然簇：
+     * Cluster A: Font A (9 个样本)
+     * Cluster B: Font B (5 个样本)
+     * Outlier C: 孤立异常点 (若存在无法归入任何主簇的单点，直接标记可疑)
+               │
+               ▼
+【阶段 2: 簇内独立取证 (Intra-Cluster Forensic Check)】
+   - 对 Cluster A (9 个) 独立计算：
+     * MAD on SWT (笔画粗细)
+     * MAD on PCA (主偏角与长宽比)
+     * MAD on Black Level (墨迹深浅与对比度)
+   - 对 Cluster B (5 个) 同样独立运行一套检测
+
 2. text block profile
 对于所有text blocks内部:
 - baseline anomaly detection
-对于paragraph region里的text blocks:
-- y坐标接近的bbox放在一起，每个bbox都有average baseline gradient，用z score via MAD对比
+对于paragraph region或其他text region里的text blocks:
+- ransac找outliers
 对于table region里的text block:
 - 以列为单位，为列内bbox找left alignment / right alignment / centre alignment对齐线 (需判断主对齐线来做基准)，列内bbox的起始端、中点、尾端x坐标对比，z-score anomaly via MAD。行内直接测中线。
 

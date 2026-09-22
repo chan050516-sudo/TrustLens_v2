@@ -81,6 +81,11 @@ class EvidenceType(str, Enum):
     PDF_VECTOR_SPOOFING = "PDF_VECTOR_SPOOFING"
     PDF_DRAWING_ANOMALY = "PDF_DRAWING_ANOMALY"
 
+    # === L2 Visual - Digital Image ===
+    IMAGE_BASELINE_ANOMALY = "IMAGE_BASELINE_ANOMALY"                    # 基线偏离
+    IMAGE_ALIGNMENT_ANOMALY = "IMAGE_ALIGNMENT_ANOMALY"                  # 表格列对齐异常
+    IMAGE_LOW_QUALITY_SEGMENTATION = "IMAGE_LOW_QUALITY_SEGMENTATION"    # 分割置信度过低（辅助信号）
+
 
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""

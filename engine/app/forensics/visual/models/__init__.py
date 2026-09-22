@@ -5,6 +5,7 @@ from app.forensics.visual.models.visual_ir import (
     SpanIR,
     DrawingIR,
     ImageIR,
+    ImageCharIR,
     StyleBaselineIR,
     VisualAnomalyIR,
     VisualPageIR,
@@ -18,7 +19,7 @@ from app.forensics.visual.models.visual_context import (
 
 __all__ = [
     "SourceType", "SourceTypeResult",
-    "CharIR", "SpanIR", "DrawingIR", "ImageIR", "StyleBaselineIR",
+    "CharIR", "SpanIR", "DrawingIR", "ImageIR", "ImageCharIR", "StyleBaselineIR",
     "VisualAnomalyIR", "VisualPageIR", "VisualIR",
     "VisualSourceInfo", "VisualPageSummary", "VisualContext",
 ]

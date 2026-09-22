@@ -98,6 +98,35 @@ class DrawingIR(BaseModel):
     stroke_color: Optional[Tuple[float, ...]] = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+class ImageCharIR(BaseModel):
+    """
+    Digital Image 中的字符级 IR。
+    由 ImageCharSegmenter 从图像的 observation（行 bbox）内切割得到。
+    """
+    char_id: str                    # "p1_o5_c3"（page_observation_charIndex）
+    char: str
+    page: int
+    observation_id: int             # 来自 DocumentIR.observations 的索引
+
+    # 位置
+    ocr_line_bbox: BBox             # 整行的 OCR bbox（用于追溯来源）
+    ink_bbox: BBox                  # 墨迹 bbox（像素坐标，全局）
+    ink_bottom_y: float             # 墨迹最低点（用于 baseline）
+
+    # 形态指标（阶段 1）
+    ink_width: float
+    ink_height: float
+    aspect_ratio: float
+    black_level: float              # 墨迹像素灰度中位数（0-255）
+    ink_density: float              # 墨迹像素数 / bbox 面积
+
+    # 质量标记
+    typography_class: str           # "reliable" | "uncertain" | "excluded"
+    inference_flag: str             # "observed" | "split_inferred" | "merged_inferred"
+    global_line_confidence: float   # 整行切割质量
+    local_char_confidence: float    # 单字符切割质量
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class StyleBaselineIR(BaseModel):
     """页级样式基线（由 TypographyAnalyzer 产出）。"""
@@ -135,6 +164,10 @@ class VisualPageIR(BaseModel):
     element_spans: Dict[str, List[SpanIR]] = Field(default_factory=dict)   # element_id -> spans
     element_types: Dict[str, str] = Field(default_factory=dict)            # element_id -> element_type
     element_roi: Dict[str, int] = Field(default_factory=dict)   # NEW: e{i} -> reading_order_index
+    # ---- NEW: Digital Image ----
+    image_chars: List[ImageCharIR] = Field(default_factory=list)
+    element_observation_ids: Dict[str, List[int]] = Field(default_factory=dict)
+    
     style_baseline: Optional[StyleBaselineIR] = None
     anomalies: List[VisualAnomalyIR] = Field(default_factory=list)
     model_config = ConfigDict(arbitrary_types_allowed=True)
