@@ -96,7 +96,7 @@ class ImageCharSegmenter:
         all_chars: List[ImageCharIR] = []
         for obs_id, obs in enumerate(observations):
             try:
-                chars = self._process_observation(image_bgr, obs, obs_id)
+                chars = self._process_observation(image_bgr, obs, obs_id, page_num=1)
                 all_chars.extend(chars)
             except Exception as e:
                 logger.debug(
@@ -128,6 +128,7 @@ class ImageCharSegmenter:
         image_bgr: np.ndarray,
         obs: Any,
         obs_id: int,
+        page_num: int = 1
     ) -> List[ImageCharIR]:
         text = (getattr(obs, "text", "") or "").strip()
         if len(text) < self.min_text_length or len(text) > self.max_text_length:
@@ -221,9 +222,9 @@ class ImageCharSegmenter:
             local_conf = 1.0 if flag == InferenceFlag.OBSERVED else 0.4
 
             out.append(ImageCharIR(
-                char_id=f"p1_o{obs_id}_c{i}",
+                char_id=f"p{page_num}_o{obs_id}_c{i}",
                 char=char_text,
-                page=1,
+                page=page_num,
                 observation_id=obs_id,
                 ocr_line_bbox=BBox(
                     x0=float(line_bbox.x0), y0=float(line_bbox.y0),
@@ -347,6 +348,60 @@ class ImageCharSegmenter:
             return [bx1, new_y1, bx2, new_y2]
 
         return box
+
+    def extract_from_array(
+        self,
+        image_bgr: np.ndarray,
+        all_observations: List[Any],        # ← 全部 observations（不是过滤后的）
+        page_num: int = 1,
+        document_ir: Optional[Any] = None,
+    ) -> VisualPageIR:
+        h, w = image_bgr.shape[:2]
+
+        # 过滤 + 保留全局索引
+        observations_with_idx = [
+            (i, o) for i, o in enumerate(all_observations)
+            if getattr(o, "page", None) == page_num
+        ]
+
+        if not observations_with_idx:
+            return VisualPageIR(page=page_num, width=float(w), height=float(h))
+
+        # element_id -> observation_ids（全局）
+        element_observation_ids: Dict[str, List[int]] = {}
+        element_types: Dict[str, str] = {}
+        element_roi: Dict[str, int] = {}
+        if document_ir is not None:
+            for elem_idx, elem in enumerate(getattr(document_ir, "elements", None) or []):
+                if getattr(elem, "page", None) not in (None, page_num):
+                    continue
+                elem_id = f"e{elem_idx}"
+                obs_ids = getattr(elem, "observation_ids", None) or []
+                element_observation_ids[elem_id] = [int(x) for x in obs_ids]
+                element_types[elem_id] = getattr(elem, "element_type", "unknown")
+                roi = getattr(elem, "reading_order_index", None)
+                element_roi[elem_id] = roi if isinstance(roi, int) else elem_idx
+
+        all_chars: List[ImageCharIR] = []
+        for global_obs_id, obs in observations_with_idx:
+            try:
+                chars = self._process_observation(
+                    image_bgr, obs, global_obs_id, page_num=page_num,
+                )
+                all_chars.extend(chars)
+            except Exception as e:
+                logger.debug(f"[ImageCharSegmenter] obs#{global_obs_id} failed: {e}")
+                continue
+
+        return VisualPageIR(
+            page=page_num,
+            width=float(w),
+            height=float(h),
+            image_chars=all_chars,
+            element_observation_ids=element_observation_ids,
+            element_types=element_types,
+            element_roi=element_roi,
+        )
 
     @staticmethod
     def _get_dynamic_density_threshold(char_text: str, w_local: int) -> float:

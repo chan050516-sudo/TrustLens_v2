@@ -85,6 +85,8 @@ class EvidenceType(str, Enum):
     IMAGE_BASELINE_ANOMALY = "IMAGE_BASELINE_ANOMALY"                    # 基线偏离
     IMAGE_ALIGNMENT_ANOMALY = "IMAGE_ALIGNMENT_ANOMALY"                  # 表格列对齐异常
     IMAGE_LOW_QUALITY_SEGMENTATION = "IMAGE_LOW_QUALITY_SEGMENTATION"    # 分割置信度过低（辅助信号）
+    IMAGE_SOURCE_CLASSIFICATION = "IMAGE_SOURCE_CLASSIFICATION"          # Camera vs Digital 判定结果
+    IMAGE_PAGE_SKIPPED_CAMERA = "IMAGE_PAGE_SKIPPED_CAMERA"              # 该页被判为 camera，跳过分析
 
 
 class Evidence(BaseModel):

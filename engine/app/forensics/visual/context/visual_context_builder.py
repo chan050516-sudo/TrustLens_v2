@@ -40,6 +40,7 @@ class VisualContextBuilder:
                 width=p.width,
                 height=p.height,
                 span_count=span_count,
+                image_char_count=len(p.image_chars),
                 drawing_count=len(p.drawings),
                 dominant_font=baseline.dominant_font_name if baseline else None,
                 dominant_font_size=baseline.dominant_font_size if baseline else None,

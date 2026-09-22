@@ -29,7 +29,7 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
 
     def __init__(
         self,
-        min_cells_per_column: int = 4,
+        min_cells_per_column: int = 3,
         mad_z_threshold: float = 3.5,
         min_abs_offset_px: float = 2.0,
     ):

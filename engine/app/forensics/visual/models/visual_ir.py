@@ -167,7 +167,8 @@ class VisualPageIR(BaseModel):
     # ---- NEW: Digital Image ----
     image_chars: List[ImageCharIR] = Field(default_factory=list)
     element_observation_ids: Dict[str, List[int]] = Field(default_factory=dict)
-    
+    # ---- NEW ----
+    image_classification: Optional[Dict[str, Any]] = None   # Camera/Digital 分类结果
     style_baseline: Optional[StyleBaselineIR] = None
     anomalies: List[VisualAnomalyIR] = Field(default_factory=list)
     model_config = ConfigDict(arbitrary_types_allowed=True)

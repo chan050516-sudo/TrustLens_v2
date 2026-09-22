@@ -7,7 +7,7 @@ VisualAnomalyIR -> Evidence 的统一转换。
 - location 统一为 {"page": int, "bbox": [x0, y0, x1, y1]}。
 - source 记录来源 Analyzer，便于归因。
 """
-from typing import Dict
+from typing import Dict, Optional
 
 from app.core.evidence import Evidence, EvidenceType
 from app.forensics.visual.models.visual_ir import VisualAnomalyIR
@@ -28,6 +28,8 @@ DEFAULT_CONFIDENCE: Dict[str, float] = {
     "IMAGE_BASELINE_ANOMALY": 0.7,
     "IMAGE_ALIGNMENT_ANOMALY": 0.7,
     "IMAGE_LOW_QUALITY_SEGMENTATION": 0.3,
+    "IMAGE_SOURCE_CLASSIFICATION": 0.9,
+    "IMAGE_PAGE_SKIPPED_CAMERA": 0.9,
 }
 
 
@@ -65,4 +67,36 @@ def source_type_to_evidence(source_result, source: str = "VisualEngine.SourceTyp
         confidence=source_result.confidence,
         source=source,
         description=f"Source type: {source_result.source_type.value} ({source_result.reason})",
+    )
+
+def source_classification_to_evidence(
+    page_ir,
+    source: str = "VisualEngine.CameraDigitalClassifier",
+) -> Optional[Evidence]:
+    """从 page_ir.image_classification 生成 classification Evidence。"""
+    cls = page_ir.image_classification
+    if not cls:
+        return None
+    source_type = cls.get("source_type", "unknown")
+    if source_type == "camera":
+        etype = EvidenceType.IMAGE_PAGE_SKIPPED_CAMERA
+        desc = (
+            f"Page {page_ir.page} classified as CAMERA "
+            f"(score={cls.get('score'):.3f}); skipped visual analysis"
+        )
+    elif source_type == "digital_image":
+        etype = EvidenceType.IMAGE_SOURCE_CLASSIFICATION
+        desc = (
+            f"Page {page_ir.page} classified as DIGITAL_IMAGE "
+            f"(score={cls.get('score'):.3f})"
+        )
+    else:
+        return None
+    return Evidence(
+        type=etype,
+        value=cls,
+        confidence=0.9,
+        source=source,
+        description=desc,
+        location={"page": page_ir.page, "bbox": None},
     )

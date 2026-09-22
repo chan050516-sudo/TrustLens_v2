@@ -24,6 +24,7 @@ class VisualPageSummary(BaseModel):
     width: float
     height: float
     span_count: int = 0
+    image_char_count: int = 0
     drawing_count: int = 0
     dominant_font: Optional[str] = None
     dominant_font_size: Optional[float] = None
