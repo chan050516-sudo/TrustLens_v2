@@ -2,16 +2,22 @@
 ImageAlignmentAnalyzer — Digital Image 表格列的排版对齐检测。
 
 对每个 table element 的每一列：
-1. 收集列内每个 cell 的 **observation bbox**（文字墨迹边界，非 cell 网格边界）
-2. 计算 MAD_L / MAD_M / MAD_R，取 argmin 作为主对齐轴
-3. 对主对齐轴跑 modified z-score，找离群 observation
+1. 收集列内每个 cell 的 observation bbox（文字墨迹边界，非 cell 网格边界）
+2. 过滤：
+   - colspan > 1 的 cell（跨列标题）
+   - 重复 obs（一 obs 只归属一个 cell）
+3. 用 MAD argmin 判定主对齐轴
+4. 对主对齐轴跑 modified z-score 找离群 cell
+5. 表头协同豁免：收集全表候选 → 前两行内异常列数 ≥ 2 → 全豁免
 
-关键修正（vs 旧版）：
-- 旧版用 cell.bbox → 表格网格是规则的，所有 MAD=0，检测无意义
-- 新版用 observation.bbox → 反映文字实际排版规则
+关键参数：
+- min_abs_offset_px = 6.0（吸收 OCR 抖动 + 边界漂移）
+- min_cells_per_column = 3
+- header_forgiveness_rows = (0, 1)
+- header_forgiveness_min_cols = 2
 
 产出：IMAGE_ALIGNMENT_ANOMALY
-Context: 每个 table 每列的 MAD_L/M/R、主对齐轴、样本数
+Context: 每列 MAD_L/M/R、主对齐轴、样本数、被过滤数、被豁免数
 """
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,11 +37,15 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         self,
         min_cells_per_column: int = 3,
         mad_z_threshold: float = 3.5,
-        min_abs_offset_px: float = 2.0,
+        min_abs_offset_px: float = 6.0,
+        header_forgiveness_rows: Tuple[int, ...] = (0, 1),
+        header_forgiveness_min_cols: int = 2,
     ):
         self.min_cells_per_column = min_cells_per_column
         self.mad_z_threshold = mad_z_threshold
         self.min_abs_offset_px = min_abs_offset_px
+        self.header_forgiveness_rows = header_forgiveness_rows
+        self.header_forgiveness_min_cols = header_forgiveness_min_cols
         self.document_ir: Optional[Any] = None
 
     def set_document_ir(self, document_ir: Optional[Any]) -> None:
@@ -68,28 +78,54 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             if not cells:
                 continue
 
-            # 按列分组：cell.col -> [(cell, obs, obs_bbox), ...]
-            by_col = self._collect_by_column(cells, observations)
+            by_col, filter_stats = self._collect_by_column(cells, observations)
 
+            # ---- Step 1: 收集候选（暂不 emit）----
+            table_candidates: List[Dict[str, Any]] = []
             col_contexts: Dict[str, Any] = {}
+
             for col, col_entries in by_col.items():
                 if len(col_entries) < self.min_cells_per_column:
                     continue
 
                 col_anomalies, col_ctx = self._detect_column_alignment(
-                    col=col,
-                    col_entries=col_entries,
-                    elem_idx=elem_idx,
+                    col=col, col_entries=col_entries, elem_idx=elem_idx,
                 )
-                anomalies.extend(col_anomalies)
+                for a in col_anomalies:
+                    table_candidates.append({
+                        "col": col,
+                        "row": a.detail.get("row_index"),
+                        "anomaly": a,
+                    })
                 if col_ctx is not None:
                     col_contexts[str(col)] = col_ctx
+
+            # ---- Step 2: 表头协同豁免 ----
+            row_outlier_cols: Dict[int, set] = defaultdict(set)
+            for cand in table_candidates:
+                row = cand["row"]
+                if row is not None:
+                    row_outlier_cols[row].add(cand["col"])
+
+            forgiven_count = 0
+            for cand in table_candidates:
+                row = cand["row"]
+                if (
+                    row is not None
+                    and row in self.header_forgiveness_rows
+                    and len(row_outlier_cols[row]) >= self.header_forgiveness_min_cols
+                ):
+                    forgiven_count += 1
+                    continue
+                anomalies.append(cand["anomaly"])
 
             if col_contexts:
                 context_by_table[str(elem_idx)] = {
                     "element_id": f"e{elem_idx}",
                     "element_roi": getattr(elem, "reading_order_index", None),
                     "columns": col_contexts,
+                    "filter_stats": filter_stats,
+                    "forgiven_header_anomaly_count": forgiven_count,
                 }
 
         return AnalyzerResult(
@@ -105,42 +141,70 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         self,
         cells: List[Any],
         observations: List[Any],
-    ) -> Dict[int, List[Tuple[Any, Any, BBox]]]:
+    ) -> Tuple[Dict[int, List[Tuple[Any, Any, BBox]]], Dict[str, int]]:
         """
-        返回 {col_idx: [(cell, obs, obs_bbox), ...]}。
+        返回 ({col_idx: [(cell, obs, obs_bbox), ...]}, filter_stats)。
 
-        一个 cell 有多个 observation（多行）时：合并为一个 bbox。
-        合并理由：cell-level 语义是"这个单元格的文字整体位置"。
+        过滤：
+        - colspan > 1 的 cell 整体跳过（跨列标题）
+        - 重复 obs 只归属一个 cell（按 colspan 降序处理，先到先得）
         """
+        cells_sorted = sorted(
+            cells,
+            key=lambda c: -int(getattr(c, "colspan", 1) or 1),
+        )
+
+        seen_obs_ids: set = set()
         by_col: Dict[int, List[Tuple[Any, Any, BBox]]] = defaultdict(list)
+        stats = {
+            "skipped_colspan": 0,
+            "skipped_duplicate_obs": 0,
+            "skipped_no_obs": 0,
+        }
 
-        for cell in cells:
-            col = getattr(cell, "col", None)
-            if col is None:
-                continue
-            col = int(col)
-
+        for cell in cells_sorted:
+            colspan = int(getattr(cell, "colspan", 1) or 1)
             obs_ids = getattr(cell, "observation_ids", None) or []
+
+            if colspan > 1:
+                stats["skipped_colspan"] += 1
+                for oid in obs_ids:
+                    try:
+                        seen_obs_ids.add(int(oid))
+                    except (TypeError, ValueError):
+                        pass
+                continue
+
             cell_obs_list = []
             for oid in obs_ids:
-                oid_i = int(oid)
+                try:
+                    oid_i = int(oid)
+                except (TypeError, ValueError):
+                    continue
+                if oid_i in seen_obs_ids:
+                    stats["skipped_duplicate_obs"] += 1
+                    continue
+                seen_obs_ids.add(oid_i)
                 if 0 <= oid_i < len(observations):
                     cell_obs_list.append(observations[oid_i])
 
             if not cell_obs_list:
+                stats["skipped_no_obs"] += 1
                 continue
 
-            # 合并 cell 内所有 observation 的 bbox（union）
+            col = getattr(cell, "col", None)
+            if col is None:
+                continue
+
             merged_bbox = self._union_bboxes(
                 [getattr(o, "bbox", None) for o in cell_obs_list]
             )
             if merged_bbox is None:
                 continue
 
-            # 用第一个 observation 作为代表（携带 text 等元信息）
-            by_col[col].append((cell, cell_obs_list[0], merged_bbox))
+            by_col[int(col)].append((cell, cell_obs_list[0], merged_bbox))
 
-        return by_col
+        return dict(by_col), stats
 
     @staticmethod
     def _union_bboxes(bboxes: List[Optional[BBox]]) -> Optional[BBox]:
@@ -178,7 +242,6 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         mad_M = mad(M)
         mad_R = mad(R)
 
-        # 主对齐轴
         mads = {"L": mad_L, "M": mad_M, "R": mad_R}
         primary = min(mads, key=mads.get)
         if primary == "L":
@@ -201,32 +264,22 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             outlier_count += 1
             max_z = max(max_z, z)
 
-            obs_id = None
-            try:
-                # 尝试反查该 obs 的全局索引（用于 downstream 追溯）
-                obs_text = getattr(obs, "text", None)
-                obs_bbox = getattr(obs, "bbox", None)
-                if obs_bbox is not None:
-                    obs_bbox_list = [
-                        obs_bbox.x0, obs_bbox.y0, obs_bbox.x1, obs_bbox.y1
-                    ]
-                else:
-                    obs_bbox_list = None
-            except Exception:
-                obs_text = None
-                obs_bbox_list = None
+            obs_text = getattr(obs, "text", None)
+            cell_bbox = getattr(cell, "bbox", None)
+            row_index = getattr(cell, "row", None)
 
             anomalies.append(VisualAnomalyIR(
                 page=getattr(obs, "page", 1),
                 bbox=bbox,
                 anomaly_type="IMAGE_ALIGNMENT_ANOMALY",
                 confidence=0.75,
-                observation_id=None,  # 无法可靠反查全局索引，置 None
+                observation_id=None,
                 span_ids=[],
                 detail={
                     "detection_reason": "column_alignment_outlier",
                     "table_element_id": f"e{elem_idx}",
                     "column_index": col,
+                    "row_index": row_index,
                     "primary_alignment": primary,
                     "obs_bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1],
                     "obs_L": round(bbox.x0, 3),
@@ -234,10 +287,10 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                     "obs_R": round(bbox.x1, 3),
                     "obs_text": obs_text,
                     "cell_bbox": [
-                        getattr(cell, "bbox", None).x0 if getattr(cell, "bbox", None) else None,
-                        getattr(cell, "bbox", None).y0 if getattr(cell, "bbox", None) else None,
-                        getattr(cell, "bbox", None).x1 if getattr(cell, "bbox", None) else None,
-                        getattr(cell, "bbox", None).y1 if getattr(cell, "bbox", None) else None,
+                        cell_bbox.x0 if cell_bbox else None,
+                        cell_bbox.y0 if cell_bbox else None,
+                        cell_bbox.x1 if cell_bbox else None,
+                        cell_bbox.y1 if cell_bbox else None,
                     ],
                     "baseline": {
                         "column_median": round(med, 3),
@@ -253,6 +306,7 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                     "abs_offset_px": round(abs_offset, 3),
                     "z_score": round(z, 3),
                     "threshold": self.mad_z_threshold,
+                    "min_abs_offset_px": self.min_abs_offset_px,
                 },
             ))
 
