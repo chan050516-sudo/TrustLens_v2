@@ -302,31 +302,36 @@ class ImageObservationExtractor:
         )
         return cv2.subtract(binary_mask, detected_lines)
 
-    def _robust_ink_segmentation(self, gray_roi: np.ndarray) -> np.ndarray:
-        if gray_roi.dtype != np.uint8:
-            gray_roi = gray_roi.astype(np.uint8)
+    @staticmethod
+    def _robust_ink_segmentation(gray_roi: np.ndarray) -> np.ndarray:
+        """
+        稳健且保守的墨迹提取：
+        放弃极易受邻近元素污染的四边采样，改用 ROI 局部的稳健直方图极值。
+        无论灰底白底，均能稳定提取深色笔画主体，且不会造成笔画消融和偏移。
+        """
+        if gray_roi.size == 0:
+            return np.zeros_like(gray_roi, dtype=np.uint8)
 
-        p2, p98 = np.percentile(gray_roi, (2, 98))
-        denom = (p98 - p2) if (p98 - p2) > 1e-5 else 1.0
-        img_rescale = np.clip(
-            (gray_roi.astype(np.float32) - p2) / denom * 255,
-            0, 255
-        ).astype(np.uint8)
+        gray_f = gray_roi.astype(np.float32)
 
-        h, w = img_rescale.shape[:2]
-        ksize = min(31, min(h, w))
-        if ksize % 2 == 0:
-            ksize -= 1
-        if ksize < 3:
-            ksize = 3
+        # 1. 使用中位数与极大值综合定位局部背景亮度
+        # 即使边缘切到了上方邻行的字或表格线，中位数与高分位依然能锁定当前单元格的底色
+        p_bg = float(np.percentile(gray_f, 85))
+        p_dark = float(np.percentile(gray_f, 10))
+        contrast = p_bg - p_dark
 
-        bg = cv2.GaussianBlur(img_rescale, (ksize, ksize), 0)
-        diff = cv2.subtract(bg, img_rescale)
+        # 对比度太弱说明根本没有文字（纯色块），不作收紧
+        if contrast < 20.0:
+            return np.zeros_like(gray_roi, dtype=np.uint8)
 
-        _, binary = cv2.threshold(
-            diff, 0, 255,
-            cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE
-        )
+        # 2. 保守分割线：取在背景灰度下方 40% 处
+        # 灰底 (235) -> 阈值在 180~190，完全避开灰底噪点；
+        # 白底 (255) -> 阈值在 190~200，完整保护抗锯齿边缘与细笔画
+        thresh = p_bg - contrast * 0.45
+
+        binary = np.zeros_like(gray_roi, dtype=np.uint8)
+        binary[gray_roi <= thresh] = 255
+
         return binary
 
     # ------------------------------------------------------------------

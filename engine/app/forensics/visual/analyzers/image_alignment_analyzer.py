@@ -58,6 +58,10 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         if self.document_ir is None:
             return AnalyzerResult(anomalies=[], context={})
 
+        if not visual_ir.pages:
+            return AnalyzerResult(anomalies=[], context={})
+        page_ir = visual_ir.pages[0]
+
         observations = getattr(self.document_ir, "observations", None) or []
         if not observations:
             return AnalyzerResult(anomalies=[], context={})
@@ -78,7 +82,7 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             if not cells:
                 continue
 
-            by_col, filter_stats = self._collect_by_column(cells, observations)
+            by_col, filter_stats = self._collect_by_column(cells, observations, page_ir)
 
             # ---- Step 1: 收集候选（暂不 emit）----
             table_candidates: List[Dict[str, Any]] = []
@@ -141,14 +145,24 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         self,
         cells: List[Any],
         observations: List[Any],
+        page_ir: Any,
     ) -> Tuple[Dict[int, List[Tuple[Any, Any, BBox]]], Dict[str, int]]:
         """
-        返回 ({col_idx: [(cell, obs, obs_bbox), ...]}, filter_stats)。
+        返回 ({col_idx: [(cell, obs, char_bbox), ...]}, filter_stats)。
+
+        char_bbox 用 cell 内所有 char 的 ink_bbox 求并集得到（精确到墨迹）。
+        若某 cell 无 char 可用（segmenter 失败），fallback 到 obs.bbox。
 
         过滤：
         - colspan > 1 的 cell 整体跳过（跨列标题）
         - 重复 obs 只归属一个 cell（按 colspan 降序处理，先到先得）
         """
+        # ---- Step 1: 建 obs_id -> [chars] 的反查 ----
+        obs_to_chars: Dict[int, List[Any]] = defaultdict(list)
+        for c in getattr(page_ir, "image_chars", []) or []:
+            obs_to_chars[int(c.observation_id)].append(c)
+
+        # ---- Step 2: 按 colspan 降序处理（先到先得） ----
         cells_sorted = sorted(
             cells,
             key=lambda c: -int(getattr(c, "colspan", 1) or 1),
@@ -160,12 +174,15 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             "skipped_colspan": 0,
             "skipped_duplicate_obs": 0,
             "skipped_no_obs": 0,
+            "used_char_bbox": 0,
+            "used_obs_fallback": 0,
         }
 
         for cell in cells_sorted:
             colspan = int(getattr(cell, "colspan", 1) or 1)
             obs_ids = getattr(cell, "observation_ids", None) or []
 
+            # 跨列 cell：整 cell 跳过，并标记其 obs
             if colspan > 1:
                 stats["skipped_colspan"] += 1
                 for oid in obs_ids:
@@ -175,7 +192,8 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                         pass
                 continue
 
-            cell_obs_list = []
+            # ---- 收集 cell 的 obs（去重 + 全局索引） ----
+            cell_obs_with_idx: List[Tuple[int, Any]] = []   # (global_obs_id, obs)
             for oid in obs_ids:
                 try:
                     oid_i = int(oid)
@@ -186,9 +204,9 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                     continue
                 seen_obs_ids.add(oid_i)
                 if 0 <= oid_i < len(observations):
-                    cell_obs_list.append(observations[oid_i])
+                    cell_obs_with_idx.append((oid_i, observations[oid_i]))
 
-            if not cell_obs_list:
+            if not cell_obs_with_idx:
                 stats["skipped_no_obs"] += 1
                 continue
 
@@ -196,13 +214,33 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             if col is None:
                 continue
 
-            merged_bbox = self._union_bboxes(
-                [getattr(o, "bbox", None) for o in cell_obs_list]
-            )
+            # ---- 优先用 char-level ink_bbox ----
+            cell_chars: List[Any] = []
+            for oid_i, _ in cell_obs_with_idx:
+                cell_chars.extend(obs_to_chars.get(oid_i, []))
+
+            if cell_chars:
+                merged_bbox = BBox(
+                    x0=min(c.ink_bbox.x0 for c in cell_chars),
+                    y0=min(c.ink_bbox.y0 for c in cell_chars),
+                    x1=max(c.ink_bbox.x1 for c in cell_chars),
+                    y1=max(c.ink_bbox.y1 for c in cell_chars),
+                )
+                stats["used_char_bbox"] += 1
+            else:
+                # fallback: 用 obs.bbox 的并集
+                merged_bbox = self._union_bboxes(
+                    [getattr(o, "bbox", None) for _, o in cell_obs_with_idx]
+                )
+                stats["used_obs_fallback"] += 1
+
             if merged_bbox is None:
                 continue
 
-            by_col[int(col)].append((cell, cell_obs_list[0], merged_bbox))
+            # 代表 obs（用于取 text / page 等元信息）
+            rep_obs = cell_obs_with_idx[0][1]
+
+            by_col[int(col)].append((cell, rep_obs, merged_bbox))
 
         return dict(by_col), stats
 
