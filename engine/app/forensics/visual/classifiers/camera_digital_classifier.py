@@ -1,17 +1,19 @@
 """
 CameraDigitalClassifier — 判定图像是 digital 还是 camera-captured。
 
-两个特征（移除摩尔纹——误报率过高）：
-1. 纯色度 (Solid Color Ratio)：大块同色区域占比
-2. 平滑度 (Smoothness)：仅在"宏观平坦区域"内测 Laplacian 方差
+核心洞察：
+- native 数字图：像素值离散（软件渲染），某几个精确值吸纳大量像素
+- 实拍图：像素值连续（光照/传感器），值分散在连续区间
 
-score = w1 * solid + w2 * smoothness
-score >= threshold → DIGITAL_IMAGE
-score < threshold → CAMERA
+三个正向特征：
+1. 纯色度 (Solid Color Ratio)：局部 std < 阈值的像素占比
+2. 峰宽 (Peak Width)：灰度/饱和度直方图最强峰的半高宽度（256 bins）
+   native 1-4 bins；相机 10-30 bins
+3. 峰集中度 (Peak Concentration)：最强 bin 占全图像素比例
+   native 30-70%；相机 5-15%
 
-关键设计（借鉴 Gemini 建议）：
-- 平滑度必须遮蔽文字/表格线/条码等强梯度区域
-- 用局部标准差选 flat_mask（宏观平坦），在 mask 内测 Laplacian 方差
+peak_sharpness = min(width_score, concentration_score)
+score = w_solid * solid + w_sharp * peak_sharpness
 """
 import numpy as np
 import cv2
@@ -27,13 +29,21 @@ class CameraDigitalScore:
         score: float,
         source_type: SourceType,
         solid_color_ratio: float,
-        smoothness_score: float,
-        moire_score: float = 0.0,     # 保留字段，当前恒为 0（已移除摩尔纹检测）
+        peak_sharpness: float,
+        gray_peak_width: int = 0,
+        sat_peak_width: int = 0,
+        gray_concentration: float = 0.0,
+        sat_concentration: float = 0.0,
+        moire_score: float = 0.0,
     ):
         self.score = score
         self.source_type = source_type
         self.solid_color_ratio = solid_color_ratio
-        self.smoothness_score = smoothness_score
+        self.peak_sharpness = peak_sharpness
+        self.gray_peak_width = gray_peak_width
+        self.sat_peak_width = sat_peak_width
+        self.gray_concentration = gray_concentration
+        self.sat_concentration = sat_concentration
         self.moire_score = moire_score
 
     def to_dict(self) -> dict:
@@ -41,7 +51,11 @@ class CameraDigitalScore:
             "score": round(self.score, 4),
             "source_type": self.source_type.value,
             "solid_color_ratio": round(self.solid_color_ratio, 4),
-            "smoothness_score": round(self.smoothness_score, 4),
+            "peak_sharpness": round(self.peak_sharpness, 4),
+            "gray_peak_width": self.gray_peak_width,
+            "sat_peak_width": self.sat_peak_width,
+            "gray_concentration": round(self.gray_concentration, 4),
+            "sat_concentration": round(self.sat_concentration, 4),
             "moire_score": round(self.moire_score, 4),
         }
 
@@ -49,26 +63,28 @@ class CameraDigitalScore:
 class CameraDigitalClassifier:
     def __init__(
         self,
-        score_threshold: float = 0.6,
-        weight_solid: float = 0.5,
-        weight_smoothness: float = 0.5,
-        # 局部标准差阈值：用于判定"宏观平坦"
+        score_threshold: float = 0.55,
+        # 正向特征权重（加起来 = 1.0）
+        weight_solid: float = 0.4,
+        weight_sharpness: float = 0.6,
+        # 纯色度：局部 std 阈值
         solid_color_std_threshold: float = 3.0,
         solid_ksize: int = 15,
-        # 平滑度归一化尺度：仅对平坦区域测 Laplacian 方差
-        smoothness_scale: float = 5.0,
-        # 平坦区域过小时的兜底
-        min_flat_ratio: float = 0.05,
-        flat_fallback_score: float = 0.5,
+        # 直方图 bins（256 = 每 bin 1 个灰度级）
+        hist_bins: int = 256,
+        # 峰宽 → 分数：width=1 → 1.0；width=4 → ~0.2；width=10 → ~0.02
+        width_scale: float = 2.0,
+        # 峰集中度 → 分数：conc=0.4 → 1.0；conc=0.15 → 0.25
+        concentration_scale: float = 0.25,
     ):
         self.score_threshold = score_threshold
         self.weight_solid = weight_solid
-        self.weight_smoothness = weight_smoothness
+        self.weight_sharpness = weight_sharpness
         self.solid_color_std_threshold = solid_color_std_threshold
         self.solid_ksize = solid_ksize
-        self.smoothness_scale = smoothness_scale
-        self.min_flat_ratio = min_flat_ratio
-        self.flat_fallback_score = flat_fallback_score
+        self.hist_bins = hist_bins
+        self.width_scale = width_scale
+        self.concentration_scale = concentration_scale
 
     # ================================================================
     # 入口
@@ -80,16 +96,32 @@ class CameraDigitalClassifier:
                 score=0.0,
                 source_type=SourceType.UNKNOWN,
                 solid_color_ratio=0.0,
-                smoothness_score=0.0,
-                moire_score=0.0,
+                peak_sharpness=0.0,
             )
 
         solid = self._solid_color_ratio(image_bgr)
-        smooth = self._smoothness_score(image_bgr)
+
+        gray_width, gray_conc = self._peak_stats(self._to_gray(image_bgr))
+        sat_width, sat_conc = self._peak_stats(self._saturation_channel(image_bgr))
+
+        # 峰宽评分
+        gray_w_score = self._width_to_score(gray_width)
+        sat_w_score = self._width_to_score(sat_width)
+
+        # 集中度评分
+        gray_c_score = self._conc_to_score(gray_conc)
+        sat_c_score = self._conc_to_score(sat_conc)
+
+        # 每个通道取两者最小值（宽峰或低集中度任一命中即判相机）
+        gray_score = min(gray_w_score, gray_c_score)
+        sat_score = min(sat_w_score, sat_c_score)
+
+        # 两通道取最小值（任何一个"连续"就判相机）
+        sharpness = min(gray_score, sat_score)
 
         score = (
             self.weight_solid * solid
-            + self.weight_smoothness * smooth
+            + self.weight_sharpness * sharpness
         )
         score = float(np.clip(score, 0.0, 1.0))
 
@@ -102,12 +134,16 @@ class CameraDigitalClassifier:
             score=score,
             source_type=source_type,
             solid_color_ratio=solid,
-            smoothness_score=smooth,
+            peak_sharpness=sharpness,
+            gray_peak_width=gray_width,
+            sat_peak_width=sat_width,
+            gray_concentration=gray_conc,
+            sat_concentration=sat_conc,
             moire_score=0.0,
         )
 
     # ================================================================
-    # 特征 1：纯色度（宏观看）
+    # 特征 1：纯色度
     # ================================================================
 
     def _solid_color_ratio(self, image_bgr: np.ndarray) -> float:
@@ -124,41 +160,72 @@ class CameraDigitalClassifier:
         return float(solid_mask.mean())
 
     # ================================================================
-    # 特征 2：平滑度（仅在宏观平坦区域）
+    # 特征 2：直方图峰统计
     # ================================================================
 
-    def _smoothness_score(self, image_bgr: np.ndarray) -> float:
-        gray = self._to_gray(image_bgr)
-        gray_f = gray.astype(np.float32)
+    def _peak_stats(self, channel: np.ndarray) -> tuple:
+        """
+        返回 (peak_width, peak_concentration)。
+        - peak_width: 最强峰的半高宽度（bins）
+        - peak_concentration: 最强 bin 占全图比例
+        """
+        if channel.ndim != 2:
+            return self.hist_bins, 0.0
+        if channel.dtype != np.uint8:
+            channel = channel.astype(np.uint8)
 
-        # ---- Step 1: 局部标准差 → flat_mask ----
-        ksize = self.solid_ksize
-        mean = cv2.blur(gray_f, (ksize, ksize))
-        sq_mean = cv2.blur(gray_f * gray_f, (ksize, ksize))
-        var = np.clip(sq_mean - mean * mean, 0, None)
-        std = np.sqrt(var)
+        hist, _ = np.histogram(
+            channel.flatten(), bins=self.hist_bins, range=(0, 256)
+        )
+        total = hist.sum()
+        if total == 0:
+            return self.hist_bins, 0.0
 
-        flat_mask = std < self.solid_color_std_threshold
+        h = hist.astype(np.float64) / total
+        peak_idx = int(np.argmax(h))
+        peak_val = float(h[peak_idx])
+        if peak_val < 1e-9:
+            return self.hist_bins, 0.0
 
-        # ---- Step 2: 平坦区域过小 → 兜底 ----
-        if flat_mask.mean() < self.min_flat_ratio:
-            return self.flat_fallback_score
+        half = peak_val * 0.5
+        left = peak_idx
+        while left > 0 and h[left - 1] >= half:
+            left -= 1
+        right = peak_idx
+        while right < self.hist_bins - 1 and h[right + 1] >= half:
+            right += 1
+        width = right - left + 1
 
-        # ---- Step 3: 仅在平坦区域测 Laplacian 方差 ----
-        lap = cv2.Laplacian(gray_f, cv2.CV_32F)
-        bg_lap = lap[flat_mask]
-        if bg_lap.size == 0:
-            return self.flat_fallback_score
-        bg_noise_var = float(bg_lap.var())
+        return width, peak_val
 
-        # ---- Step 4: 归一化 ----
-        # 数字生成图：bg_noise_var ≈ 0 → score ≈ 1.0
-        # 相机图：bg_noise_var 显著 > 0 → score 降低
-        return float(1.0 / (1.0 + bg_noise_var / self.smoothness_scale))
+    def _width_to_score(self, width: int) -> float:
+        """
+        峰宽 → 得分（指数衰减）。
+        width=1 → 1.0；width=2 → 0.61；width=4 → 0.22；width=10 → 0.01
+        """
+        if width <= 1:
+            return 1.0
+        return float(np.exp(-((width - 1) / self.width_scale) ** 2))
+
+    def _conc_to_score(self, concentration: float) -> float:
+        """
+        峰集中度 → 得分。
+        conc=0.4 → 1.0；conc=0.2 → 0.6；conc=0.05 → 0.07
+        """
+        if concentration <= 0:
+            return 0.0
+        return float(1.0 / (1.0 + (self.concentration_scale / concentration) ** 2))
 
     # ================================================================
-    # 辅助
+    # 通道
     # ================================================================
+
+    @staticmethod
+    def _saturation_channel(image_bgr: np.ndarray) -> np.ndarray:
+        if image_bgr.ndim != 3:
+            return np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+        return hsv[:, :, 1]
 
     @staticmethod
     def _to_gray(image_bgr: np.ndarray) -> np.ndarray:

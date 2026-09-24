@@ -73,22 +73,30 @@ def source_classification_to_evidence(
     page_ir,
     source: str = "VisualEngine.CameraDigitalClassifier",
 ) -> Optional[Evidence]:
-    """从 page_ir.image_classification 生成 classification Evidence。"""
     cls = page_ir.image_classification
     if not cls:
         return None
     source_type = cls.get("source_type", "unknown")
+    score = cls.get("score", 0.0)
     if source_type == "camera":
         etype = EvidenceType.IMAGE_PAGE_SKIPPED_CAMERA
         desc = (
             f"Page {page_ir.page} classified as CAMERA "
-            f"(score={cls.get('score'):.3f}); skipped visual analysis"
+            f"(score={score:.3f}, "
+            f"gray_width={cls.get('gray_peak_width', 0)}, "
+            f"sat_width={cls.get('sat_peak_width', 0)}, "
+            f"gray_conc={cls.get('gray_concentration', 0):.3f}); "
+            f"skipped visual analysis"
         )
     elif source_type == "digital_image":
         etype = EvidenceType.IMAGE_SOURCE_CLASSIFICATION
         desc = (
             f"Page {page_ir.page} classified as DIGITAL_IMAGE "
-            f"(score={cls.get('score'):.3f})"
+            f"(score={score:.3f}, "
+            f"solid={cls.get('solid_color_ratio', 0):.3f}, "
+            f"sharpness={cls.get('peak_sharpness', 0):.3f}, "
+            f"gray_width={cls.get('gray_peak_width', 0)}, "
+            f"gray_conc={cls.get('gray_concentration', 0):.3f})"
         )
     else:
         return None
