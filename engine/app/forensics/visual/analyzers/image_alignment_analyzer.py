@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
-    SourceType, VisualAnomalyIR, VisualIR,
+    VisualAnomalyIR, VisualIR,
 )
 from app.forensics.visual.utils.geometry_helpers import mad, median, modified_zscore
 from app.perception.models.bbox import BBox
@@ -52,18 +52,19 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         self.document_ir = document_ir
 
     def analyze(self, visual_ir: VisualIR) -> AnalyzerResult:
-        if visual_ir.source_type != SourceType.DIGITAL_IMAGE:
-            return AnalyzerResult(anomalies=[], context={})
-
+        # 不检查 source_type：支持混合页 PDF（部分 native + 部分扫描）
         if self.document_ir is None:
             return AnalyzerResult(anomalies=[], context={})
 
-        if not visual_ir.pages:
-            return AnalyzerResult(anomalies=[], context={})
-        page_ir = visual_ir.pages[0]
-
         observations = getattr(self.document_ir, "observations", None) or []
         if not observations:
+            return AnalyzerResult(anomalies=[], context={})
+
+        # 建 page_num -> page_ir 映射，只保留有 image_chars 的页
+        page_ir_map: Dict[int, Any] = {
+            p.page: p for p in visual_ir.pages if p.image_chars
+        }
+        if not page_ir_map:
             return AnalyzerResult(anomalies=[], context={})
 
         anomalies: List[VisualAnomalyIR] = []
@@ -74,6 +75,12 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             if getattr(elem, "element_type", "") != "table":
                 continue
 
+            # ★ 只处理属于 image 页的 table
+            elem_page = getattr(elem, "page", None)
+            page_ir = page_ir_map.get(elem_page)
+            if page_ir is None:
+                continue
+
             table = getattr(elem, "table", None)
             if table is None:
                 continue
@@ -82,9 +89,11 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
             if not cells:
                 continue
 
-            by_col, filter_stats = self._collect_by_column(cells, observations, page_ir)
+            by_col, filter_stats = self._collect_by_column(
+                cells, observations, page_ir,
+            )
 
-            # ---- Step 1: 收集候选（暂不 emit）----
+            # ---- Step 1: 收集候选 ----
             table_candidates: List[Dict[str, Any]] = []
             col_contexts: Dict[str, Any] = {}
 

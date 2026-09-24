@@ -20,7 +20,7 @@ import numpy as np
 
 from app.forensics.visual.analyzers.base import AnalyzerResult, BaseVisualAnalyzer
 from app.forensics.visual.models.visual_ir import (
-    ImageCharIR, SourceType, VisualAnomalyIR, VisualIR,
+    ImageCharIR, VisualAnomalyIR, VisualIR,
 )
 
 
@@ -47,9 +47,7 @@ class ImageBaselineAnalyzer(BaseVisualAnalyzer):
         self.min_uncertainty_ratio = min_uncertainty_ratio
 
     def analyze(self, visual_ir: VisualIR) -> AnalyzerResult:
-        if visual_ir.source_type != SourceType.DIGITAL_IMAGE:
-            return AnalyzerResult(anomalies=[], context={})
-
+        # 不检查 source_type：支持混合页 PDF（部分 native + 部分扫描）
         anomalies: List[VisualAnomalyIR] = []
         context_by_element: Dict[str, Any] = {}
 
@@ -64,7 +62,6 @@ class ImageBaselineAnalyzer(BaseVisualAnalyzer):
                 if elem_type not in _TEXT_ELEMENT_TYPES:
                     continue
 
-                # 按 observation（= 行）分组
                 by_obs: Dict[int, List[ImageCharIR]] = defaultdict(list)
                 for c in chars:
                     by_obs[c.observation_id].append(c)

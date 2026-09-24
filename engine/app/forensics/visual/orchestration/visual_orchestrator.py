@@ -63,16 +63,30 @@ class VisualOrchestrator:
         file_path = Path(context.file_path)
 
         if source_result.source_type == SourceType.DIGITAL_IMAGE:
-            # 单图片
-            page_ir = self._process_pure_image(file_path, document_ir)
-            if page_ir is not None:
-                pages_ir.append(page_ir)
+            # ★ 按扩展名分派：PDF（扫描件）逐页渲染；图片单页
+            if file_path.suffix.lower() == ".pdf":
+                page_count = self._count_pdf_pages(file_path)
+                for page_num in range(1, page_count + 1):
+                    try:
+                        page_ir = self._process_non_native_page(
+                            file_path, page_num, document_ir
+                        )
+                        if page_ir is not None:
+                            pages_ir.append(page_ir)
+                    except Exception as e:
+                        logger.exception(
+                            f"[Orchestrator] scanned PDF page {page_num} failed: {e}"
+                        )
+                        continue
+            else:
+                page_ir = self._process_pure_image(file_path, document_ir)
+                if page_ir is not None:
+                    pages_ir.append(page_ir)
 
         elif source_result.source_type == SourceType.DIGITAL_PDF:
             # PDF 逐页分派
             page_count = getattr(document_ir, "page_count", 0) if document_ir else 0
             if page_count <= 0:
-                # 无 DocumentIR 兜底：尝试整个 PDF 一页一页
                 page_count = self._count_pdf_pages(file_path)
 
             for page_num in range(1, page_count + 1):

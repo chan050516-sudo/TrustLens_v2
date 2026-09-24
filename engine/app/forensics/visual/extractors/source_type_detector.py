@@ -1,12 +1,11 @@
 """
 SourceTypeDetector — 判定文档来源类型。
 
-本阶段只做：
-- digital_pdf：MIME/扩展名是 PDF，且样本页文本量足够。
-- digital_image：MIME/扩展名是常见图片格式。
-- unknown：其它。
-
-camera 检测搁置。
+本阶段：
+- digital_pdf：PDF 且样本页文本量足够
+- digital_image：图片文件 或 低文本密度的扫描 PDF
+  （扫描 PDF 交给 orchestrator 逐页渲染 + CameraDigitalClassifier 判定）
+- unknown：其它
 """
 from pathlib import Path
 from typing import Optional
@@ -21,7 +20,7 @@ PDF_MIMES = {"application/pdf", "application/x-pdf"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 PDF_EXTS = {".pdf"}
 
-DEFAULT_TEXT_THRESHOLD = 100   # 平均每页字符数
+DEFAULT_TEXT_THRESHOLD = 100
 SAMPLE_PAGES = 5
 
 
@@ -86,10 +85,15 @@ class SourceTypeDetector:
                     confidence=0.9,
                     reason=f"Average {avg_chars:.0f} chars/page (threshold {self.text_threshold})",
                 )
+
+            # ★ 低文本密度 → 扫描 PDF，路由到 image 路径
             return SourceTypeResult(
-                source_type=SourceType.UNKNOWN,
+                source_type=SourceType.DIGITAL_IMAGE,
                 confidence=0.6,
-                reason=f"Low text density ({avg_chars:.0f} chars/page); likely scanned",
+                reason=(
+                    f"Low text density ({avg_chars:.0f} chars/page); "
+                    f"likely scanned PDF"
+                ),
             )
         finally:
             doc.close()
