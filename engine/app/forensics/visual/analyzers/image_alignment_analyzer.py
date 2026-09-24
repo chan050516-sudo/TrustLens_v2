@@ -159,59 +159,73 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         """
         返回 ({col_idx: [(cell, obs, char_bbox), ...]}, filter_stats)。
 
-        char_bbox 用 cell 内所有 char 的 ink_bbox 求并集得到（精确到墨迹）。
-        若某 cell 无 char 可用（segmenter 失败），fallback 到 obs.bbox。
+        ★ 核心：用 cell.bbox 过滤 chars。
+
+        cell.bbox 是 TableReconstructor 建的虚拟网格 bbox，
+        不是文字墨迹 bbox，因此可作为"格子"判据。
 
         过滤：
-        - colspan > 1 的 cell 整体跳过（跨列标题）
-        - 重复 obs 只归属一个 cell（按 colspan 降序处理，先到先得）
+        - colspan > 1 的 cell 整体跳过
+        - 单列 cell 按 (row, col) 稳定排序
+        - char 中心点落在 cell.bbox 内（左闭右开）→ 保留
+        - 交集 ≥ 50% char 面积 → 保留
+        - chars 全部越界 → 该 cell 跳过（不 fallback）
+        - 一个 char 只能归属一个 cell（按 (row, col) 稳定顺序先到先得）
+
+        stats 语义：
+        - skipped_colspan: 跨列 cell 数量
+        - skipped_no_obs: cell 无 obs 或无 bbox
+        - skipped_no_chars: cell 内无任何 char
+        - used_char_bbox: 成功产出 char 边界的 cell 数
+        - chars_filtered_out: 落在 cell 外被过滤的 char 判定次数
+        - chars_duplicated: 被多个 cell 争抢，只归第一个的 char 次数
         """
-        # ---- Step 1: 建 obs_id -> [chars] 的反查 ----
+        # ---- Step 1: obs_id -> [chars] ----
         obs_to_chars: Dict[int, List[Any]] = defaultdict(list)
         for c in getattr(page_ir, "image_chars", []) or []:
             obs_to_chars[int(c.observation_id)].append(c)
 
-        # ---- Step 2: 按 colspan 降序处理（先到先得） ----
-        cells_sorted = sorted(
-            cells,
-            key=lambda c: -int(getattr(c, "colspan", 1) or 1),
-        )
+        # ---- Step 2: 分离跨列 / 单列 ----
+        single_col_cells: List[Any] = []
+        colspan_count = 0
+        for cell in cells:
+            if int(getattr(cell, "colspan", 1) or 1) > 1:
+                colspan_count += 1
+                continue
+            single_col_cells.append(cell)
 
-        seen_obs_ids: set = set()
+        single_col_cells.sort(key=lambda c: (
+            int(getattr(c, "row", 0) or 0),
+            int(getattr(c, "col", 0) or 0),
+        ))
+
         by_col: Dict[int, List[Tuple[Any, Any, BBox]]] = defaultdict(list)
         stats = {
-            "skipped_colspan": 0,
-            "skipped_duplicate_obs": 0,
+            "skipped_colspan": colspan_count,
             "skipped_no_obs": 0,
+            "skipped_no_chars": 0,
             "used_char_bbox": 0,
-            "used_obs_fallback": 0,
+            "chars_filtered_out": 0,
+            "chars_duplicated": 0,
         }
 
-        for cell in cells_sorted:
-            colspan = int(getattr(cell, "colspan", 1) or 1)
-            obs_ids = getattr(cell, "observation_ids", None) or []
+        # ---- 全局 char 去重（按 (row, col) 稳定顺序先到先得）----
+        seen_char_ids: set = set()
 
-            # 跨列 cell：整 cell 跳过，并标记其 obs
-            if colspan > 1:
-                stats["skipped_colspan"] += 1
-                for oid in obs_ids:
-                    try:
-                        seen_obs_ids.add(int(oid))
-                    except (TypeError, ValueError):
-                        pass
+        # ---- Step 3: 处理单列 cell ----
+        for cell in single_col_cells:
+            cell_bbox = getattr(cell, "bbox", None)
+            if cell_bbox is None:
+                stats["skipped_no_obs"] += 1
                 continue
 
-            # ---- 收集 cell 的 obs（去重 + 全局索引） ----
-            cell_obs_with_idx: List[Tuple[int, Any]] = []   # (global_obs_id, obs)
+            obs_ids = getattr(cell, "observation_ids", None) or []
+            cell_obs_with_idx: List[Tuple[int, Any]] = []
             for oid in obs_ids:
                 try:
                     oid_i = int(oid)
                 except (TypeError, ValueError):
                     continue
-                if oid_i in seen_obs_ids:
-                    stats["skipped_duplicate_obs"] += 1
-                    continue
-                seen_obs_ids.add(oid_i)
                 if 0 <= oid_i < len(observations):
                     cell_obs_with_idx.append((oid_i, observations[oid_i]))
 
@@ -219,39 +233,64 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                 stats["skipped_no_obs"] += 1
                 continue
 
-            col = getattr(cell, "col", None)
-            if col is None:
-                continue
-
-            # ---- 优先用 char-level ink_bbox ----
+            # ---- 用 cell.bbox 过滤 chars（含全局去重）----
             cell_chars: List[Any] = []
             for oid_i, _ in cell_obs_with_idx:
-                cell_chars.extend(obs_to_chars.get(oid_i, []))
+                for c in obs_to_chars.get(oid_i, []):
+                    cid = getattr(c, "char_id", None)
+                    if cid is not None and cid in seen_char_ids:
+                        stats["chars_duplicated"] += 1
+                        continue
+                    if self._char_belongs_to_cell(c, cell_bbox):
+                        if cid is not None:
+                            seen_char_ids.add(cid)
+                        cell_chars.append(c)
+                    else:
+                        stats["chars_filtered_out"] += 1
 
-            if cell_chars:
-                merged_bbox = BBox(
-                    x0=min(c.ink_bbox.x0 for c in cell_chars),
-                    y0=min(c.ink_bbox.y0 for c in cell_chars),
-                    x1=max(c.ink_bbox.x1 for c in cell_chars),
-                    y1=max(c.ink_bbox.y1 for c in cell_chars),
-                )
-                stats["used_char_bbox"] += 1
-            else:
-                # fallback: 用 obs.bbox 的并集
-                merged_bbox = self._union_bboxes(
-                    [getattr(o, "bbox", None) for _, o in cell_obs_with_idx]
-                )
-                stats["used_obs_fallback"] += 1
-
-            if merged_bbox is None:
+            if not cell_chars:
+                # 无 chars 落在 cell 内 → 跳过，不 fallback
+                stats["skipped_no_chars"] += 1
                 continue
 
-            # 代表 obs（用于取 text / page 等元信息）
-            rep_obs = cell_obs_with_idx[0][1]
+            merged_bbox = BBox(
+                x0=min(c.ink_bbox.x0 for c in cell_chars),
+                y0=min(c.ink_bbox.y0 for c in cell_chars),
+                x1=max(c.ink_bbox.x1 for c in cell_chars),
+                y1=max(c.ink_bbox.y1 for c in cell_chars),
+            )
+            stats["used_char_bbox"] += 1
 
-            by_col[int(col)].append((cell, rep_obs, merged_bbox))
+            col = int(getattr(cell, "col", 0))
+            rep_obs = cell_obs_with_idx[0][1]
+            by_col[col].append((cell, rep_obs, merged_bbox))
 
         return dict(by_col), stats
+
+    # ---- char 归属判定 ----
+    @staticmethod
+    def _char_belongs_to_cell(char: Any, cell_bbox: BBox) -> bool:
+        ib = getattr(char, "ink_bbox", None)
+        if ib is None:
+            return False
+
+        cx = (ib.x0 + ib.x1) / 2.0
+        cy = (ib.y0 + ib.y1) / 2.0
+
+        # 1. 中心点包含（左闭右开，避免相邻 cell 边界重复）
+        if cell_bbox.x0 <= cx < cell_bbox.x1 and cell_bbox.y0 <= cy < cell_bbox.y1:
+            return True
+
+        # 2. 交集 ≥ 50% char 面积
+        ix0 = max(ib.x0, cell_bbox.x0)
+        iy0 = max(ib.y0, cell_bbox.y0)
+        ix1 = min(ib.x1, cell_bbox.x1)
+        iy1 = min(ib.y1, cell_bbox.y1)
+        if ix1 <= ix0 or iy1 <= iy0:
+            return False
+        inter = (ix1 - ix0) * (iy1 - iy0)
+        char_area = max((ib.x1 - ib.x0) * (ib.y1 - ib.y0), 1e-6)
+        return (inter / char_area) >= 0.5
 
     @staticmethod
     def _union_bboxes(bboxes: List[Optional[BBox]]) -> Optional[BBox]:

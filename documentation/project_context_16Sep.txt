@@ -392,15 +392,19 @@ builder.build(
 3. OCR 结果格式：`poly, text, confidence`。
 4. 过滤空文本、过长/过短文本。
 5. 原始 bbox 由 poly 的 min/max 得到。
-6. 可选 `_refine_bbox_with_ink()`：
-   - 灰度化；
-   - 背景减除；
-   - 二值化；
-   - Y/X 投影；
-   - 贴合墨迹 bbox。
-7. 输出 `ObservationIR(source="rapidocr")`。
+6. 可选 `_refine_bbox_with_ink()`，用墨迹分析收紧行 bbox：
+   - ROI 截取：横向 padding 稍宽，纵向 padding 极克制（≤3px），防止侵入邻行。
+   - 稳健二值化：用 `p85/p10` 估计对比度，对比度 < 20 直接返回空，阈值取 `p_bg - contrast * 0.45`。
+   - 去横线：形态学开运算提取长横线（表格边框/下划线）并从 mask 减去。
+   - 连通域过滤合并：面积过滤、扁平杂波过滤、垂直中心一致性校验、高度跨度校验，最后合并为一个 bbox。
+   - 物理门禁：收紧后宽/高不足原始框 35% 则放弃收紧。
+7. 收紧失败时回退到 OCR 原始 bbox。
+8. 输出 `ObservationIR(source="rapidocr")`。
 
-Deskew 已上移到 `ImagePreprocessor`，本类不处理旋转。
+设计要点：
+- 只输出单个行级 bbox，**不做字符切分**（交给下游 Visual Engine）。
+- 失败即回退，宁可放弃也不输出错误收紧结果。
+- 通过"纵向 padding 克制 + 中心先验 + 门禁"三重机制，防止上下行碎片并入本行。
 
 ### 6.3 `DoclingRegionParser`
 
@@ -1444,3 +1448,881 @@ ForensicRunner.analyze
 ## 13. 一句话总结
 
 TrustLens v2 的 `metadata` 模块是一个以 `MetadataEngine` 为核心、以 `ExifTool/QPDF/pikepdf/PyMuPDF/Signature/ImageStructural` 为采集解析工具、以 `XMP/Consistency/Fingerprint/Signature` 为分析器、以 `ForensicContext` 为 LLM 上下文载体的 L1 元数据取证流水线；它通过 LangGraph 与 L2 视觉、L3 语义、L4 验证层协同，最终产出统一 `Evidence` 和结构化报告。
+
+
+
+
+
+
+
+# TrustLens v2 Visual Engine 模块 Context 总结
+
+## 1. 模块定位
+
+`app.forensics.visual` 是 TrustLens v2 的 **L2 视觉取证层**，目标是从文档的**底层渲染信息**中提取物理证据，检测纯逻辑层（metadata、OCR、语义）无法发现的视觉伪造痕迹。
+
+核心能力：
+
+- **Native PDF**：提取 span/char/drawing/image 对象级 IR，检测字体/字号/颜色离群、span 碎裂、字符重叠、矢量覆盖、局部转曲、对象复用等；
+- **Digital Image / 扫描 PDF**：渲染成图后切割字符级 IR，检测基线偏离、表格列对齐异常、Camera vs Digital 分类；
+- **Cross-page**：通过 `VisualIR` 汇总跨页证据。
+
+最终产出两类结果：
+
+1. **`List[Evidence]`**：统一证据对象，供下游 Detective LLM 推理；
+2. **`VisualContext`**：清洗后的视觉层 LLM 上下文（对应 Metadata 层的 `ForensicContext`）。
+
+整个模块通过 `VisualEngine` 编排，被 LangGraph 取证图的 `l2_visual` 节点调用。当前 L2 已实现真实模型，L1 已完成，L3/L4 仍为占位。
+
+---
+
+## 2. 目录与模块职责
+
+```text
+app/forensics/visual/
+  __init__.py
+  exceptions.py
+  visual_engine.py              # 顶层入口
+
+  models/
+    visual_ir.py                # 内部 IR
+    visual_context.py           # LLM 上下文
+
+  extractors/
+    pdf_span_extractor.py       # 从 rawdict 提取 span/char
+    pdf_drawing_extractor.py    # 从 get_drawings 提取 DrawingIR
+    pdf_image_extractor.py      # 从 get_image_info 提取 ImageIR
+    image_char_segmenter.py     # 图像内字符切割
+    source_type_detector.py     # 判定 digital_pdf / digital_image
+
+  classifiers/
+    camera_digital_classifier.py  # Camera vs Digital 图像判定
+
+  analyzers/
+    base.py
+    typography_analyzer.py      # 字体/字号/颜色离群
+    fragmentation_analyzer.py   # span 碎裂
+    char_spacing_analyzer.py    # 字符重叠 + 数字字形离群
+    overlap_analyzer.py         # 遮挡 + 对象复用 + 叠加 + copy-move
+    outlining_analyzer.py       # 局部转曲
+    vector_spoofing_analyzer.py # 微型矢量笔画
+    image_baseline_analyzer.py  # 基线偏离（Digital Image）
+    image_alignment_analyzer.py # 表格列对齐（Digital Image）
+
+  orchestration/
+    visual_orchestrator.py      # 按页分派提取
+
+  context/
+    visual_context_builder.py   # VisualIR → VisualContext
+
+  utils/
+    geometry_helpers.py         # median / mad / modified_zscore / bbox 几何
+    pdf_renderer.py             # PDF 页 → numpy BGR
+    evidence_mapper.py          # VisualAnomalyIR → Evidence
+    debug_dumper.py             # 页级摘要落盘
+
+app/core/
+  document_ir.py                # DocumentContext
+  evidence.py                   # Evidence / EvidenceType
+```
+
+主要职责：
+
+| 模块 | 职责 |
+|---|---|
+| `VisualEngine` | 顶层入口，编排 source detection / extraction / analysis / context |
+| `VisualOrchestrator` | 按页分派 native / non-native / pure_image 三条路径 |
+| `SourceTypeDetector` | 判定 document 是 digital_pdf 还是 digital_image |
+| `CameraDigitalClassifier` | 判定图片是 digital 还是 camera-captured |
+| `PdfSpanExtractor` | 从 `rawdict` 提取 span/char，挂到 DocumentIR 的 observation 之下 |
+| `PdfDrawingExtractor` | 从 `get_drawings` 提取矢量图形（含形状哈希） |
+| `PdfImageExtractor` | 从 `get_image_info` 提取内嵌图像 |
+| `ImageCharSegmenter` | 从图像行 bbox 切割字符，输出字符级 IR |
+| 9 个 Analyzer | 各自的伪造检测逻辑 |
+| `VisualContextBuilder` | 组装 VisualContext（LLM 上下文） |
+| `evidence_mapper` | VisualAnomalyIR → Evidence |
+
+---
+
+## 3. 核心数据流
+
+### 3.1 VisualEngine.analyze 主流程
+
+```text
+DocumentContext + DocumentIR (可选)
+  -> SourceTypeDetector.detect()
+  -> VisualOrchestrator.build_visual_ir()
+     -> digital_pdf:     逐页 native 提取（span/drawing/image）
+     -> digital_image:   逐页渲染 → CameraDigitalClassifier → ImageCharSegmenter
+  -> 各 Analyzer.analyze(VisualIR)
+     -> 汇总 VisualAnomalyIR + analyzer_contexts
+  -> anomaly → Evidence (evidence_mapper)
+  -> classification → Evidence
+  -> VisualContextBuilder.build(VisualIR, document_ir, analyzer_contexts)
+  -> 返回 (List[Evidence], VisualContext)
+```
+
+### 3.2 LangGraph 取证图位置
+
+```text
+START → ingest → route_by_type
+  → 并行分派：
+      l1_metadata
+      l2_visual   ← VisualEngine
+      l3_semantic
+  → l4_verification → build_evidence_graph → risk_engine → finalize → END
+```
+
+---
+
+## 4. 核心数据模型
+
+### 4.1 `SourceType` / `SourceTypeResult`
+
+位置：`app/forensics/visual/models/visual_ir.py`
+
+```python
+class SourceType(str, Enum):
+    DIGITAL_PDF = "digital_pdf"
+    DIGITAL_IMAGE = "digital_image"
+    CAMERA = "camera"
+    UNKNOWN = "unknown"
+
+class SourceTypeResult(BaseModel):
+    source_type: SourceType
+    confidence: float
+    reason: str
+```
+
+### 4.2 `CharIR` / `SpanIR`
+
+`CharIR`：单字符级 IR
+
+- `char: str`
+- `bbox: BBox`
+- `origin: Tuple[float, float]`
+
+`SpanIR`：PyMuPDF 原生 span 的轻量化
+
+- `span_id: str`（`f"p{page}_b{block}_l{line}_s{span}"`）
+- `page / block_id / line_id / span_index`
+- `text / bbox / origin`
+- `font_name / font_size / font_color / flags`
+- `chars: List[CharIR]`
+- `line_key` property：`(page, block_id, line_id)`
+
+### 4.3 `DrawingIR`
+
+PyMuPDF `get_drawings()` 的表示：
+
+- `drawing_id / page / bbox`
+- `item_count / has_bezier / has_line / has_rect`
+- `has_fill / has_stroke / is_micro`
+- `bezier_count`
+- `items_hash: Optional[str]` —— **形状哈希，用于对象复用检测**
+- `stroke_opacity / fill_opacity / fill_color / stroke_color`
+
+### 4.4 `ImageIR`
+
+PDF 内嵌图像（`get_image_info()`）：
+
+- `image_id / page / bbox`
+- `width / height`（像素）
+- `xref`
+- `digest` —— **字节级 md5，用于图像复用检测**
+
+### 4.5 `ImageCharIR`
+
+Digital Image 字符级 IR，由 `ImageCharSegmenter` 产出：
+
+- `char_id`（`p{page}_o{obs}_c{idx}`）
+- `char / page / observation_id`
+- 位置：
+  - `ocr_line_bbox`（整行 OCR bbox）
+  - `ink_bbox`（墨迹 bbox，全局坐标）
+  - `ink_bottom_y`（用于 baseline）
+- 形态指标：
+  - `ink_width / ink_height / aspect_ratio`
+  - `black_level`（墨迹灰度中位数）
+  - `ink_density`（墨迹像素 / bbox 面积）
+- 质量标记：
+  - `typography_class`：`reliable | uncertain | excluded`
+  - `inference_flag`：`observed | split_inferred | merged_inferred`
+  - `global_line_confidence`（整行切割质量）
+  - `local_char_confidence`（单字符切割质量）
+
+### 4.6 `StyleBaselineIR`
+
+页级样式基线（`TypographyAnalyzer` 产出）：
+
+- `page`
+- `font_size_histogram / font_name_histogram / font_color_histogram`
+- `dominant_font_size / dominant_font_name / dominant_font_color`
+- `span_count`
+
+### 4.7 `VisualAnomalyIR`
+
+引擎内部异常记录，最终由 `evidence_mapper` 转 `Evidence`：
+
+- `page / bbox`
+- `anomaly_type`（对应 `EvidenceType` 字符串）
+- `confidence`
+- `observation_id`（DocumentIR 全局索引）
+- `span_ids: List[str]`
+- `detail: Dict[str, Any]`
+
+### 4.8 `VisualPageIR`
+
+单页的完整 IR：
+
+- `page / width / height`
+- `observation_spans: Dict[int, List[SpanIR]]` —— 挂到 observation 下的 span
+- `orphan_spans: List[SpanIR]` —— 未匹配到任何 observation 的 span
+- `drawings: List[DrawingIR]`
+- `images: List[ImageIR]`
+- `element_spans: Dict[str, List[SpanIR]]` —— element_id → spans
+- `element_types: Dict[str, str]`
+- `element_roi: Dict[str, int]` —— element_id → reading_order_index
+- `image_chars: List[ImageCharIR]`
+- `element_observation_ids: Dict[str, List[int]]`
+- `image_classification: Optional[Dict[str, Any]]` —— Camera/Digital 分类结果
+- `style_baseline: Optional[StyleBaselineIR]`
+- `anomalies: List[VisualAnomalyIR]`
+- `iter_all_spans()` —— 遍历 observation_spans + orphan_spans
+
+### 4.9 `VisualIR`
+
+顶层 IR：
+
+- `source_type: SourceType`
+- `file_path: Path`
+- `document_id: Optional[str]`
+- `page_count: int`
+- `pages: List[VisualPageIR]`
+- `metadata: Dict[str, Any]`
+
+### 4.10 `VisualContext`
+
+视觉层的 LLM 上下文（对应 Metadata 层的 `ForensicContext`）：
+
+- `source: VisualSourceInfo`（source_type + confidence + reason）
+- `page_summaries: List[VisualPageSummary]`
+- `analyzer_contexts: Dict[str, Dict]` —— **各 Analyzer 贡献的中性观察**
+- `global_style_profile: Dict`（dominant font + distinct counts）
+- `metadata: Dict`（file_path / document_id / page_count）
+
+**设计原则**：analyzer_contexts 是"中性观察"（供 Detective LLM 推理），anomalies 走 Evidence 通道（判定结果）。
+
+---
+
+## 5. 顶层流水线：`VisualEngine`
+
+构造参数：
+
+- `source_detector: SourceTypeDetector`
+- `render_dpi: int = 200`
+- `classifiers: CameraDigitalClassifier`
+- `analyzers: Optional[List[BaseVisualAnalyzer]]`
+- `context_builder: VisualContextBuilder`
+
+内部组件：
+
+- `SourceTypeDetector`
+- `VisualOrchestrator`（组合 span/drawing/image/segmenter/classifier）
+- 7 个默认 Analyzer
+- `VisualContextBuilder`
+
+入口：
+
+```python
+analyze(context, document_ir=None) -> Tuple[List[Evidence], Optional[VisualContext]]
+```
+
+流程：
+
+1. `SourceTypeDetector.detect()` → 产出 `PDF_SOURCE_TYPE` 证据
+2. 若是 `DIGITAL_PDF` / `DIGITAL_IMAGE`，走 `VisualOrchestrator.build_visual_ir()`
+3. 从 `image_classification` 生成 Camera/Digital Evidence（`IMAGE_SOURCE_CLASSIFICATION` / `IMAGE_PAGE_SKIPPED_CAMERA`）
+4. 逐个 `Analyzer.analyze(visual_ir)`，汇总 `anomalies` 和 `analyzer_contexts`
+5. 把 anomalies 附到对应 page
+6. `anomaly → Evidence`
+7. `VisualContextBuilder.build()`
+8. 返回 `(evidences, vctx)`
+
+也提供 `get_last_visual_ir()` 供调试。
+
+---
+
+## 6. 来源判定与编排
+
+### 6.1 `SourceTypeDetector`
+
+判定规则：
+
+- **image MIME / extension** → `DIGITAL_IMAGE`
+- **PDF** → 抽样最多 5 页，计算平均字符数：
+  - `avg_chars >= 100` → `DIGITAL_PDF`
+  - `avg_chars < 100` → `DIGITAL_IMAGE`（**扫描 PDF**，路由到 image 路径）
+- 其它 → `UNKNOWN`
+
+关键设计：**低文本密度的 PDF 被归为 `DIGITAL_IMAGE`**，由 orchestrator 逐页渲染 + Camera 分类器处理。
+
+### 6.2 `CameraDigitalClassifier`
+
+判定图片是 digital 还是 camera-captured。
+
+核心洞察：
+
+- **native 数字图**：像素值离散（软件渲染），某几个精确值吸纳大量像素；
+- **实拍图**：像素值连续（光照/传感器），值分散在连续区间。
+
+三个正向特征：
+
+1. **纯色度（Solid Color Ratio）**：局部 std < 阈值的像素占比（`solid_ksize=15`, `std_threshold=3.0`）
+2. **峰宽（Peak Width）**：灰度/饱和度直方图最强峰的半高宽度（256 bins）
+   - native 1-4 bins；相机 10-30 bins
+3. **峰集中度（Peak Concentration）**：最强 bin 占全图像素比例
+   - native 30-70%；相机 5-15%
+
+评分公式：
+
+```
+sharpness = min(
+    min(gray_w_score, gray_c_score),
+    min(sat_w_score, sat_c_score)
+)
+score = 0.4 * solid + 0.6 * sharpness
+```
+
+- `score >= 0.55` → `DIGITAL_IMAGE`
+- 否则 → `CAMERA`（**该页跳过字符切割分析**）
+
+### 6.3 `VisualOrchestrator`
+
+按 source type 分派：
+
+**DIGITAL_IMAGE**：
+- **PDF**（扫描件）→ 逐页 `render_pdf_page()` → `_process_non_native_page()`
+- **图片** → `_process_pure_image()`
+
+**DIGITAL_PDF**：
+- 逐页 `_classify_page_type()`：
+  - 若 observation 只有 `pymupdf` → `native_pdf` → `_process_native_page()`
+  - 若有 `rapidocr/paddleocr` → `non_native_pdf` → `_process_non_native_page()`
+
+**Native PDF 页**：
+
+```python
+span_extractor.extract(pdf_path, document_ir, pages=[page_num])
+drawing_extractor.extract(pdf_path, pages=[page_num])
+image_extractor.extract(pdf_path, pages=[page_num])
+```
+
+**Non-native / Pure image 页**：
+
+1. 渲染/加载图 → `img: np.ndarray`
+2. `CameraDigitalClassifier.classify(img)`
+3. 若 `CAMERA`：`VisualPageIR` 仅记录 `image_classification`，**跳过字符切割**
+4. 否则：`ImageCharSegmenter.extract_from_array(img, all_observations, page_num, document_ir)`
+
+---
+
+## 7. 提取器细节
+
+### 7.1 `PdfSpanExtractor`
+
+使用 `page.get_text("rawdict")`。
+
+流程：
+
+1. 遍历 `blocks → lines → spans → chars`
+2. `_build_span()`：
+   - 从 chars 重建 text
+   - 提取 bbox、origin、font_name、font_size、font_color、flags
+   - 构造 `span_id = f"p{page}_b{block}_l{line}_s{span_index}"`
+3. `_attach_span()`：
+   - **匹配规则**：span 中心点在 observation.bbox 内 **OR** IoU ≥ 0.5
+   - 命中 → `observation_spans[obs_idx]`
+   - 未命中 → `orphan_spans`
+4. `_attach_elements()`：
+   - 从 `document_ir.elements` 读取 `observation_ids`，反查 span 归属
+   - 填充 `element_spans`、`element_types`、`element_roi`
+
+关键点：
+
+- **页码基于 1**
+- `observation_id` 是 **DocumentIR.observations 的全局索引**
+- 不做任何过滤/判定（字号、颜色异常交给 Analyzer）
+
+### 7.2 `PdfDrawingExtractor`
+
+使用 `page.get_drawings()`。
+
+- 遍历 items，标记 `has_bezier / has_line / has_rect`
+- **累加 `bezier_count`**（每次 `op == "c"` 累加 1），供 `OverlapAnalyzer` 复用检测的 `bezier_count >= reuse_min_bezier` 判定使用
+- 计算 `items_hash`（**形状哈希**，用于复用检测）
+  - 关键：PyMuPDF 的 item 是 Point / Rect / Quad 对象，用 `_format_coords()` 展开并归一化到 bbox 原点
+- 提取 `fill / stroke / fill_opacity / stroke_opacity`
+- 标记 `is_micro`（width/height < 5.0 pt）
+
+### 7.3 `PdfImageExtractor`
+
+使用 `page.get_image_info(xrefs=True)`。
+
+- 提取 `bbox / width / height / xref / digest`
+- `digest` 由 PyMuPDF 提供，用于图像复用检测
+
+### 7.4 `ImageCharSegmenter`
+
+从图像 + DocumentIR observations 中切割字符。
+
+入口：
+
+- `extract(image_path, document_ir)` → 加载图片，遍历所有 obs
+- `extract_from_array(image_bgr, all_observations, page_num, document_ir)` → 用于已渲染的数组
+
+**单 observation 处理流程**：
+
+1. ROI 截取（obs.bbox）
+2. `_robust_ink_segmentation()`：百分位法
+   - `p2, p98 = percentile(gray, (2, 98))`
+   - rescale 到 0-255
+   - GaussianBlur 估算背景 → subtract → Triangle 二值化
+3. `_remove_structural_lines()`：形态学开运算去除长横线
+4. `connectedComponentsWithStats` 提取连通组件
+5. X 轴深度重叠合并（`_merge_overlapping`，处理 'i', ':', '.'）
+6. `_reconcile_box_count()`：**强制劈开/熔合**使 box 数 == `len(text.strip())`
+7. 逐字符构建：
+   - `_apply_y_density_protection()`：防止 '1' / 'I' 高度坍塌
+   - 计算 `ink_density / black_level / aspect_ratio`
+   - 标记 `typography_class`（reliable / uncertain / excluded）
+   - 标记 `inference_flag`（observed / split_inferred / merged_inferred）
+   - 计算 `global_line_confidence`（整行切割质量）
+
+字符分类：
+
+- `_PUNCTUATION_CHARS`：`.,:;'"()[]{}-_+=*&^%$#@!\/|<>~`` → `EXCLUDED`
+- `_UNCERTAIN_CHARS`：`gjpqyJQ` → `UNCERTAIN`
+- 其他 → `RELIABLE`
+
+窄字符集：`_NARROW_CHARS = set("1Il|i:;.,'")` → 密度阈值降到 1.0
+
+---
+
+## 8. Analyzer 详解
+
+所有 Analyzer 继承 `BaseVisualAnalyzer`，签名：
+
+```python
+def analyze(self, visual_ir: VisualIR) -> AnalyzerResult
+```
+
+`AnalyzerResult`：
+
+- `anomalies: List[VisualAnomalyIR]`
+- `context: Dict[str, Any]`（中性观察）
+
+约定：
+
+- 输入：完整 `VisualIR`
+- 输出：`AnalyzerResult`
+- 部分 Analyzer 支持 `set_document_ir(document_ir)` 注入 DocumentIR
+
+### 8.1 `TypographyAnalyzer`（三层样式离群）
+
+**三层独立检测**：
+
+- **Global**：跨文档的字体/字号/颜色稀有 bar
+- **Page**：单页内的稀有 bar
+- **Element**：语义单元内的稀有 bar
+
+核心方法：`_find_rare_bars(histogram)`
+
+- 用 **log 空间 + MAD** 找稀有 bar
+- 权重用 **char count**（不是 span count），避免"长 span 被当 outlier"
+- `min_bar_char_count = 2` 过滤 fallback 字体
+
+三层结果合并（`_merge_anomalies`）：
+
+- 同一 span 被多层命中 → 合并 `reasons`，记录 `scopes`，confidence 加分
+
+**Element type 降权**：
+
+- `ALLOWED_ANOMALY_ELEMENT_TYPES`（header/footer/title/caption/...）命中 outlier 时降到 `allowed_type_confidence = 0.3`
+
+产出：`PDF_TYPOGRAPHY_OUTLIER`
+
+Context：
+
+- `global`：全局三元组列表
+- `by_page`：每页的三元组
+- `by_table_element`：每个 table element 的三元组
+
+### 8.2 `FragmentationAnalyzer`（span 碎裂）
+
+**分组依据**：DocumentIR 的 element（语义单元），而非 PyMuPDF block/line。
+
+Fallback：无 element 时按 `line_key` 分组。
+
+检测方法：
+
+1. 过滤纯标点/符号 span
+2. `min_spans_per_group = 3` 且 `min_group_chars = 20`
+3. `log(length)` + MAD 找 outlier（`mad_k = 3.5`）
+4. 组级：`avg_len < over_fragmented_avg_len (3.0)` 且 `count >= 5` → 报"组过度碎裂"
+5. 兜底（组太小）：`_single_char_check()` 检查孤立单字符 span
+
+产出：`PDF_SPAN_FRAGMENTATION_ANOMALY`
+
+### 8.3 `CharSpacingAnalyzer`（字符重叠 + 数字字形离群）
+
+**A. Char Overlap**：
+
+- 相邻 char bbox 水平重叠
+- **动态阈值**（基于较窄字符宽度）：
+  - 标点后 + 悬臂字符前：`0.45`
+  - 仅一侧匹配：`0.28`
+  - 默认：`0.12`
+- 悬臂字符集：`T F P V W Y r v w y 4 A L`
+- **2D 垂直解耦**：标点与前一字符 Y 轴重合 < 20% → 豁免
+- 产出：`PDF_CHAR_SPACING_ANOMALY`（`detection_reason="adjacent_char_bbox_overlap"`）
+
+**B. Numeric Glyph Outlier**：
+
+- 分组：`(font_name, font_size, style_bits)`
+- 判定 tabular / proportional：
+  - 组内数字宽度 CV < 0.01 → tabular（全局检测）
+  - 否则 → proportional（按 digit 分组）
+- 检测方法：
+  - `n <= 10`：Dixon Q 检验（`DIXON_Q_CRIT` 临界值表）
+  - `n >= 11`：MAD 修正 Z-score（`width_mad_k = 3.5`）
+- 产出：`PDF_CHAR_SPACING_ANOMALY`（`detection_reason="tabular/proportional_digit_width_outlier"`）
+
+### 8.4 `OverlapAnalyzer`（四大子检测器）
+
+**4.1 Occlusion Detector**：
+
+- 检测大覆盖小（`coverage >= 0.9`）
+- 有效 occluder 判定：
+  - vector：必须有 fill，`fill_opacity >= 0.9`，min(w,h) >= 1.0
+  - image：必须未被 DocumentIR 确认为合法 picture/chart
+  - text：必须颜色差 >= 100 通道值
+- 排除：细线覆盖细线、被覆盖者面积 < `occlusion_min_area`
+- 产出：`PDF_OBJECT_OCCLUSION`
+
+**4.2 Object Reuse Detector**：
+
+- **只做 vector / image**（文本复用已删除，B2B 发票正常）
+- Vector：`items_hash` 相同 + `bezier_count >= 3` + `item_count >= 5` + 尺寸相似 + 位置不同
+- Image：`digest` 相同
+- 产出：`PDF_OBJECT_REUSE`
+
+**4.3 Overlay Characterization**：
+
+- 只对 occlusion 中"半透明 vector 或 image"补充描述
+- 产出：`PDF_OVERLAY_CHARACTERIZATION`
+
+**4.4 Correlation Engine**：
+
+- 找 "occlusion + reuse 同 pair" 的证据
+- 产出：`PDF_COPY_MOVE_CORRELATION`
+
+Context：
+
+- `object_pool`（text/vector/image 计数）
+- `near_occlusions`（coverage 0.7-0.9 之间的）
+- `duplicate_groups`（按 hash 分组）
+
+### 8.5 `OutliningAnalyzer`（局部转曲）
+
+思路：
+
+- 筛选含 ≥ 3 贝塞尔曲线的 drawing
+- 长宽比符合字符（0.15 - 6.0）
+- 判定该 drawing 是否落在"文本行空白间隙"：
+  - Y 轴在行 band 内（±2.0pt）
+  - X 轴中心不在任何 span 内
+
+产出：`PDF_PARTIAL_OUTLINING`
+
+### 8.6 `VectorSpoofingAnalyzer`（微型矢量笔画）
+
+流程：
+
+1. 收集结构区域（DocumentIR 的 table/chart bbox + 几何结构线）
+2. 筛选微型矢量（`width < micro_threshold` 或 `height < micro_threshold`）
+   - `micro_threshold = min(5.0, ref_font_size * 0.6)`
+3. 排除：
+   - 落在结构区域内
+   - 下划线类（`h <= 2` 且 `w >= 10` 且有 line/rect）
+4. 剩余候选与 char bbox 相交（`coverage >= 0.3`）
+
+产出：`PDF_VECTOR_SPOOFING`
+
+Context：`micro_vector_candidates`（上限 50 条）
+
+### 8.7 `ImageBaselineAnalyzer`（基线偏离）
+
+对每个 text element 内的每一行字符：
+
+1. 只用 **RELIABLE + 高置信度** 字符做 RANSAC 拟合 baseline
+   - `global_line_confidence * local_char_confidence > 0.8`
+2. `RANSACRegressor(residual_threshold=median_height * 0.05)`
+3. `measurement_uncertainty = max(1.5, median_height * 0.03, inlier_std * 2)`
+4. 对每个字符计算 `residual = ink_bottom_y - expected_y`
+5. `z = |residual| / measurement_uncertainty`
+6. `z > 2.0` → 报出
+7. **UNCERTAIN 字符（g/j/p/q/y）只允许"向下"残差**
+
+产出：`IMAGE_BASELINE_ANOMALY`
+
+Context：每个 element 的 baseline 拟合统计（slope/intercept/inlier_count/...）
+
+### 8.8 `ImageAlignmentAnalyzer`（表格列对齐）
+
+1. 分离跨列 / 单列 cell：`colspan > 1` 的 cell 整体跳过，不占用任何 obs
+2. 单列 cell 按 `(row, col)` 稳定排序
+3. 对每个单列 cell：
+   - 从 `cell.observation_ids` 反查候选 chars（`obs_to_chars`）
+   - **用 `cell.bbox` 过滤 chars**：
+     - char 的 `ink_bbox` 中心点落在 `cell.bbox` 内（左闭右开，避免相邻 cell 边界重复认领）
+     - 或 `char.ink_bbox ∩ cell.bbox ≥ 50% char 面积`
+   - **全局 char 去重**：同一 char 只能归属一个 cell（按 (row, col) 顺序先到先得）
+   - **无 chars 落在 cell 内 → 跳过该 cell，不 fallback 到 `obs.bbox`**
+     （原始 obs.bbox 覆盖整行，会让列对齐错位）
+4. 用保留的 chars 的 `ink_bbox` 并集作为该 cell 的代表 bbox
+5. `mad_L / mad_M / mad_R`，argmin 判定主对齐轴（L/M/R）
+6. 对主对齐轴跑 modified z-score
+7. 判定 outlier：`z > 3.5` 且 `abs_offset > 6.0`
+8. **表头协同豁免**：前两行内异常列数 ≥ 2 → 全豁免
+
+产出：`IMAGE_ALIGNMENT_ANOMALY`
+
+Context：
+- 每个 table element 的列级别统计
+- `filter_stats`：
+  - `skipped_colspan`：跨列 cell 数
+  - `skipped_no_obs`：cell 无 obs 或无 bbox
+  - `skipped_no_chars`：cell 内无任何 char
+  - `used_char_bbox`：成功产出 char 边界的 cell 数
+  - `chars_filtered_out`：落在 cell 外被过滤的 char 判定次数
+  - `chars_duplicated`：被多个 cell 争抢、只归第一个的 char 次数
+- `forgiven_header_anomaly_count`
+
+---
+
+## 9. 上下文构建
+
+### 9.1 `VisualContextBuilder`
+
+输入：
+
+- `VisualIR`
+- `DocumentIR`（可选）
+- `analyzer_contexts`（各 Analyzer 贡献的中性观察）
+
+输出：`VisualContext`
+
+- `source: VisualSourceInfo`（source_type + confidence + reason）
+- `page_summaries: List[VisualPageSummary]`
+- `analyzer_contexts`（**直接透传**）
+- `global_style_profile`（dominant font / distinct counts）
+- `metadata`（file_path / document_id / page_count）
+
+设计要点：**不处理 anomalies**（那走 Evidence 通道）。
+
+---
+
+## 10. 证据映射
+
+### 10.1 `evidence_mapper`
+
+`anomaly_to_evidence()`：
+
+- `type = EvidenceType(anomaly.anomaly_type)`
+- `confidence` 优先用 anomaly.confidence，缺省用 `DEFAULT_CONFIDENCE`
+- `location = {"page": ..., "bbox": [x0, y0, x1, y1]}`
+- `source` 记录来源 Analyzer
+
+`source_type_to_evidence()`：
+
+- `PDF_SOURCE_TYPE` 证据
+
+`source_classification_to_evidence()`：
+
+- `IMAGE_PAGE_SKIPPED_CAMERA`（Camera 页）
+- `IMAGE_SOURCE_CLASSIFICATION`（Digital 页）
+
+**DEFAULT_CONFIDENCE 表**：
+
+- `PDF_TYPOGRAPHY_OUTLIER: 0.7`
+- `PDF_SPAN_FRAGMENTATION_ANOMALY: 0.6`
+- `PDF_CHAR_SPACING_ANOMALY: 0.7`
+- `PDF_OBJECT_OCCLUSION: 0.7`
+- `PDF_OBJECT_REUSE: 0.7`
+- `PDF_COPY_MOVE_CORRELATION: 0.8`
+- `PDF_PARTIAL_OUTLINING: 0.8`
+- `PDF_VECTOR_SPOOFING: 0.8`
+- `IMAGE_BASELINE_ANOMALY: 0.7`
+- `IMAGE_ALIGNMENT_ANOMALY: 0.7`
+- `IMAGE_SOURCE_CLASSIFICATION: 0.9`
+- `IMAGE_PAGE_SKIPPED_CAMERA: 0.9`
+
+---
+
+## 11. 工具与异常
+
+### 11.1 `utils.geometry_helpers`
+
+统计：
+
+- `median(values)`
+- `mad(values)` —— Median Absolute Deviation
+- `modified_zscore(value, med, m, eps=0.5)` —— `0.6745 * |v - med| / max(MAD, eps)`
+
+几何：
+
+- `point_in_bbox(x, y, bbox)`
+- `bbox_center(bbox)`
+- `bbox_aspect_ratio(bbox)`
+- `bbox_union(a, b)`
+- `bboxes_intersect(a, b)`
+- `intersection_area(a, b)`
+- `coverage_of(target, cover)` —— `target` 被 `cover` 覆盖的比例
+
+### 11.2 `utils.pdf_renderer`
+
+- `render_pdf_page(pdf_path, page_num, dpi=200)` → numpy BGR
+- `load_image_bgr(file_path)` → numpy BGR
+
+### 11.3 `utils.debug_dumper`
+
+- `dump_visual_ir(visual_ir, out_dir, stem)`：只落盘页级摘要 + 异常列表 + 样式基线，不落盘全量 span/char
+
+### 11.4 `exceptions`
+
+```python
+VisualEngineError
+  ExtractionError   # Span / Drawing / SourceType 提取失败
+  AnalysisError     # Analyzer 运行失败
+```
+
+---
+
+## 12. EvidenceType 速查（Visual 部分）
+
+| 类型 | 来源 |
+|---|---|
+| `PDF_SOURCE_TYPE` | SourceTypeDetector |
+| `PDF_TYPOGRAPHY_OUTLIER` | TypographyAnalyzer |
+| `PDF_SPAN_FRAGMENTATION_ANOMALY` | FragmentationAnalyzer |
+| `PDF_CHAR_SPACING_ANOMALY` | CharSpacingAnalyzer |
+| `PDF_OBJECT_OCCLUSION` | OverlapAnalyzer |
+| `PDF_OBJECT_REUSE` | OverlapAnalyzer |
+| `PDF_OVERLAY_CHARACTERIZATION` | OverlapAnalyzer |
+| `PDF_COPY_MOVE_CORRELATION` | OverlapAnalyzer |
+| `PDF_PARTIAL_OUTLINING` | OutliningAnalyzer |
+| `PDF_VECTOR_SPOOFING` | VectorSpoofingAnalyzer |
+| `PDF_DRAWING_ANOMALY` | （预留） |
+| `IMAGE_BASELINE_ANOMALY` | ImageBaselineAnalyzer |
+| `IMAGE_ALIGNMENT_ANOMALY` | ImageAlignmentAnalyzer |
+| `IMAGE_LOW_QUALITY_SEGMENTATION` | （预留） |
+| `IMAGE_SOURCE_CLASSIFICATION` | CameraDigitalClassifier |
+| `IMAGE_PAGE_SKIPPED_CAMERA` | CameraDigitalClassifier |
+
+---
+
+## 13. 设计决策与注意事项
+
+### 13.1 设计原则
+
+1. **提取器只做物理提取**，不做任何判定；
+2. **Analyzer 产双轨**：`anomalies`（判定结果 → Evidence）+ `context`（中性观察 → VisualContext）；
+3. **VisualIR 只在 Visual Engine 内部使用**，不进入 ForensicState 下游字段；
+4. **Span 是唯一文本分析单元**，按 PyMuPDF 原生边界切分；
+5. **observation_id 是全局索引**，由 `PdfSpanExtractor` 从 `document_ir.observations` 反查；
+6. **Camera 页直接跳过字符分析**，只记录分类结果；
+7. **扫描 PDF 归为 DIGITAL_IMAGE**，由 orchestrator 逐页渲染处理；
+8. **Native / Non-native 混合 PDF** 按页类型分别处理。
+
+### 13.2 关键机制
+
+1. **形状哈希**：`items_hash` 归一化到 bbox 原点，是形状平移不变哈希（复用检测）；
+2. **图像 digest**：字节级 md5，用于图像复用检测；
+3. **表头协同豁免**：前两行异常列 ≥ 2 → 全豁免（避免表头格式差异误报）；
+4. **数字字形分支**：tabular（CV 检测）+ proportional（按 digit 分组）双路径；
+5. **Y 轴密度保护**：`ImageCharSegmenter` 防止 '1' / 'I' 高度坍塌；
+6. **强制劈开/熔合**：`_reconcile_box_count()` 使 box 数 == 字符数；
+7. **2D 垂直解耦**：CharSpacingAnalyzer 对"标点落在角落"的假阳性豁免；
+8. **RANSAC baseline 拟合**：避免个别下伸字符带偏基线。
+
+### 13.3 潜在问题与注意点
+
+- `PdfDrawingExtractor` 的 `bezier_count` 在 `_extract_page_drawings` 中**未真正累加**（`op == "c"` 时只 `has_bezier = True`，`bezier_count` 始终为 0）——影响 `OverlapAnalyzer._reuse_group_key` 里的 `bezier_count >= self.reuse_min_bezier` 判定；
+- `PdfDrawingExtractor` 中存在冗余 `import`（`from typing import Dict, List, Optional` 和 `from typing import Any, List` 重复）；
+- `ImageCharSegmenter._robust_ink_segmentation` 与 `ImageObservationExtractor._robust_ink_segmentation` 是**两份独立实现**（逻辑不同），未来可抽公共 `InkAnalyzer`；
+- `OverlapAnalyzer._detect_occlusions` 是 O(n²) 双重循环，大页可能慢；
+- `ImageAlignmentAnalyzer._collect_by_column` 里 `cells_sorted` 按 colspan 降序处理"先到先得"，未明确 `seen_obs_ids` 的跨 cell 全局去重语义（跨列 cell 的 obs 也会被标记）；
+- `VisualOrchestrator._classify_page_type` 只判断 observation source，若同页同时有 pymupdf 和 rapidocr，会归为 non_native；
+- `SourceTypeDetector` 对 native PDF 的文本阈值硬编码 100；
+- `ImageCharSegmenter._reconcile_box_count` 的"劈开"总是劈最宽的 box，可能劈错字符；
+- `CharSpacingAnalyzer` 的 Dixon 临界值表只到 n=10，超过则走 MAD；
+- `TypographyAnalyzer._build_context` 对 table element 只处理 `element_type == "table"`，其它 element 的样式上下文不进入 `by_table_element`；
+- `VisualContextBuilder` 不做 anomalies 处理，异常走 Evidence 通道，这是有意设计。
+
+### 13.4 与其它模块的关系
+
+- **上游**：`DocumentIR`（Perception 层产出）——提供 observation/element/table，用于 Span 归属和 cell 对齐；
+- **并行**：`MetadataEngine`（L1）——相互独立，通过 `state.all_evidences` 汇总；
+- **下游**：`Detective LLM` / `Risk Engine`——消费 `Evidence` 和 `VisualContext`；
+- **编排**：`ForensicGraph.l2_visual` 节点。
+
+---
+
+## 14. 核心调用链
+
+### Native PDF
+
+```text
+VisualEngine.analyze
+  -> SourceTypeDetector.detect
+  -> VisualOrchestrator.build_visual_ir
+    -> 逐页 _process_native_page
+      -> PdfSpanExtractor.extract
+      -> PdfDrawingExtractor.extract
+      -> PdfImageExtractor.extract
+  -> 7 个 Analyzer.analyze
+  -> anomaly_to_evidence / source_classification_to_evidence
+  -> VisualContextBuilder.build
+```
+
+### Digital Image / 扫描 PDF
+
+```text
+VisualEngine.analyze
+  -> SourceTypeDetector.detect
+  -> VisualOrchestrator.build_visual_ir
+    -> 逐页 _process_non_native_page / _process_pure_image
+      -> render_pdf_page / load_image_bgr
+      -> CameraDigitalClassifier.classify
+        -> CAMERA: 只记录 classification，跳过字符切割
+        -> DIGITAL: ImageCharSegmenter.extract_from_array
+  -> 7 个 Analyzer.analyze
+  -> ...
+```
+
+### LangGraph 接入
+
+```text
+l2_visual 节点:
+  engine = VisualEngine()
+  evidences, vctx = engine.analyze(context, document_ir=state.document_ir)
+  state.add_evidences("L2", evidences)
+  state.visual_context = vctx.model_dump() if vctx else None
+```
+
+---
+
+## 15. 一句话总结
+
+TrustLens v2 的 `visual` 模块是一个以 `VisualEngine` 为核心、以 `SourceTypeDetector` 判定文档类型、以 `VisualOrchestrator` 分派 native/non-native/image 三条路径、以 `PdfSpanExtractor/PdfDrawingExtractor/PdfImageExtractor/ImageCharSegmenter` 为提取器、以 9 个 Analyzer 为检测器、以 `VisualContext` 为 LLM 上下文的 L2 视觉取证流水线。它通过 `Evidence` 通道输出异常判定，通过 `VisualContext` 通道输出中性观察，两者一起供下游 Detective LLM 综合推理。核心设计是**只输出物理事实 + 中性观察，不做最终判断**，与 Metadata 层的"事实层只输出事实"原则一致。

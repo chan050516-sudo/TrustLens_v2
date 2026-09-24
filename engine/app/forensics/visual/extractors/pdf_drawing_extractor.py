@@ -5,10 +5,7 @@ PdfDrawingExtractor — 从 page.get_drawings() 提取 DrawingIR。
 不做任何判定。
 """
 from pathlib import Path
-from typing import Dict, List, Optional
-import hashlib
-from typing import Any, List
-
+from typing import Dict, List, Optional, Any
 import fitz
 import hashlib
 from app.forensics.visual.models.visual_ir import DrawingIR
@@ -63,11 +60,11 @@ class PdfDrawingExtractor:
             bbox = BBox(x0=x0, y0=y0, x1=x1, y1=y1)
 
             items = d.get("items", []) or []
+
             has_bezier = False
             has_line = False
             has_rect = False
-            bezier_count = 0
-            has_bezier = has_line = has_rect = False
+            bezier_count = 0                       # ★ 真正累加
 
             for it in items:
                 if not it:
@@ -75,12 +72,16 @@ class PdfDrawingExtractor:
                 op = it[0]
                 if op == "c":
                     has_bezier = True
+                    bezier_count += 1              # ★ 修复点
                 elif op == "l":
                     has_line = True
                 elif op == "re":
                     has_rect = True
 
-            is_micro = bbox.width < self.micro_size_threshold or bbox.height < self.micro_size_threshold
+            is_micro = (
+                bbox.width < self.micro_size_threshold
+                or bbox.height < self.micro_size_threshold
+            )
             items_hash = self._hash_items(items, bbox)
 
             fill = d.get("fill")
