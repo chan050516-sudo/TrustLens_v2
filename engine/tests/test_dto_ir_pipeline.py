@@ -17,21 +17,29 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
+import sys
 
 # 允许从 repo root 运行
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+  sys.path.insert(0, str(_REPO_ROOT))
+
+# 加载 .env 环境变量
+try:
+  from dotenv import find_dotenv, load_dotenv
+
+  load_dotenv(find_dotenv(usecwd=True))
+except ImportError:
+  logging.warning("python-dotenv not installed. Relying on system environment.")
 
 from app.core.document_ir import DocumentContext
-from app.perception.models.observation_ir import ObservationIR
-from app.perception.extractors import (
-    PdfObservationExtractor,
-    ImageObservationExtractor,
-)
 from app.perception.dto_ir import DTOIRPipeline
+from app.perception.extractors import (
+    ImageObservationExtractor,
+    PdfObservationExtractor,
+)
+from app.perception.models.observation_ir import ObservationIR
 
 
 # ============================================================
