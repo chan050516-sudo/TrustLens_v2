@@ -95,6 +95,54 @@ app/
 │   │   └── metadata_engine.py
 │   │
 │   ├── visual/
+│   │   │
+│   │   ├── models/
+│   │   │   ├── __init__.py
+│   │   │   ├── visual_ir.py
+│   │   │   └── visual_context.py
+│   │   │
+│   │   ├── extractors/
+│   │   │   ├── __init__.py
+│   │   │   ├── pdf_span_extractor.py
+│   │   ├── pdf_drawing_extractor.py
+│   │   │   ├── pdf_image_extractor.py
+│   │   │   ├── image_char_segmenter.py
+│   │   │   └── source_type_detector.py
+│   │   │
+│   │   ├── classifiers/
+│   │   │   ├── __init__.py
+│   │   │   └── camera_digital_classifier.py
+│   │   │
+│   │   ├── analyzers/
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py
+│   │   │   ├── typography_analyzer.py
+│   │   │   ├── fragmentation_analyzer.py
+│   │   │   ├── char_spacing_analyzer.py
+│   │   │   ├── overlap_analyzer.py
+│   │   │   ├── outlining_analyzer.py
+│   │   │   ├── vector_spoofing_analyzer.py
+│   │   │   ├── image_baseline_analyzer.py
+│   │   │   └── image_alignment_analyzer.py
+│   │   │
+│   │   ├── orchestration/
+│   │   │   ├── __init__.py
+│   │   │   └── visual_orchestrator.py
+│   │   │
+│   │   ├── context/
+│   │   │   ├── __init__.py
+│   │   │   └── visual_context_builder.py
+│   │   │
+│   │   ├── utils/
+│   │   │   ├── __init__.py
+│   │   │   ├── geometry_helpers.py
+│   │   │   ├── pdf_renderer.py
+│   │   │   ├── evidence_mapper.py
+│   │   │   └── debug_dumper.py
+│   │   │
+│   │   ├── __init__.py
+│   │   ├── visual_engine.py
+│   │   └── exceptions.py
 │   │
 │   ├── semantic/
 │   │

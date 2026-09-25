@@ -1,18 +1,18 @@
-**Document IR**
-Original Document -> Perception Pipeline -> Observation IR -> Document IR (见project_context_16Sep.txt)
-
-**DTO IR**
+**Perception**
+1. Document IR
+Original Document -> Perception Pipeline -> Observation IR -> Document IR (已完成，见project_context_latest.txt)
+2. DTO IR
 pdf转成图, jpeg png保持 -> 根据Observation IR -> cv2在原图画出框框, 标上index号码 -> VLM -> 解析 (基于我们之前针对确定性reconciliation和grounding做出的json schema, 见dto_ir.txt) -> DTO IR
 
 
 **Engine**
 
-Original Document -> Metadata Engine (确定性工具集成解析，已完成，见project_context_16Sep.txt)
+Original Document -> Metadata Engine (确定性工具集成解析，已完成，见project_context_latest.txt)
 
 Document IR ->
 1. Semantic Engine (LLM，文字逻辑+法条规则)
 2. Template Engine (维护official template library，vlm分析official template后变成template IR后收录，确定性算法比较)，
-3. Visual Engine (见visual_architecture.txt)
+3. Visual Engine (已完成当前版本的scope，见project_context_latest.txt)
 
 DTO IR ->
 1. Reconciliation Engine (确定性规则+算子，处理Date and Math)
