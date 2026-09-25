@@ -42,7 +42,7 @@ class ImageObservationExtractor:
     # 公共入口
     # ------------------------------------------------------------------
 
-    def extract(self, context: DocumentContext) -> List[ObservationIR]:
+    def extract(self, context: DocumentContext, page_num: int = 1,) -> List[ObservationIR]:
         file_path = context.file_path
         if not file_path.exists():
             raise ExtractionError(f"File not found: {file_path}")
@@ -64,8 +64,11 @@ class ImageObservationExtractor:
         observations = self._convert_to_observations(
             ocr_results=ocr_results,
             image_bgr=image_bgr,
-            page_num=1,
+            page_num=page_num,
         )
+        # ★ 分配 observation_id
+        for local_idx, o in enumerate(observations):
+            o.observation_id = page_num * 1000 + local_idx
 
         logger.info(
             f"[ObservationExtractor] Extracted {len(observations)} observations "

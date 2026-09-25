@@ -104,33 +104,31 @@ class DocumentIRBuilder:
         conflicts.extend(table_conflicts)
 
         # ---- 3. 重建表格 ----
-        table_consumed_indices: set = set()
+        table_consumed_obs_ids: set = set()
         reconstructed: List[Tuple[TableRegion, Table]] = []
 
         for region in merged_tables:
-            inner_pairs = [
-                (i, o) for i, o in enumerate(observations)
+            inner_obs = [
+                o for o in observations
                 if bbox_center_in(o.bbox, region.bbox)
             ]
-            inner_obs = [o for _, o in inner_pairs]
-            inner_idx = [i for i, _ in inner_pairs]
+            inner_ids = [o.observation_id for o in inner_obs]
 
             table_obj = self.table_reconstructor.reconstruct(
-                region, inner_obs, obs_indices=inner_idx
+                region, inner_obs, obs_indices=inner_ids
             )
             reconstructed.append((region, table_obj))
 
-            # 标记已消费（以中心点在 table.bbox 内为准）
-            for i, _ in inner_pairs:
-                table_consumed_indices.add(i)
+            for oid in inner_ids:
+                table_consumed_obs_ids.add(oid)
 
         # ---- 4. 非表格区域认领 ----
         available_pairs = [
-            (i, o) for i, o in enumerate(observations)
-            if i not in table_consumed_indices
+            (o.observation_id, o) for o in observations
+            if o.observation_id not in table_consumed_obs_ids
         ]
         available_obs = [o for _, o in available_pairs]
-        available_indices = [i for i, _ in available_pairs]
+        available_ids = [oid for oid, _ in available_pairs]
 
         region_to_obs_local, unassigned_local = self.region_assigner.assign(
             other_regions, available_obs
@@ -170,7 +168,7 @@ class DocumentIRBuilder:
             claimed_region_indices.add(region_idx)
 
             local_obs = [available_obs[i] for i in local_obs_indices]
-            local_orig_indices = [available_indices[i] for i in local_obs_indices]
+            local_orig_ids = [available_ids[i] for i in local_obs_indices]
 
             order = (
                 region.reading_order_index
@@ -181,7 +179,7 @@ class DocumentIRBuilder:
             if region.is_container:
                 # 容器残余 obs 按 Y 轴切分
                 paired = sorted(
-                    zip(local_obs, local_orig_indices),
+                    zip(local_obs, local_orig_ids),
                     key=lambda p: (p[0].bbox.y0, p[0].bbox.x0),
                 )
                 fragments = self._split_pairs_into_y_fragments(paired)
@@ -212,7 +210,7 @@ class DocumentIRBuilder:
             else:
                 # 普通 region（含 picture / chart）
                 paired = sorted(
-                    zip(local_obs, local_orig_indices),
+                    zip(local_obs, local_orig_ids), 
                     key=lambda p: (p[0].bbox.center_y, p[0].bbox.center_x),
                 )
                 sorted_obs = [p[0] for p in paired]
@@ -246,8 +244,8 @@ class DocumentIRBuilder:
 
         # 5.3 孤立 obs → fallback paragraph elements
         unassigned_obs = [available_obs[i] for i in unassigned_local]
-        unassigned_idx = [available_indices[i] for i in unassigned_local]
-        orphan_elements = self._build_orphan_elements(unassigned_obs, unassigned_idx)
+        unassigned_ids = [available_ids[i] for i in unassigned_local]
+        orphan_elements = self._build_orphan_elements(unassigned_obs, unassigned_ids)
         elements.extend(orphan_elements)
 
         # ---- 6. 排序 + 重分配 reading_order_index ----
@@ -256,13 +254,14 @@ class DocumentIRBuilder:
         # ---- 7. conflicts ----
 
         # 7.1 未认领的 observation（已生成 fallback element，但仍记录 conflict）
-        for obs, _ in zip(unassigned_obs, unassigned_idx):
+        for obs in unassigned_obs:
             conflicts.append({
                 "type": "unassigned_observation",
                 "page": obs.page,
                 "bbox": obs.bbox.to_tuple(),
                 "text": obs.text[:100],
                 "source": obs.source,
+                "observation_id": obs.observation_id,   # ★ 新增，便于追溯
                 "note": "Docling 未识别此区域；已生成 fallback_orphan element",
             })
 

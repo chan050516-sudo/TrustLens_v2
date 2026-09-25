@@ -72,12 +72,16 @@ class PdfObservationExtractor:
             for page_idx in pages_to_process:
                 page = doc[page_idx]
                 page_rect = page.rect
+                actual_page_num = page_idx + 1
                 page_obs = self._extract_from_page(
                     page,
-                    page_num=page_idx + 1,
+                    page_num=actual_page_num,
                     page_width=page_rect.width,
                     page_height=page_rect.height,
                 )
+                # ★ 分配 observation_id
+                for local_idx, o in enumerate(page_obs):
+                    o.observation_id = actual_page_num * 1000 + local_idx
                 observations.extend(page_obs)
 
             logger.info(

@@ -4,7 +4,7 @@ PdfSpanExtractor — 从原始 PDF 提取 span/char，并挂到 DocumentIR 的 o
 关键点：
 - 使用 page.get_text("rawdict") 拿到 chars。
 - 页码基于 1（TDR-2）。
-- observation_id 为 DocumentIR.observations 全局索引（TDR-3）。
+- observation_id 为页段偏移 id（page * 1000 + 页内位置），非列表索引。
 - 挂载规则：span 中心点在 observation.bbox 内，或 IoU >= iou_threshold。
 - 匹配不上的进 orphan_spans。
 - 不做任何过滤/判定（字号、颜色异常由 Analyzer 处理）。
@@ -62,19 +62,17 @@ class PdfSpanExtractor:
     def _group_observations_by_page(
         self, document_ir: Optional[Any]
     ) -> Dict[int, List[tuple]]:
-        """
-        返回 {page: [(global_idx, obs), ...]}。
-        document_ir 为 None 时返回空字典，所有 span 会进 orphan_spans。
-        """
+        """返回 {page: [(obs_id, obs), ...]}。"""
         out: Dict[int, List[tuple]] = {}
         if document_ir is None:
             return out
         obs_list = getattr(document_ir, "observations", None) or []
-        for idx, obs in enumerate(obs_list):
+        for obs in obs_list:
             page = getattr(obs, "page", None)
             if page is None:
                 continue
-            out.setdefault(int(page), []).append((idx, obs))
+            obs_id = getattr(obs, "observation_id", 0)   # ★ 用 observation_id
+            out.setdefault(int(page), []).append((obs_id, obs))
         return out
 
     def _extract_page(

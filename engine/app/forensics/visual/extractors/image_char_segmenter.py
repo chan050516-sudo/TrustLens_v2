@@ -77,6 +77,9 @@ class ImageCharSegmenter:
 
         h, w = image_bgr.shape[:2]
 
+        page_nums = [o.page for o in observations if getattr(o, "page", None)]
+        page_num = max(set(page_nums), key=page_nums.count) if page_nums else 1
+
         if document_ir is None:
             logger.warning("[ImageCharSegmenter] No DocumentIR; returning empty page")
             return [VisualPageIR(page=1, width=float(w), height=float(h))]
@@ -94,18 +97,18 @@ class ImageCharSegmenter:
             element_observation_ids[elem_id] = [int(x) for x in obs_ids]
 
         all_chars: List[ImageCharIR] = []
-        for obs_id, obs in enumerate(observations):
+        for obs in observations:
+            obs_id = obs.observation_id
             try:
-                chars = self._process_observation(image_bgr, obs, obs_id, page_num=1)
+                chars = self._process_observation(image_bgr, obs, obs_id, page_num=obs.page)
                 all_chars.extend(chars)
             except Exception as e:
-                logger.debug(
-                    f"[ImageCharSegmenter] obs#{obs_id} failed: {e}"
-                )
+                logger.debug(f"[ImageCharSegmenter] obs#{obs_id} failed: {e}")
                 continue
 
+
         page_ir = VisualPageIR(
-            page=1,
+            page=page_num,
             width=float(w),
             height=float(h),
             image_chars=all_chars,
@@ -359,12 +362,12 @@ class ImageCharSegmenter:
         h, w = image_bgr.shape[:2]
 
         # 过滤 + 保留全局索引
-        observations_with_idx = [
-            (i, o) for i, o in enumerate(all_observations)
+        observations_with_id = [
+            (o.observation_id, o) for o in all_observations
             if getattr(o, "page", None) == page_num
         ]
 
-        if not observations_with_idx:
+        if not observations_with_id:
             return VisualPageIR(page=page_num, width=float(w), height=float(h))
 
         # element_id -> observation_ids（全局）
@@ -383,7 +386,7 @@ class ImageCharSegmenter:
                 element_roi[elem_id] = roi if isinstance(roi, int) else elem_idx
 
         all_chars: List[ImageCharIR] = []
-        for global_obs_id, obs in observations_with_idx:
+        for global_obs_id, obs in observations_with_id:
             try:
                 chars = self._process_observation(
                     image_bgr, obs, global_obs_id, page_num=page_num,
@@ -468,11 +471,12 @@ class ImageCharSegmenter:
         self,
         page_ir: VisualPageIR,
         document_ir: Optional[Any],
+        page_num
     ) -> None:
         if document_ir is None:
             return
         for elem_idx, elem in enumerate(getattr(document_ir, "elements", None) or []):
-            if getattr(elem, "page", None) not in (None, 1):
+            if getattr(elem, "page", None) not in (None, page_num):
                 continue
             elem_id = f"e{elem_idx}"
             page_ir.element_types[elem_id] = getattr(elem, "element_type", "unknown")

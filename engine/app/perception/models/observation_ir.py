@@ -13,6 +13,12 @@ class ObservationIR(BaseModel):
     text: str = Field(..., description="该行的文本内容")
     bbox: BBox = Field(..., description="该行文本的精确边界框")
 
+    # ★ 新增：全局唯一 ID（页段偏移）
+    observation_id: int = Field(
+        default=0,
+        description="全局唯一标识：page * 1000 + 页内位置。0 表示未分配。",
+    )
+
     # 溯源信息
     source: Literal["pymupdf", "pdfplumber", "rapidocr", "paddleocr"] = Field(
         ..., description="来源工具"

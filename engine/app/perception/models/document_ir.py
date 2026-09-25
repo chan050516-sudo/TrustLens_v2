@@ -15,7 +15,7 @@ class TableCell(BaseModel):
     # ★ 新增：引用原始 Observation
     observation_ids: List[int] = Field(
         default_factory=list,
-        description="该 cell 内的 observation 在 DocumentIR.observations 中的索引"
+        description="该 cell 内的 observation 的 observation_id（页段偏移 id，非列表位置）"
     )
 
 
@@ -67,7 +67,7 @@ class DocumentElement(BaseModel):
     # 引用
     observation_ids: List[int] = Field(
         default_factory=list,
-        description="本 element 包含的 observation 在 DocumentIR.observations 中的索引"
+        description="本 element 包含的 observation 的 observation_id（页段偏移 id，非列表位置）"
     )
 
     # 容器 fragment

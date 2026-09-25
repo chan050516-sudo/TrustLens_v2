@@ -241,7 +241,7 @@ class PerceptionPipeline:
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 futures = {
-                    executor.submit(self.image_extractor.extract, downstream_context): "observations",
+                    executor.submit(self.image_extractor.extract, downstream_context, target_page,): "observations",
                     executor.submit(docling_parser.parse, downstream_context, None): "regions",
                 }
                 for future in as_completed(futures):
@@ -255,7 +255,7 @@ class PerceptionPipeline:
             observations = results["observations"] or []
             regions = results["regions"] or []
 
-            # ★ 强制覆盖 page 字段（image extractor / docling 硬编码 page=1）
+            # ★ 已有 observation_id（extractor 分配）；这里只需覆盖 page
             for obs in observations:
                 obs.page = target_page
             for r in regions:

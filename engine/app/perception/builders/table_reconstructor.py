@@ -327,6 +327,7 @@ class TableReconstructor:
                                 x1=split_x, y1=curr_obs.bbox.y1),
                         source=curr_obs.source,
                         confidence=curr_obs.confidence,
+                        observation_id=orig_idx,     # ★ 显式传父 id（虽然它不会进 DocumentIR.observations）
                     )
                     processed_obs.append(left_obs)
                     processed_indices.append(orig_idx)
@@ -339,6 +340,7 @@ class TableReconstructor:
                                 x1=curr_obs.bbox.x1, y1=curr_obs.bbox.y1),
                         source=curr_obs.source,
                         confidence=curr_obs.confidence,
+                        observation_id=orig_idx,
                     )
                 else:
                     curr_obs = None

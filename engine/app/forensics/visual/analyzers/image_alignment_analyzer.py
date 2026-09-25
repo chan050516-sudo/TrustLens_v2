@@ -185,6 +185,12 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
         for c in getattr(page_ir, "image_chars", []) or []:
             obs_to_chars[int(c.observation_id)].append(c)
 
+        # ★ 新增：建 obs_id -> obs 的映射
+        obs_by_id: Dict[int, Any] = {
+            int(getattr(o, "observation_id", 0)): o
+            for o in observations
+        }
+
         # ---- Step 2: 分离跨列 / 单列 ----
         single_col_cells: List[Any] = []
         colspan_count = 0
@@ -226,8 +232,10 @@ class ImageAlignmentAnalyzer(BaseVisualAnalyzer):
                     oid_i = int(oid)
                 except (TypeError, ValueError):
                     continue
-                if 0 <= oid_i < len(observations):
-                    cell_obs_with_idx.append((oid_i, observations[oid_i]))
+                # ★ 用 obs_by_id 查表，而不是 observations[oid_i]
+                obs = obs_by_id.get(oid_i)
+                if obs is not None:
+                    cell_obs_with_idx.append((oid_i, obs))
 
             if not cell_obs_with_idx:
                 stats["skipped_no_obs"] += 1

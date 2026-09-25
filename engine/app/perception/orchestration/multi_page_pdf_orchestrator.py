@@ -327,25 +327,14 @@ class MultiPagePdfOrchestrator:
 
         for page_num in sorted(page_irs.keys()):
             page_ir = page_irs[page_num]
-            offset = len(merged_observations)
+            # ★ 不再计算 offset
 
-            # observations
             merged_observations.extend(page_ir.observations)
 
-            # elements: page 对齐 + observation_ids 重映射
             for elem in page_ir.elements:
                 elem.page = page_num
-                elem.observation_ids = [
-                    i + offset for i in elem.observation_ids
-                ]
-                if elem.table is not None:
-                    for cell in elem.table.cells:
-                        cell.observation_ids = [
-                            i + offset for i in cell.observation_ids
-                        ]
                 merged_elements.append(elem)
 
-            # conflicts
             for c in page_ir.conflicts:
                 c["page"] = page_num
                 merged_conflicts.append(c)
