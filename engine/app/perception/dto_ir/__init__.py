@@ -18,6 +18,16 @@ from .vlm import (
     build_prompt,
     DEFAULT_MODEL,
 )
+from .parsing import (
+    parse_response,
+    normalize_enums,
+    validate_dtoir,
+    validate_observation_ids,
+    parse_and_validate,
+)
+from .source_mapping import ObservationMapper
+from .merging import merge_dto_irs
+from .pipeline import DTOIRPipeline, DEFAULT_MAX_PER_CHUNK
 
 __all__ = [
     # exceptions
@@ -37,4 +47,17 @@ __all__ = [
     "GeminiVLMClient",
     "build_prompt",
     "DEFAULT_MODEL",
+    # parsing
+    "parse_response",
+    "normalize_enums",
+    "validate_dtoir",
+    "validate_observation_ids",
+    "parse_and_validate",
+    # mapping
+    "ObservationMapper",
+    # merging
+    "merge_dto_irs",
+    # pipeline
+    "DTOIRPipeline",
+    "DEFAULT_MAX_PER_CHUNK",
 ]

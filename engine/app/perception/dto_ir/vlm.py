@@ -77,8 +77,7 @@ def build_prompt(schema_dict: Optional[dict] = None) -> str:
 # Gemini client
 # ============================================================
 
-DEFAULT_MODEL = "gemini-2.0-flash"
-"""若使用 Gemini 3.5/3.8 Flash，把此常量替换为对应 model id。"""
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 
 def _read_api_key() -> str:
@@ -125,7 +124,6 @@ class GeminiVLMClient:
         # 延迟 import，避免在没有装 SDK 时影响其它模块
         try:
             from google import genai  # noqa: F401
-            from google.genai import types  # noqa: F401
         except ImportError as e:
             raise DTOIRVLMError(
                 "google-genai SDK is required. Install with: "
@@ -138,13 +136,15 @@ class GeminiVLMClient:
 
     # ------------------------------------------------------------------
 
+    import base64
+
     def extract(
         self,
         prompt: str,
         images_jpeg: list[bytes],
     ) -> str:
         """
-        调用 Gemini，返回原始文本响应。
+        调用 Gemini 3.8 Flash（Interactions API），返回原始 JSON 文本。
 
         Args:
             prompt: 完整 prompt
@@ -156,42 +156,40 @@ class GeminiVLMClient:
         if not images_jpeg:
             raise DTOIRVLMError("No images provided to GeminiVLMClient.extract")
 
-        from google.genai import types
-
-        parts: list = [types.Part.from_text(text=prompt)]
+        # 构建 multimodal input 数组
+        input_parts: list[dict] = [{"type": "text", "text": prompt}]
         for idx, jpeg_bytes in enumerate(images_jpeg):
             if not jpeg_bytes:
                 logger.warning(f"[DTOIR.vlm] Empty image bytes at index {idx}")
                 continue
-            parts.append(
-                types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg")
-            )
+            input_parts.append({
+                "type": "image",
+                "data": base64.b64encode(jpeg_bytes).decode("utf-8"),
+                "mime_type": "image/jpeg",
+            })
+
+        # 从 TrustLensDTOIR 生成 JSON Schema，传给 response_format
+        from app.core.dto_ir import TrustLensDTOIR
+        json_schema = TrustLensDTOIR.model_json_schema()
 
         try:
-            response = self._client.models.generate_content(
+            interaction = self._client.interactions.create(
                 model=self.model,
-                contents=parts,
-                config=types.GenerateContentConfig(
-                    temperature=self._temperature,
-                    response_mime_type="application/json",
-                ),
+                input=input_parts,
+                response_format={
+                    "type": "text",
+                    "mime_type": "application/json",
+                    "schema": json_schema,
+                },
+                generation_config={
+                    "temperature": self._temperature,
+                },
             )
         except Exception as e:
             raise DTOIRVLMError(f"Gemini API call failed: {e}") from e
 
-        text = getattr(response, "text", None)
-        if text is None:
-            # 某些版本需要从 candidates 里取
-            candidates = getattr(response, "candidates", None) or []
-            if candidates:
-                try:
-                    content = candidates[0].content
-                    parts_ = getattr(content, "parts", None) or []
-                    text = "".join(
-                        getattr(p, "text", "") or "" for p in parts_
-                    )
-                except Exception:
-                    text = None
+        # 提取输出文本
+        text = getattr(interaction, "output_text", None)
         if not text:
             raise DTOIRVLMError("Gemini returned empty response")
 
