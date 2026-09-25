@@ -10,6 +10,7 @@ DTO IR VLM 层 — prompt 构造 + Gemini client。
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -135,8 +136,6 @@ class GeminiVLMClient:
         self._client = genai.Client(api_key=self._api_key)
 
     # ------------------------------------------------------------------
-
-    import base64
 
     def extract(
         self,
