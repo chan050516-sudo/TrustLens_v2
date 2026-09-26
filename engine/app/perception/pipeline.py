@@ -16,6 +16,7 @@ from app.perception.builders import DocumentIRBuilder
 from app.perception.preprocessors import ImagePreprocessor
 from app.perception.models.document_ir import DocumentIR
 from app.perception.models.observation_ir import ObservationIR
+from app.perception.dto_ir.pipeline import DTOIRPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ class PerceptionPipeline:
         force_ocr_for_pdf: bool = False,
         deskew_min_angle: float = 0.2,
         pdf_render_dpi: int = 200,
+        dto_ir_enabled: bool = True,
+        dto_ir_output_dir: Optional[Path] = None,
+        dto_ir_vlm_client=None,
+        dto_ir_dpi: int = 250,
     ):
         """
         Args:
@@ -63,6 +68,18 @@ class PerceptionPipeline:
 
         # Docling parser 按 do_ocr 缓存
         self._docling_parsers: Dict[bool, DoclingRegionParser] = {}
+
+        self._dto_ir_pipeline: Optional[DTOIRPipeline] = (
+            DTOIRPipeline(
+                vlm_client=dto_ir_vlm_client,
+                dpi=dto_ir_dpi,
+                max_per_chunk=8,
+                output_dir=dto_ir_output_dir,
+            )
+            if dto_ir_enabled else None
+        )
+        self._last_dto_ir = None
+        self.dto_ir_enabled = dto_ir_enabled
 
     # ------------------------------------------------------------------
 
@@ -153,6 +170,15 @@ class PerceptionPipeline:
         # 若指定单页，过滤 regions（防止 Docling 不兼容 page_range 时返回多页）
         if page_num is not None:
             regions = [r for r in regions if r.page == page_num]
+
+        # ★ 触发 DTO IR（复用 observations，不重跑 OCR）
+        # native PDF：渲染图用原 PDF 路径，DTOIRPipeline 内部按 page_num 取页
+        self._try_generate_dto_ir(
+            observations=observations,
+            render_path=context.file_path,
+            mime_type="application/pdf",
+            annotated_stem=context.file_path.stem,
+        )
 
         # 页面信息
         page_count, page_dimensions = self._get_page_info(
@@ -260,6 +286,17 @@ class PerceptionPipeline:
                 obs.page = target_page
             for r in regions:
                 r.page = target_page
+
+            # ★ 触发 DTO IR
+            # image 路径：用 effective_path（可能是 deskew 后临时图），
+            # 保证 bbox 与 observation 坐标系一致
+            dto_mime = downstream_context.mime_type or context.mime_type or "image/png"
+            self._try_generate_dto_ir(
+                observations=observations,
+                render_path=effective_path,
+                mime_type=dto_mime,
+                annotated_stem=context.file_path.stem,
+            )
 
             # 页面信息（图片总是单页）
             page_count, page_dimensions = self._get_page_info(
@@ -386,6 +423,51 @@ class PerceptionPipeline:
 
     # ------------------------------------------------------------------
 
+    def _try_generate_dto_ir(
+        self,
+        observations: List[ObservationIR],
+        render_path: Path,
+        mime_type: str,
+        annotated_stem: str,
+    ) -> None:
+        """
+        非阻塞触发 DTO IR。失败不影响 DocumentIR 构建。
+
+        Args:
+            observations: 已提取的 observations（复用，不重跑 OCR）
+            render_path: DTO IR 渲染用文件路径
+                        - native PDF: 原 PDF 路径
+                        - image/deskew: effective_path（图片或 deskew 后临时图）
+            mime_type: 用于渲染时判断是 PDF 还是图片
+            annotated_stem: 标注图文件名 stem（用于落盘）
+        """
+        if self._dto_ir_pipeline is None or not observations:
+            self._last_dto_ir = None
+            return
+
+        try:
+            obs_by_page: Dict[int, List[ObservationIR]] = {}
+            for o in observations:
+                obs_by_page.setdefault(o.page, []).append(o)
+
+            self._last_dto_ir = self._dto_ir_pipeline.run(
+                file_path=render_path,
+                mime_type=mime_type,
+                observations_by_page=obs_by_page,
+                save_annotated=self._dto_ir_pipeline.output_dir is not None,
+                annotated_stem=annotated_stem,
+            )
+            logger.info(
+                f"[Pipeline] DTO IR generated: "
+                f"{len(self._last_dto_ir.reconciliation.tables)} table(s), "
+                f"{len(self._last_dto_ir.reconciliation.global_facts)} global_fact(s)"
+            )
+        except Exception as e:
+            logger.exception(f"[Pipeline] DTO IR generation failed (non-fatal): {e}")
+            self._last_dto_ir = None
+
+    # ------------------------------------------------------------------
+
     def _get_page_info(
         self,
         context: DocumentContext,
@@ -458,3 +540,7 @@ class PerceptionPipeline:
             ".tiff": "image/tiff",
         }
         return mapping.get(suffix)
+
+    def get_last_dto_ir(self):
+        """返回最近一次 DTO IR（未生成则 None）。"""
+        return self._last_dto_ir
