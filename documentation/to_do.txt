@@ -1,0 +1,6 @@
+1. 移除metadata engine的font-related检测，那是visual engine的核心
+2. metadata engine的context必须清理，移除semantic text等等其他下游引擎会产生的东西，同时也减少整体tokens，毕竟要送入detective llm
+3. vlm dto ir结果的检验，未经过我的审核和想法激荡
+4. vlm dto ir要与observation ir相互验证，考虑写进conflicts或做alias
+5. dto ir的prompt template可能还需针对各种doc type做出相应的调整
+6. visual engine的native image还可以做PCA, SWT, glyph embedding，camera-captured可以研究physical appearance/ texture层面的detection
