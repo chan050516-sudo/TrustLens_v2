@@ -250,15 +250,15 @@ class DTOIRPipeline:
         dto_ir: TrustLensDTOIR,
         mapper: ObservationMapper,
     ) -> list[DTOIRConflict]:
-        """
-        Layer 0 交叉校验：DTO IR ↔ ObservationIR。
-
-        失败不影响主流程，只记录一条 OTHER 类型的 conflict。
-        """
         try:
             from app.perception.dto_ir.validation import CrossValidator
+            logger.info("[DTOIR] Running Layer 0 cross-validation...")
             validator = CrossValidator()
-            return validator.validate(dto_ir, mapper)
+            conflicts = validator.validate(dto_ir, mapper)
+            logger.info(
+                f"[DTOIR] Cross-validation produced {len(conflicts)} conflict(s)"
+            )
+            return conflicts
         except Exception as e:
             logger.exception(f"[DTOIR] Cross-validation failed: {e}")
             return [DTOIRConflict(

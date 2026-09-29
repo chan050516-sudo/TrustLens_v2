@@ -2,83 +2,70 @@
 DTO IR ↔ ObservationIR 交叉校验器（Layer 0）。
 
 职责：
-  - 遍历 DTO IR 的所有位置
-  - 检查每个位置的 SourceRef：
-      * 是否存在（有值无引用 → MISSING_SOURCE）
-      * 是否跨页（→ OBSERVATION_IDS_CROSS_PAGE）
-      * 是否空间分散（→ OBSERVATION_IDS_SPATIALLY_DISPERSED）
-  - 检查表格 cell / grounding value 的文字是否被引用 obs 覆盖
-      * 覆盖不足 → VLM_OCR_TEXT_MISMATCH
+  按 cell 类型分发到不同 checker：
+    - 文字列 → token 覆盖率
+    - 数字列 → Decimal 归一化 + 精确匹配
+    - 日期列 → ISO 解析 + 与 raw 比对
+
+覆盖范围：
+  - document.source：存在性
+  - global_facts[*]：按 value 类型分发
+  - tables[*]：cell 级（用 source_ids）
+  - grounding.web[*]：文字检查
+  - grounding.enterprise[*]：按 key type 分发
 
 设计原则：
   - 不修改 DTO IR 原值，只追加 conflicts
-  - 使用 text_comparator.token_coverage 做 token-level 覆盖检查
-  - 数字 / 日期 / 枚举字段跳过文字检查（这些不是"抄录"）
-  - 每个位置的 SourceRef 最多报 3 条冲突，避免刷屏
+  - 每个位置最多报 _MAX_CONFLICTS_PER_REF 条
 """
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Sequence
+from datetime import date, datetime
+from typing import Optional
 
 from app.core.dto_ir import (
-    BankTransactionTable,
-    CertificateValidityTable,
-    CommercialLinesTable,
     DTOIRConflict,
     DTOIRConflictType,
-    EducationTable,
-    EmploymentTable,
-    LegalAmountsTable,
-    OfficialAmountsTable,
-    PayrollTable,
+    GlobalFact,
     ReconciliationTable,
     SourceRef,
     TrustLensDTOIR,
+    WebGroundingItem,
+    EnterpriseGroundingItem,
 )
 from app.perception.dto_ir.source_mapping import ObservationMapper
 
-from .spatial_checker import check_source_ref_geometry
-from .text_comparator import (
-    is_text_covered,
-    should_check_text,
-    tokenize,
-)
+from .date_checker import check_date_match, is_date_cell, parse_date_fuzzy
+from .numeric_checker import is_numeric_cell, match_numeric_against_sources
+from .text_comparator import is_text_covered, should_check_text
 
 logger = logging.getLogger(__name__)
 
 
-# 每个位置的 SourceRef 最多报几条冲突（避免一个 bug 刷屏）
-_MAX_CONFLICTS_PER_REF = 3
+_MAX_CONFLICTS_PER_REF = 5
+
+# 日期列名单
+_DATE_COLUMNS = {
+    "EVENT_DATE", "POSTING_DATE", "ISSUE_DATE", "EXPIRY_DATE",
+    "VALID_FROM", "VALID_UNTIL", "START_DATE", "END_DATE",
+    "DEADLINE", "PERIOD_START", "PERIOD_END",
+}
+
+# 文字列名单
+_TEXT_COLUMNS = {"DESC", "PRODUCT", "REFERENCE"}
 
 
 class CrossValidator:
-    """
-    交叉校验器。
-
-    用法：
-        validator = CrossValidator()
-        conflicts = validator.validate(dto_ir, mapper)
-    """
-
     def __init__(
         self,
         text_coverage_threshold: float = 0.8,
         token_similarity_threshold: int = 80,
         min_cell_length: int = 3,
-        fill_ratio_threshold: float = 0.05,
     ):
-        """
-        Args:
-            text_coverage_threshold: cell 文字覆盖率下限（0-1）
-            token_similarity_threshold: 单 token 匹配阈值（0-100）
-            min_cell_length: 低于此长度的 cell 跳过文字检查
-            fill_ratio_threshold: SourceRef 空间紧凑度下限
-        """
         self.text_coverage_threshold = text_coverage_threshold
         self.token_similarity_threshold = token_similarity_threshold
         self.min_cell_length = min_cell_length
-        self.fill_ratio_threshold = fill_ratio_threshold
 
     # ------------------------------------------------------------------
 
@@ -87,204 +74,342 @@ class CrossValidator:
         dto_ir: TrustLensDTOIR,
         mapper: ObservationMapper,
     ) -> list[DTOIRConflict]:
-        """
-        执行交叉校验。返回所有新增的 conflicts。
-        """
         conflicts: list[DTOIRConflict] = []
 
-        # 1. document.source
-        conflicts.extend(self._check_source_ref(
-            dto_ir.document.source, mapper, "document.source"
+        # 1. document.source 存在性
+        conflicts.extend(self._check_source_exists(
+            dto_ir.document.source, "document.source"
         ))
 
         # 2. global_facts
         for i, gf in enumerate(dto_ir.reconciliation.global_facts):
-            path = f"reconciliation.global_facts[{i}]"
-            conflicts.extend(self._check_has_source(
-                has_value=True,
-                ref=gf.source,
-                path=f"{path}.source",
-                context={"role": gf.role.value},
-            ))
-            conflicts.extend(self._check_source_ref(
-                gf.source, mapper, f"{path}.source"
-            ))
+            conflicts.extend(self._validate_global_fact(gf, i, mapper))
 
         # 3. tables
         for i, t in enumerate(dto_ir.reconciliation.tables):
-            path = f"reconciliation.tables[{i}]"
-            conflicts.extend(self._validate_table(t, mapper, path))
+            conflicts.extend(self._validate_table(t, i, mapper))
 
         # 4. grounding.web
         for i, w in enumerate(dto_ir.grounding.web):
-            path = f"grounding.web[{i}]"
-            if not w.source or not w.source.observation_ids:
-                conflicts.append(DTOIRConflict(
-                    severity="warning",
-                    type=DTOIRConflictType.MISSING_SOURCE,
-                    message=f"web item at {path} has value but no observation_ids",
-                    context={"path": path, "value": w.value[:100]},
-                ))
-            else:
-                conflicts.extend(self._check_source_ref(
-                    w.source, mapper, f"{path}.source"
-                ))
-                conflicts.extend(self._check_value_text(
-                    value=w.value,
-                    ref=w.source,
-                    mapper=mapper,
-                    path=f"{path}.value",
-                ))
+            conflicts.extend(self._validate_web_item(w, i, mapper))
 
         # 5. grounding.enterprise
         for i, e in enumerate(dto_ir.grounding.enterprise):
-            path = f"grounding.enterprise[{i}]"
-            if not e.source or not e.source.observation_ids:
-                conflicts.append(DTOIRConflict(
-                    severity="warning",
-                    type=DTOIRConflictType.MISSING_SOURCE,
-                    message=(
-                        f"enterprise item at {path} has keys but no "
-                        f"observation_ids"
-                    ),
-                    context={"path": path, "entity_type": e.entity_type.value},
-                ))
-                continue
-            conflicts.extend(self._check_source_ref(
-                e.source, mapper, f"{path}.source"
-            ))
-            for j, k in enumerate(e.keys):
-                conflicts.extend(self._check_value_text(
-                    value=k.value,
-                    ref=e.source,
-                    mapper=mapper,
-                    path=f"{path}.keys[{j}].value",
-                ))
+            conflicts.extend(self._validate_enterprise_item(e, i, mapper))
 
         return conflicts
 
     # ------------------------------------------------------------------
-    # 表校验
+    # global_facts
+
+    def _validate_global_fact(
+        self,
+        gf: GlobalFact,
+        idx: int,
+        mapper: ObservationMapper,
+    ) -> list[DTOIRConflict]:
+        path = f"reconciliation.global_facts[{idx}]"
+        conflicts: list[DTOIRConflict] = []
+
+        ref = gf.source
+        if ref is None or not ref.observation_ids:
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.MISSING_SOURCE,
+                message=f"GlobalFact at {path} has no observation_ids",
+                context={"path": path, "role": gf.role.value},
+            ))
+            return conflicts
+
+        ocr_texts = self._collect_ocr_texts(ref, mapper)
+        if not ocr_texts:
+            return conflicts
+
+        # 按 value 类型分发
+        # CurrencyValue
+        if hasattr(gf.value, "amount"):
+            v = gf.value.amount
+            ok, _ = match_numeric_against_sources(v, ocr_texts)
+            if not ok:
+                conflicts.append(self._numeric_conflict(
+                    path, "amount", v, ocr_texts, ref,
+                ))
+        # PercentageValue / QuantityValue
+        elif hasattr(gf.value, "value") and hasattr(gf.value, "unit"):
+            v = gf.value.value
+            ok, _ = match_numeric_against_sources(v, ocr_texts)
+            if not ok:
+                conflicts.append(self._numeric_conflict(
+                    path, "value", v, ocr_texts, ref,
+                ))
+        # date / datetime
+        elif isinstance(gf.value, (date, datetime)):
+            iso = gf.value.isoformat() if isinstance(gf.value, date) else gf.value.date().isoformat()
+            matched, _ = check_date_match(iso, ocr_texts)
+            if not matched:
+                conflicts.append(self._date_conflict(
+                    path, iso, ocr_texts, ref,
+                ))
+        # DecimalStr
+        else:
+            v = str(gf.value)
+            if is_numeric_cell(v):
+                ok, _ = match_numeric_against_sources(v, ocr_texts)
+                if not ok:
+                    conflicts.append(self._numeric_conflict(
+                        path, "value", v, ocr_texts, ref,
+                    ))
+
+        return conflicts
+
+    # ------------------------------------------------------------------
+    # tables
 
     def _validate_table(
         self,
         table: ReconciliationTable,
+        idx: int,
         mapper: ObservationMapper,
-        path: str,
     ) -> list[DTOIRConflict]:
+        path = f"reconciliation.tables[{idx}]"
         conflicts: list[DTOIRConflict] = []
 
         has_rows = len(table.tuples) > 0
-
-        # 1. 表级 source 存在性
-        conflicts.extend(self._check_has_source(
-            has_value=has_rows,
-            ref=table.source,
-            path=f"{path}.source",
-            context={"table_type": table.table_type, "row_count": len(table.tuples)},
-        ))
-
-        # 2. 表级 source 几何一致性
-        if table.source and table.source.observation_ids:
-            conflicts.extend(self._check_source_ref(
-                table.source, mapper, f"{path}.source"
+        if has_rows and (table.source is None or not table.source.observation_ids):
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.MISSING_SOURCE,
+                message=f"Table at {path} has rows but no table-level source",
+                context={"path": path, "table_type": table.table_type},
             ))
 
-        # 3. 若表内每行的 DESC 列含描述性文字，逐个做覆盖率检查
-        if not has_rows or not table.source or not table.source.observation_ids:
+        if not has_rows:
             return conflicts
 
-        ocr_texts = self._collect_ocr_texts(table.source, mapper)
-        if not ocr_texts:
+        cols = [
+            c.value if hasattr(c, "value") else str(c)
+            for c in table.columns
+        ]
+
+        # cell 级 source_ids 是否存在
+        source_ids = table.source_ids
+        if source_ids is None:
+            # 没有 cell 级 source → 无法做 cell 级检查
             return conflicts
 
-        # 找到 DESC 列索引（如果有）
-        desc_indices = self._find_text_column_indices(table)
-        if not desc_indices:
-            return conflicts
+        # 表级 ocr pool（用于文字 token 覆盖）
+        table_ocr_texts: list[str] = []
+        if table.source and table.source.observation_ids:
+            table_ocr_texts = self._collect_ocr_texts(table.source, mapper)
 
-        mismatch_count = 0
+        text_mismatch_count = 0
+        numeric_mismatch_count = 0
+        date_mismatch_count = 0
+
         for row_idx, row in enumerate(table.tuples):
-            for col_idx in desc_indices:
-                if col_idx >= len(row):
+            if row_idx >= len(source_ids):
+                break
+            row_sources = source_ids[row_idx]
+            for col_idx, cell in enumerate(row):
+                if col_idx >= len(row_sources):
                     continue
-                cell = row[col_idx]
-                if not should_check_text(cell, self.min_cell_length):
-                    continue
-                if is_text_covered(
-                    cell,
-                    ocr_texts,
-                    min_coverage=self.text_coverage_threshold,
-                    threshold=self.token_similarity_threshold,
-                ):
-                    continue
-                mismatch_count += 1
-                if mismatch_count > _MAX_CONFLICTS_PER_REF:
-                    # 超过上限，停止逐行报告，只加一条汇总
-                    continue
-                coverage = self._compute_coverage(cell, ocr_texts)
-                conflicts.append(DTOIRConflict(
-                    severity="warning",
-                    type=DTOIRConflictType.VLM_OCR_TEXT_MISMATCH,
-                    message=(
-                        f"VLM cell at {path} row {row_idx} col {col_idx} "
-                        f"('{cell[:60]}') has low OCR coverage "
-                        f"({coverage:.2f})"
-                    ),
-                    context={
-                        "path": path,
-                        "table_type": table.table_type,
-                        "row_index": row_idx,
-                        "col_index": col_idx,
-                        "vlm_value": cell,
-                        "ocr_texts_sample": ocr_texts[:10],
-                        "coverage": round(coverage, 3),
-                    },
-                ))
+                cell_source = row_sources[col_idx]
+                col_name = cols[col_idx] if col_idx < len(cols) else ""
 
-        if mismatch_count > _MAX_CONFLICTS_PER_REF:
+                # 收集该 cell 引用的 OCR 文字
+                cell_ocr = self._collect_cell_ocr_texts(cell_source, mapper)
+
+                # ---- 分发 ----
+                if col_name in _DATE_COLUMNS:
+                    if cell is not None and is_date_cell(cell):
+                        matched, _ = check_date_match(cell, cell_ocr)
+                        if not matched:
+                            date_mismatch_count += 1
+                            if date_mismatch_count <= _MAX_CONFLICTS_PER_REF:
+                                conflicts.append(self._date_conflict(
+                                    path, cell, cell_ocr,
+                                    source_ids=_as_list(cell_source),
+                                    row_index=row_idx, col_index=col_idx,
+                                    col_name=col_name,
+                                ))
+                    elif cell is not None and cell != "":
+                        # 非 ISO 格式的日期
+                        conflicts.append(DTOIRConflict(
+                            severity="warning",
+                            type=DTOIRConflictType.VLM_DATE_FORMAT_VIOLATION,
+                            message=(
+                                f"Date column {col_name} at {path} row "
+                                f"{row_idx} contains non-ISO value: '{cell}'"
+                            ),
+                            context={
+                                "path": path,
+                                "row_index": row_idx,
+                                "col_index": col_idx,
+                                "column": col_name,
+                                "vlm_value": cell,
+                            },
+                        ))
+
+                elif col_name in _TEXT_COLUMNS:
+                    if should_check_text(cell, self.min_cell_length):
+                        if not is_text_covered(
+                            cell, cell_ocr or table_ocr_texts,
+                            min_coverage=self.text_coverage_threshold,
+                            threshold=self.token_similarity_threshold,
+                        ):
+                            text_mismatch_count += 1
+                            if text_mismatch_count <= _MAX_CONFLICTS_PER_REF:
+                                conflicts.append(self._text_conflict(
+                                    path, cell, cell_ocr or table_ocr_texts,
+                                    row_index=row_idx, col_index=col_idx,
+                                    col_name=col_name,
+                                ))
+
+                else:
+                    # 数字列
+                    if cell is None or cell == "":
+                        continue
+                    if not is_numeric_cell(cell):
+                        continue
+                    ok, _ = match_numeric_against_sources(cell, cell_ocr)
+                    if not ok:
+                        numeric_mismatch_count += 1
+                        if numeric_mismatch_count <= _MAX_CONFLICTS_PER_REF:
+                            conflicts.append(self._numeric_conflict(
+                                path, col_name, cell, cell_ocr,
+                                ref=None,
+                                source_ids=_as_list(cell_source),
+                                row_index=row_idx, col_index=col_idx,
+                            ))
+
+        # 汇总
+        if date_mismatch_count > _MAX_CONFLICTS_PER_REF:
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.VLM_OCR_DATE_MISMATCH,
+                message=(
+                    f"Table at {path} has {date_mismatch_count} date cells "
+                    f"mismatched with OCR"
+                ),
+                context={"path": path, "total_mismatches": date_mismatch_count},
+            ))
+        if numeric_mismatch_count > _MAX_CONFLICTS_PER_REF:
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.VLM_OCR_NUMERIC_MISMATCH,
+                message=(
+                    f"Table at {path} has {numeric_mismatch_count} numeric "
+                    f"cells mismatched with OCR"
+                ),
+                context={"path": path, "total_mismatches": numeric_mismatch_count},
+            ))
+        if text_mismatch_count > _MAX_CONFLICTS_PER_REF:
             conflicts.append(DTOIRConflict(
                 severity="warning",
                 type=DTOIRConflictType.VLM_OCR_TEXT_MISMATCH,
                 message=(
-                    f"Table at {path} has {mismatch_count} cells with low "
-                    f"OCR coverage (showing first {_MAX_CONFLICTS_PER_REF})"
+                    f"Table at {path} has {text_mismatch_count} text cells "
+                    f"with low OCR coverage"
                 ),
-                context={
-                    "path": path,
-                    "table_type": table.table_type,
-                    "total_mismatches": mismatch_count,
-                },
+                context={"path": path, "total_mismatches": text_mismatch_count},
             ))
 
         return conflicts
 
     # ------------------------------------------------------------------
-    # 工具
+    # grounding
+
+    def _validate_web_item(
+        self,
+        w: WebGroundingItem,
+        idx: int,
+        mapper: ObservationMapper,
+    ) -> list[DTOIRConflict]:
+        path = f"grounding.web[{idx}]"
+        conflicts: list[DTOIRConflict] = []
+
+        if w.source is None or not w.source.observation_ids:
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.MISSING_SOURCE,
+                message=f"web item at {path} has value but no observation_ids",
+                context={"path": path, "value": w.value[:100]},
+            ))
+            return conflicts
+
+        ocr_texts = self._collect_ocr_texts(w.source, mapper)
+        if not ocr_texts:
+            return conflicts
+
+        # web item 通常含文字（URL、公司名），做 token 覆盖率检查
+        if should_check_text(w.value, self.min_cell_length):
+            if not is_text_covered(
+                w.value, ocr_texts,
+                min_coverage=self.text_coverage_threshold,
+                threshold=self.token_similarity_threshold,
+            ):
+                conflicts.append(self._text_conflict(
+                    path, w.value, ocr_texts,
+                ))
+        elif is_numeric_cell(w.value):
+            ok, _ = match_numeric_against_sources(w.value, ocr_texts)
+            if not ok:
+                conflicts.append(self._numeric_conflict(
+                    path, "value", w.value, ocr_texts, ref=w.source,
+                ))
+
+        return conflicts
+
+    def _validate_enterprise_item(
+        self,
+        e: EnterpriseGroundingItem,
+        idx: int,
+        mapper: ObservationMapper,
+    ) -> list[DTOIRConflict]:
+        path = f"grounding.enterprise[{idx}]"
+        conflicts: list[DTOIRConflict] = []
+
+        if e.source is None or not e.source.observation_ids:
+            conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.MISSING_SOURCE,
+                message=f"enterprise item at {path} has keys but no source",
+                context={"path": path, "entity_type": e.entity_type.value},
+            ))
+            return conflicts
+
+        ocr_texts = self._collect_ocr_texts(e.source, mapper)
+        if not ocr_texts:
+            return conflicts
+
+        for j, k in enumerate(e.keys):
+            kpath = f"{path}.keys[{j}].value"
+            # 纯数字 key value → 数字检查
+            if is_numeric_cell(k.value):
+                ok, _ = match_numeric_against_sources(k.value, ocr_texts)
+                if not ok:
+                    conflicts.append(self._numeric_conflict(
+                        kpath, k.key.value, k.value, ocr_texts, ref=e.source,
+                    ))
+            # 含字母 → 文字覆盖率
+            elif should_check_text(k.value, self.min_cell_length):
+                if not is_text_covered(
+                    k.value, ocr_texts,
+                    min_coverage=self.text_coverage_threshold,
+                    threshold=self.token_similarity_threshold,
+                ):
+                    conflicts.append(self._text_conflict(kpath, k.value, ocr_texts))
+
+        return conflicts
+
+    # ------------------------------------------------------------------
+    # 内部工具
 
     @staticmethod
-    def _find_text_column_indices(table: ReconciliationTable) -> list[int]:
-        """
-        找出表内可能含"描述性文字"的列索引。
-
-        规则：
-          - DESC / PRODUCT 列 → 检查
-          - 其他列 → 跳过
-        """
-        text_columns = {"DESC", "PRODUCT"}
-        indices: list[int] = []
-        for i, col in enumerate(table.columns):
-            name = col.value if hasattr(col, "value") else str(col)
-            if name in text_columns:
-                indices.append(i)
-        return indices
-
     def _collect_ocr_texts(
-        self,
         ref: SourceRef,
         mapper: ObservationMapper,
     ) -> list[str]:
-        """从 SourceRef 引用的 obs 收集所有 OCR 文字。"""
         out: list[str] = []
         for oid in ref.observation_ids:
             obs = mapper.get(oid)
@@ -292,72 +417,142 @@ class CrossValidator:
                 out.append(obs.text)
         return out
 
-    def _check_source_ref(
-        self,
-        ref: SourceRef | None,
+    @staticmethod
+    def _collect_cell_ocr_texts(
+        cell_source,
         mapper: ObservationMapper,
+    ) -> list[str]:
+        if cell_source is None:
+            return []
+        ids = cell_source if isinstance(cell_source, list) else [cell_source]
+        out: list[str] = []
+        for oid in ids:
+            if not isinstance(oid, int):
+                continue
+            obs = mapper.get(oid)
+            if obs and obs.text:
+                out.append(obs.text)
+        return out
+
+    @staticmethod
+    def _check_source_exists(
+        ref: SourceRef | None,
         path: str,
     ) -> list[DTOIRConflict]:
-        """几何一致性检查（跨页 + 分散）。"""
-        return check_source_ref_geometry(
-            ref, mapper, path,
-            fill_ratio_threshold=self.fill_ratio_threshold,
+        if ref is None or not ref.observation_ids:
+            return [DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.MISSING_SOURCE,
+                message=f"Missing observation_ids at {path}",
+                context={"path": path},
+            )]
+        return []
+
+    # --- conflict builders ---
+
+    @staticmethod
+    def _numeric_conflict(
+        path: str,
+        field: str,
+        vlm_value: str,
+        ocr_texts: list[str],
+        ref: SourceRef | None = None,
+        source_ids: list[int] | None = None,
+        row_index: int | None = None,
+        col_index: int | None = None,
+    ) -> DTOIRConflict:
+        ctx = {
+            "path": path,
+            "field": field,
+            "vlm_value": vlm_value,
+            "ocr_texts_sample": ocr_texts[:10],
+        }
+        if source_ids is not None:
+            ctx["source_ids"] = source_ids
+        if row_index is not None:
+            ctx["row_index"] = row_index
+        if col_index is not None:
+            ctx["col_index"] = col_index
+        return DTOIRConflict(
+            severity="warning",
+            type=DTOIRConflictType.VLM_OCR_NUMERIC_MISMATCH,
+            message=(
+                f"VLM numeric '{vlm_value}' at {path}"
+                + (f" (row {row_index}, col {col_index})" if row_index is not None else "")
+                + " not found in OCR text"
+            ),
+            context=ctx,
         )
 
     @staticmethod
-    def _check_has_source(
-        has_value: bool,
-        ref: SourceRef | None,
+    def _date_conflict(
         path: str,
-        context: dict | None = None,
-    ) -> list[DTOIRConflict]:
-        """检查'有值却没引用'。"""
-        if not has_value:
-            return []
-        if ref is not None and ref.observation_ids:
-            return []
-        return [DTOIRConflict(
+        vlm_date: str,
+        ocr_texts: list[str],
+        source_ids: list[int] | None = None,
+        row_index: int | None = None,
+        col_index: int | None = None,
+        col_name: str | None = None,
+    ) -> DTOIRConflict:
+        ctx = {
+            "path": path,
+            "vlm_date": vlm_date,
+            "ocr_texts_sample": ocr_texts[:10],
+        }
+        if source_ids is not None:
+            ctx["source_ids"] = source_ids
+        if row_index is not None:
+            ctx["row_index"] = row_index
+        if col_index is not None:
+            ctx["col_index"] = col_index
+        if col_name is not None:
+            ctx["column"] = col_name
+        return DTOIRConflict(
             severity="warning",
-            type=DTOIRConflictType.MISSING_SOURCE,
-            message=f"Value at {path} has no observation_ids",
-            context={**(context or {}), "path": path},
-        )]
+            type=DTOIRConflictType.VLM_OCR_DATE_MISMATCH,
+            message=(
+                f"VLM date '{vlm_date}' at {path}"
+                + (f" (row {row_index}, col {col_index})" if row_index is not None else "")
+                + " does not match any OCR date"
+            ),
+            context=ctx,
+        )
 
-    def _check_value_text(
-        self,
-        value: str,
-        ref: SourceRef | None,
-        mapper: ObservationMapper,
+    @staticmethod
+    def _text_conflict(
         path: str,
-    ) -> list[DTOIRConflict]:
-        """检查单个 value 的文字覆盖率。"""
-        if not should_check_text(value, self.min_cell_length):
-            return []
-        if ref is None or not ref.observation_ids:
-            return []
-        ocr_texts = self._collect_ocr_texts(ref, mapper)
-        if not ocr_texts:
-            return []
-        coverage = self._compute_coverage(value, ocr_texts)
-        if coverage >= self.text_coverage_threshold:
-            return []
-        return [DTOIRConflict(
+        vlm_value: str,
+        ocr_texts: list[str],
+        row_index: int | None = None,
+        col_index: int | None = None,
+        col_name: str | None = None,
+    ) -> DTOIRConflict:
+        ctx = {
+            "path": path,
+            "vlm_value": vlm_value,
+            "ocr_texts_sample": ocr_texts[:10],
+        }
+        if row_index is not None:
+            ctx["row_index"] = row_index
+        if col_index is not None:
+            ctx["col_index"] = col_index
+        if col_name is not None:
+            ctx["column"] = col_name
+        return DTOIRConflict(
             severity="warning",
             type=DTOIRConflictType.VLM_OCR_TEXT_MISMATCH,
             message=(
-                f"Value at {path} ('{value[:60]}') has low OCR coverage "
-                f"({coverage:.2f})"
+                f"VLM text at {path}"
+                + (f" (row {row_index}, col {col_index})" if row_index is not None else "")
+                + f" ('{vlm_value[:60]}') has low OCR coverage"
             ),
-            context={
-                "path": path,
-                "vlm_value": value,
-                "ocr_texts_sample": ocr_texts[:10],
-                "coverage": round(coverage, 3),
-            },
-        )]
-
-    def _compute_coverage(self, vlm_text: str, ocr_texts: Sequence[str]) -> float:
-        from .text_comparator import token_coverage
-        return token_coverage(
-            vlm_text, ocr_texts, self.token_similarity_threshold
+            context=ctx,
         )
+
+
+def _as_list(x) -> list[int] | None:
+    if x is None:
+        return None
+    if isinstance(x, list):
+        return x
+    return [x]

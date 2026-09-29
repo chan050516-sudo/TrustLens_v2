@@ -234,29 +234,50 @@ Cell = str | None
 
 class MatrixBase(BaseModel):
     """
-    表格矩阵基类。子类负责定义：
-      - id: str
-      - table_type: Literal[...]
-      - columns: list[<Enum>]
+    表格矩阵基类。
+
+    - `tuples`: 行 × 列的 cell 值。
+    - `source_ids`: 与 tuples 同形状，每个 cell 引用其来源 observation_id。
+        * 单 obs：直接是 int
+        * 多 obs：list[int]
+        * 无来源：null
     """
     model_config = ConfigDict(extra="forbid")
 
     tuples: list[list[Cell]] = Field(default_factory=list)
     raw_headers: list[str] | None = None
     source: SourceRef | None = None
+    source_ids: list[list[int | list[int] | None]] | None = None
 
     @model_validator(mode="after")
-    def _validate_matrix_width(self):
+    def _validate_matrix_shape(self):
         cols = getattr(self, "columns", None)
         if not cols:
             return self
         expected = len(cols)
+
+        # tuples 宽度校验
         for i, row in enumerate(self.tuples):
             if len(row) != expected:
                 raise ValueError(
                     f"Row {i} has {len(row)} cells, expected {expected} "
                     f"(columns={list(cols)})"
                 )
+
+        # source_ids 形状校验
+        if self.source_ids is not None:
+            if len(self.source_ids) != len(self.tuples):
+                raise ValueError(
+                    f"source_ids has {len(self.source_ids)} rows, "
+                    f"expected {len(self.tuples)}"
+                )
+            for i, row in enumerate(self.source_ids):
+                if len(row) != expected:
+                    raise ValueError(
+                        f"source_ids row {i} has {len(row)} cells, "
+                        f"expected {expected}"
+                    )
+
         return self
 
 
@@ -524,8 +545,9 @@ class DTOIRConflictType(str, Enum):
     DOCUMENT_TYPE_UNCERTAIN = "document_type_uncertain"
     VLM_JSON_PARSE_FAILED = "vlm_json_parse_failed"
     VLM_OCR_TEXT_MISMATCH = "vlm_ocr_text_mismatch"
-    OBSERVATION_IDS_CROSS_PAGE = "observation_ids_cross_page"
-    OBSERVATION_IDS_SPATIALLY_DISPERSED = "observation_ids_spatially_dispersed"
+    VLM_OCR_NUMERIC_MISMATCH = "vlm_ocr_numeric_mismatch"
+    VLM_OCR_DATE_MISMATCH = "vlm_ocr_date_mismatch"
+    VLM_DATE_FORMAT_VIOLATION = "vlm_date_format_violation"
     OTHER = "other"
 
 

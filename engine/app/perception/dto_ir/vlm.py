@@ -97,6 +97,32 @@ Only after completing these steps, produce the final JSON.
     - If a row's details are split across multiple lines or boxes (for example, a short transaction-type code followed by a merchant or description), merge them into the `DESC` cell with spaces.
 11. Output **JSON only**. No markdown fences, no commentary.
 
+# DATE FORMAT
+Date columns (EVENT_DATE, POSTING_DATE, ISSUE_DATE, EXPIRY_DATE, VALID_FROM,
+VALID_UNTIL, START_DATE, END_DATE, DEADLINE, PERIOD_START, PERIOD_END) MUST be
+output in **ISO 8601 format** `"YYYY-MM-DD"`.
+- The raw text on the document may look different (e.g. "24 Nov 23", "24/11/2023",
+  "Nov 24, 2023"). You MUST convert it to ISO 8601.
+- If you cannot determine the exact date, output `null`.
+
+# SOURCE_IDS (for tables only)
+In addition to the table-level `source`, you MUST provide a `source_ids` field
+that has the same shape as `tuples` (one entry per cell, in row-major order).
+Each entry:
+- an integer observation_id if the cell came from ONE box
+- a list of integers if the cell was assembled from MULTIPLE boxes
+- null if the cell is null or its source is unknown
+
+Example:
+  "tuples": [
+    ["24 Nov 23", "BALANCE BROUGHT FORWARD", null, null, "0.57"],
+    ["25 Nov 23", "CR Transfer", null, "2212.14", "2212.71"]
+  ]
+  "source_ids": [
+    [1043, 1044, null, null, 1045],
+    [1046, [1047, 1052], null, 1055, 1056]
+  ]
+
 # SCHEMA
 {schema}
 
