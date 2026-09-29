@@ -1,0 +1,22 @@
+# 法定常数库（按国家 + 生效日期选择版本）。
+# 更新法规时只需新增版本，不要修改历史版本。
+
+malaysia:
+  versions:
+    - effective_from: "2023-01-01"
+      rates:
+        epf:
+          employee: "0.11"
+          employer: "0.13"
+          tolerance: "0.005"
+        socso:
+          employee: "0.005"
+          employer: "0.0175"
+          tolerance: "0.002"
+        eis:
+          employee: "0.002"
+          employer: "0.002"
+          tolerance: "0.001"
+  validity:
+    certificate_min_days: 1
+    certificate_max_days: 18250     # 50 年

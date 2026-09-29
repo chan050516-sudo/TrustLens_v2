@@ -68,6 +68,9 @@ class CurrencyValue(BaseModel):
 
 
 class PercentageValue(BaseModel):
+    """
+    Percentage expressed as a number, e.g. "11" means 11%, not 0.11.
+    """
     model_config = ConfigDict(extra="forbid")
     value: DecimalStr
     unit: Literal["PERCENT"] = "PERCENT"
@@ -112,7 +115,7 @@ class GlobalFactRole(str, Enum):
     OPENING_BALANCE = "OPENING_BALANCE"
     CLOSING_BALANCE = "CLOSING_BALANCE"
 
-    SUBTOTAL = "SUBTOTAL"
+    SUBTOTAL = "SUBTOTAL" # SUBTOTAL = sum of row totals after row-level discounts, before tax and shipping.
     DISCOUNT_AMOUNT = "DISCOUNT_AMOUNT"
     TAX_AMOUNT = "TAX_AMOUNT"
     SHIPPING_FEE = "SHIPPING_FEE"

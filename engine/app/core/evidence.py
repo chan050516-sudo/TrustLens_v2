@@ -88,6 +88,23 @@ class EvidenceType(str, Enum):
     IMAGE_SOURCE_CLASSIFICATION = "IMAGE_SOURCE_CLASSIFICATION"          # Camera vs Digital 判定结果
     IMAGE_PAGE_SKIPPED_CAMERA = "IMAGE_PAGE_SKIPPED_CAMERA"              # 该页被判为 camera，跳过分析
 
+    # Reconciliation
+    RECONCILIATION_BALANCE_MISMATCH = "reconciliation_balance_mismatch"
+    RECONCILIATION_RUNNING_BALANCE_MISMATCH = "reconciliation_running_balance_mismatch"
+    RECONCILIATION_SUBTOTAL_MISMATCH = "reconciliation_subtotal_mismatch"
+    RECONCILIATION_ROW_MATH_MISMATCH = "reconciliation_row_math_mismatch"
+    RECONCILIATION_TAX_MISMATCH = "reconciliation_tax_mismatch"
+    RECONCILIATION_TOTAL_MISMATCH = "reconciliation_total_mismatch"
+    RECONCILIATION_NET_PAY_MISMATCH = "reconciliation_net_pay_mismatch"
+    RECONCILIATION_DATE_ORDER_VIOLATION = "reconciliation_date_order_violation"
+    RECONCILIATION_DATE_OUT_OF_PERIOD = "reconciliation_date_out_of_period"
+    RECONCILIATION_DATE_OUT_OF_RANGE = "reconciliation_date_out_of_range"
+    RECONCILIATION_CURRENCY_MISMATCH = "reconciliation_currency_mismatch"
+    RECONCILIATION_AMOUNT_OUT_OF_RANGE = "reconciliation_amount_out_of_range"
+    RECONCILIATION_ROW_FIELD_CONFLICT = "reconciliation_row_field_conflict"
+    RECONCILIATION_TOTALS_DONT_COVER_ROWS = "reconciliation_totals_dont_cover_rows"
+    RECONCILIATION_STATUTORY_RATE_MISMATCH = "reconciliation_statutory_rate_mismatch"
+
 
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""
