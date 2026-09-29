@@ -523,6 +523,9 @@ class DTOIRConflictType(str, Enum):
     MISSING_SOURCE = "missing_source"
     DOCUMENT_TYPE_UNCERTAIN = "document_type_uncertain"
     VLM_JSON_PARSE_FAILED = "vlm_json_parse_failed"
+    VLM_OCR_TEXT_MISMATCH = "vlm_ocr_text_mismatch"
+    OBSERVATION_IDS_CROSS_PAGE = "observation_ids_cross_page"
+    OBSERVATION_IDS_SPATIALLY_DISPERSED = "observation_ids_spatially_dispersed"
     OTHER = "other"
 
 

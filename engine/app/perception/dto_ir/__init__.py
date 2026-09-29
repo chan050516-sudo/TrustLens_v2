@@ -27,6 +27,7 @@ from .parsing import (
 )
 from .source_mapping import ObservationMapper
 from .merging import merge_dto_irs
+from .validation import CrossValidator
 from .pipeline import DTOIRPipeline, DEFAULT_MAX_PER_CHUNK
 
 __all__ = [
@@ -57,6 +58,8 @@ __all__ = [
     "ObservationMapper",
     # merging
     "merge_dto_irs",
+    # validation
+    "CrossValidator",
     # pipeline
     "DTOIRPipeline",
     "DEFAULT_MAX_PER_CHUNK",

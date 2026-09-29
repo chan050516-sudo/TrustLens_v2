@@ -175,6 +175,10 @@ class DTOIRPipeline:
         id_conflicts = self._validate_ids(merged, mapper)
         all_conflicts.extend(id_conflicts)
 
+        # 5.5 交叉校验（DTO IR ↔ ObservationIR）
+        cross_conflicts = self._cross_validate(merged, mapper)
+        all_conflicts.extend(cross_conflicts)
+
         # 6. 汇总所有 conflicts（去重合并）
         merged.conflicts = self._dedupe_conflicts(
             merged.conflicts + all_conflicts
@@ -240,3 +244,25 @@ class DTOIRPipeline:
                 context={"reason": reason},
             )],
         )
+
+    @staticmethod
+    def _cross_validate(
+        dto_ir: TrustLensDTOIR,
+        mapper: ObservationMapper,
+    ) -> list[DTOIRConflict]:
+        """
+        Layer 0 交叉校验：DTO IR ↔ ObservationIR。
+
+        失败不影响主流程，只记录一条 OTHER 类型的 conflict。
+        """
+        try:
+            from app.perception.dto_ir.validation import CrossValidator
+            validator = CrossValidator()
+            return validator.validate(dto_ir, mapper)
+        except Exception as e:
+            logger.exception(f"[DTOIR] Cross-validation failed: {e}")
+            return [DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.OTHER,
+                message=f"Cross-validation failed: {e}",
+            )]
