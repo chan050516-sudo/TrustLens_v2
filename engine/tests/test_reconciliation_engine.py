@@ -98,7 +98,19 @@ def _sample_bank_statement_dto_ir() -> dict:
                 },
             ],
         },
-        "grounding": {"web": [], "enterprise": []},
+        "grounding": {
+            "web": [],
+            "enterprise": [
+                {
+                    "entity_type": "ACCOUNT",
+                    "keys": [
+                        {"key": "ACCOUNT_NUMBER", "value": "4242424242424242"},  # Luhn-valid
+                        {"key": "ACCOUNT_NUMBER", "value": "4242424242424241"},  # Luhn-invalid
+                    ],
+                    "source": {"observation_ids": [1025]},
+                },
+            ],
+        },
         "conflicts": [],
     }
 
