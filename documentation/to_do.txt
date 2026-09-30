@@ -4,3 +4,5 @@
 4. vlm dto ir要与observation ir相互验证，考虑写进conflicts或做alias
 5. dto ir的prompt template可能还需针对各种doc type做出相应的调整
 6. visual engine的native image还可以做PCA, SWT, glyph embedding，camera-captured可以研究physical appearance/ texture层面的detection
+7. dto ir 对 camera captured document的稳定性测试
+8. 在dto ir schema 加入 hierarchical span，并在reconciliation engine中加入相应的算法
