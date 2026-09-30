@@ -75,9 +75,18 @@ For each table, read the header row and infer the SEMANTIC MEANING of every colu
 Column headers rarely match the schema enum names literally; map by MEANING, not by
 spelling.
 
-Step 3 — Choose the best-fitting table_type.
-Based on the document_type and the columns you observed, pick the single table_type
-from the schema whose column set is the closest match.
+Step 3 — Identify ALL tables and choose table_type per table.
+A document may contain ZERO, ONE, or MULTIPLE distinct tables. Each visually
+distinct table becomes ONE entry in the `tables` array.
+
+For each table you identify:
+- Read its header row and infer the SEMANTIC MEANING of every column.
+- Pick the best-fitting table_type from the schema for THAT table.
+
+Do NOT merge two visually distinct tables into a single entry.
+Do NOT force a single table entry when the document actually contains several.
+Conversely, do NOT split one continuous table into multiple entries just because
+it spans a page boundary — a table continued across pages is still ONE table.
 
 Step 4 — Group observation boxes into logical rows.
 A single logical row (one transaction, one line item, one pay component) may be split
@@ -108,7 +117,7 @@ Only after completing these steps, produce the final JSON.
    use `PAYROLL_COMPONENTS`, not `COMMERCIAL_LINES`.
 7. **If you cannot determine document_type, pick the closest match.** Do not leave it empty.
 8. **Tuples must be rectangular:** every row must have exactly `len(columns)` cells.
-9. **MANDATORY TABLE EXTRACTION:** If a populated table exists on the image, you MUST extract ALL visible rows into `tuples`. Leaving `tuples: []` for an existing table is strictly forbidden.
+9. **MANDATORY TABLE EXTRACTION:** For EVERY populated table on the image, you MUST extract ALL visible rows into its own `tuples`. Each table gets its own entry in the `tables` array with a unique `id`. Leaving `tuples: []` for an existing table is strictly forbidden.
 10. **CELL PADDING & MERGING:**
     - If a cell has no visible data in a given row (e.g. no incoming amount on a debit transaction), you MUST put JSON `null`.
     - If a row's details are split across multiple lines or boxes (for example, a short transaction-type code followed by a merchant or description), merge them into the `DESC` cell with spaces.
@@ -123,8 +132,10 @@ output in **ISO 8601 format** `"YYYY-MM-DD"`.
 - If you cannot determine the exact date, output `null`.
 
 # SOURCE_IDS (for tables only)
-In addition to the table-level `source`, you MUST provide a `source_ids` field
-that has the same shape as `tuples` (one entry per cell, in row-major order).
+# SOURCE_IDS (for tables only)
+For EACH table, you MUST provide a `source_ids` field that has the same shape
+as that table's `tuples` (one entry per cell, in row-major order). Do NOT
+output a table-level `source` field — the system derives it from `source_ids`.
 Each entry:
 - an integer observation_id if the cell came from ONE box
 - a list of integers if the cell was assembled from MULTIPLE boxes
