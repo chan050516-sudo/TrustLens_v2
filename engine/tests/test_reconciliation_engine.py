@@ -81,20 +81,20 @@ def _sample_bank_statement_dto_ir() -> dict:
                         ["02 Dec 23", "BP Costa Cofee", "1.00", None, "0.27"],
                         [None, "BALANCE CARRIED FORWARD", None, None, "2139.27"],
                     ],
-                    "source": {
-                        "observation_ids": [
-                            1037, 1038, 1039, 1040, 1041, 1042,
-                            1043, 1044, 1045, 1046, 1047, 1048,
-                            1049, 1050, 1051, 1052, 1053, 1054,
-                            1055, 1056, 1057, 1058, 1059, 1060,
-                            1061, 1062, 1063, 1064, 1065, 1066,
-                            1067, 1068, 1069, 1070, 1071, 1072,
-                            1073, 1074, 1075, 1076, 1077, 1078,
-                            1079, 1080, 1081, 1082, 1083, 1084,
-                            1085, 1086, 1087, 1088, 1089, 1090,
-                            1091, 1092, 1093, 1094,
-                        ],
-                    },
+                    "source_ids": [
+                        [1043, 1044, None, None, 1045],
+                        [1046, [1047, 1048], None, 1049, 1050],
+                        [1051, [1052, 1053, 1054], 1055, None, 1056],
+                        [1057, [1058, 1059], 1060, None, 1061],
+                        [1062, [1063, 1064], None, 1065, None],
+                        [1066, [1067, 1068], None, 1069, None],
+                        [None, [1070, 1071], 1072, None, 1073],
+                        [None, [1074, 1075], 1076, None, 1077],
+                        [1078, [1079, 1080], 1081, None, 1082],
+                        [1083, [1084, 1085, 1086], None, None, 1087],
+                        [1088, [1089, 1090], 1091, None, 1092],
+                        [None, 1093, None, None, 1094],
+                    ],
                 },
             ],
         },
@@ -135,6 +135,7 @@ def main():
     print(f"[test] passed:          {context.summary.passed}")
     print(f"[test] failed:          {context.summary.failed}")
     print(f"[test] skipped:         {context.summary.skipped}")
+    print(f"[test] incomplete:      {context.summary.incomplete}")
     print(f"[test] evidences:       {len(evidences)}")
 
     print()
@@ -153,11 +154,17 @@ def main():
 
     print()
     print("=" * 72)
-    print("ALL COMPUTATIONS (including PASSED)")
+    print("ALL COMPUTATIONS (including PASSED/INCOMPLETE)")
     print("=" * 72)
+    marker_map = {
+        "passed": "✓",
+        "failed": "✗",
+        "skipped": "–",
+        "incomplete": "?",
+    }
     for r in context.computations:
-        marker = "✓" if r.status.value == "passed" else ("✗" if r.status.value == "failed" else "–")
-        print(f"  {marker} [{r.status.value:8s}] {r.rule_name}: {r.description}")
+        marker = marker_map.get(r.status.value, "?")
+        print(f"  {marker} [{r.status.value:10s}] {r.rule_name}: {r.description}")
 
     # 落盘
     out_dir = Path(__file__).resolve().parent / "test_results"

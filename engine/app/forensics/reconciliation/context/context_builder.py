@@ -91,12 +91,14 @@ class ContextBuilder:
         passed = sum(1 for r in computations if r.status.value == "passed")
         failed = sum(1 for r in computations if r.status.value == "failed")
         skipped = sum(1 for r in computations if r.status.value == "skipped")
+        incomplete = sum(1 for r in computations if r.status.value == "incomplete")
 
         summary = ReconciliationSummary(
             total_rules_run=len(computations),
             passed=passed,
             failed=failed,
             skipped=skipped,
+            incomplete=incomplete,
             evidence_count=evidence_count,
         )
 

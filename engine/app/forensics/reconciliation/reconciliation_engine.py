@@ -121,9 +121,9 @@ class ReconciliationEngine:
         tables: list[TableInstance] = []
         per_page_counter: dict[int, int] = {}
         for t in dto_ir.reconciliation.tables:
-            # 表页码从 source.observation_ids 反推，如果没有则填 1
-            page = 1
+            # 表页码从 source_ids 反推，如果没有则填 1
             all_ids = t.collect_all_obs_ids()
+            page = 1
             if all_ids:
                 page = all_ids[0] // 1000
             idx = per_page_counter.get(page, 0)

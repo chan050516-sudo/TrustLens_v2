@@ -12,6 +12,7 @@ class RuleStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    INCOMPLETE = "incomplete"
 
 
 class RuleSeverity(str, Enum):
@@ -25,6 +26,13 @@ class RuleResult(BaseModel):
     单条规则的执行结果。无论成败都记录，供 ReconciliationContext 使用。
 
     Evidence 映射规则：仅当 status == FAILED 且 evidence_type 非空时产出 Evidence。
+
+    status 边界：
+      - PASSED：规则跑完且通过
+      - FAILED：规则跑完且不通过
+      - SKIPPED：规则本不适用（表里无所需列、文档无所需 fact）
+      - INCOMPLETE：规则本应执行，但因数据缺失无法完成
+                    （表有列但某行缺值、跨行链断裂等）
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -47,3 +55,6 @@ class RuleResult(BaseModel):
     observation_ids: list[int] = Field(default_factory=list)
     table_id: Optional[str] = None
     row_index: Optional[int] = None
+
+    # INCOMPLETE 时的原因标签
+    unverified_reason: Optional[str] = None

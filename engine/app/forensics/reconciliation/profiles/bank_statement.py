@@ -1,8 +1,7 @@
 """BANK_STATEMENT 的规则集。"""
 from __future__ import annotations
 
-from datetime import date
-from decimal import Decimal
+from datetime import timedelta
 from typing import Optional
 
 from app.core.dto_ir import (
@@ -13,76 +12,89 @@ from app.forensics.reconciliation.models.rule_result import (
 )
 from app.forensics.reconciliation.operators.date_ops import to_date
 from app.forensics.reconciliation.rules.base import (
-    RuleContext, extract_date, get_first_fact,
-    collect_obs_ids, get_cell,
+    RuleContext, TableInstance,
+    extract_date, get_first_fact, collect_obs_ids, get_cell,
 )
 from app.forensics.reconciliation.rules.registry import register
 from ..topologies import state_transition, temporal_interval
 
 
-# B/F、C/F 是期初/期末余额快照，不属于期间内的交易，豁免 period 检查
-_PERIOD_EXEMPT_DESC_KEYWORDS = (
-    "BROUGHT FORWARD",
-    "CARRIED FORWARD",
-    "B/F",
-    "C/F",
-    "OPENING BALANCE",
-    "CLOSING BALANCE",
-)
+# 期间两端各放宽的天数，容纳"上一期最后一笔交易落在声明期间开始日之前几天"
+# 这类正常排版惯例。放宽后不再依赖"B/F C/F 关键词"来决定是否豁免——而是：
+#   1. 无日期的行 → 直接跳过（这是"物理空"，不是违规）
+#   2. 有日期的行 → 在 [ps - N, pe + N] 内视为合规
+# 两个都是**通用规则**，不绑定任何文档特定的关键词或语言。
+_PERIOD_TOLERANCE_DAYS = 3
 
 
-def _is_period_exempt(desc) -> bool:
-    if desc is None:
-        return False
-    upper = str(desc).upper()
-    return any(kw in upper for kw in _PERIOD_EXEMPT_DESC_KEYWORDS)
+def _all_bank_tables(ctx: RuleContext) -> list[TableInstance]:
+    """取所有 BANK_TRANSACTIONS 表（支持多表）。"""
+    return [t for t in ctx.tables if isinstance(t.table, BankTransactionTable)]
 
 
 def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
-    """所有行日期在 [PERIOD_START, PERIOD_END] 内。"""
-    inst = None
-    for t in ctx.tables:
-        if isinstance(t.table, BankTransactionTable):
-            inst = t
-            break
-    if inst is None:
-        return []
+    """
+    所有有日期的行，其 EVENT_DATE 应落在
+    [PERIOD_START - N, PERIOD_END + N] 内。
 
+    设计原则：
+      - 只对有日期的行校验；无日期的行属于"物理空"，不做区间判定。
+      - 期间两端各放宽 _PERIOD_TOLERANCE_DAYS 天，容纳正常惯例。
+      - 不依赖文档特定关键词（如 B/F、C/F）—— 那些是文档语义，
+        不应由确定性规则去识别。
+      - 支持多表：每张表独立校验。
+    """
     start_fact = get_first_fact(ctx, GlobalFactRole.PERIOD_START)
     end_fact = get_first_fact(ctx, GlobalFactRole.PERIOD_END)
     if start_fact is None or end_fact is None:
         return []
+
     ps = extract_date(start_fact.value)
     pe = extract_date(end_fact.value)
     if ps is None or pe is None:
         return []
 
-    cols = inst.table.columns
-    table_obs = inst.table.collect_all_obs_ids()
-    results: list[RuleResult] = []
-    for i, row in enumerate(inst.table.tuples):
-        desc = get_cell(row, cols, "DESC")
-        if _is_period_exempt(desc):
-            continue
+    lower = ps - timedelta(days=_PERIOD_TOLERANCE_DAYS)
+    upper = pe + timedelta(days=_PERIOD_TOLERANCE_DAYS)
 
-        d = to_date(get_cell(row, cols, "EVENT_DATE"))
-        if d is None:
-            continue
-        if not (ps <= d <= pe):
+    results: list[RuleResult] = []
+    for inst in _all_bank_tables(ctx):
+        cols = inst.table.columns
+        table_obs = inst.table.collect_all_obs_ids()
+
+        for i, row in enumerate(inst.table.tuples):
+            d = to_date(get_cell(row, cols, "EVENT_DATE"))
+            if d is None:
+                # 无日期的行：物理空，不做区间判定
+                continue
+            if lower <= d <= upper:
+                continue
+
+            desc = get_cell(row, cols, "DESC")
             results.append(RuleResult(
                 rule_name="bank.period_contains_all_txns",
                 document_type=ctx.document_type,
                 status=RuleStatus.FAILED,
                 severity=RuleSeverity.WARNING,
                 description=(
-                    f"Row {i}: EVENT_DATE={d} outside "
-                    f"[{ps}, {pe}] (desc='{desc}')"
+                    f"[{inst.internal_id}] Row {i}: EVENT_DATE={d} outside "
+                    f"[{lower}, {upper}] (desc='{desc}')"
                 ),
-                inputs={"date": d.isoformat(), "desc": str(desc)},
-                expected=f"[{ps}, {pe}]",
+                inputs={
+                    "date": d.isoformat(),
+                    "desc": str(desc) if desc is not None else None,
+                    "declared_period": [ps.isoformat(), pe.isoformat()],
+                    "window_lower": lower.isoformat(),
+                    "window_upper": upper.isoformat(),
+                    "tolerance_days": _PERIOD_TOLERANCE_DAYS,
+                },
+                expected=f"[{lower}, {upper}]",
                 actual=d.isoformat(),
                 evidence_type="RECONCILIATION_DATE_OUT_OF_PERIOD",
-                observation_ids=collect_obs_ids(start_fact.source, end_fact.source) + table_obs,
+                observation_ids=(
+                    collect_obs_ids(start_fact.source, end_fact.source)
+                    + table_obs
+                ),
                 table_id=inst.internal_id,
                 row_index=i,
             ))

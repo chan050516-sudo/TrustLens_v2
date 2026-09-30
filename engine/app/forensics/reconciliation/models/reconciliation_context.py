@@ -52,6 +52,7 @@ class ReconciliationSummary(BaseModel):
     passed: int = 0
     failed: int = 0
     skipped: int = 0
+    incomplete: int = 0
     evidence_count: int = 0
 
 

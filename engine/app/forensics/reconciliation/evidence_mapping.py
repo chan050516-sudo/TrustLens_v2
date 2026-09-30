@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app.core.evidence import Evidence, EvidenceType
+from app.forensics.reconciliation.constants.tolerance import MONEY_TOLERANCE
 from app.forensics.reconciliation.models.rule_result import (
     RuleResult, RuleStatus,
 )
@@ -14,15 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 def _confidence(result: RuleResult) -> float:
-    """confidence 分级策略。
+    """
+    confidence 分级策略。
 
     设计原则：
       - 日期违规：无 delta，但日期语义明确 → 0.9
       - 余额链断裂：可能是上游数据缺失/错位 → 0.75
-      - 金额不符：按 delta 大小分级
-        - < 0.05：极可能是 VLM 读数误差 → 0.5
-        - < 1.00：需人判断 → 0.7
-        - >= 1.00：明确矛盾 → 0.9
+      - 金额不符：按 delta 绝对 + 相对综合
+        - 相对偏差 >= 1%：明确问题 → 0.9
+        - 相对偏差 0.1% - 1%：需人判断 → 0.75
+        - 相对偏差 < 0.1%：大额下的微差，可能舍入 → 0.55
+
+    注意：是否 FAILED 由规则层用绝对容差 MONEY_TOLERANCE 判定，
+          confidence 只表达"这个 FAILED 有多可信"，用相对偏差辅助。
     """
     if result.status != RuleStatus.FAILED:
         return 0.0
@@ -37,19 +42,36 @@ def _confidence(result: RuleResult) -> float:
     if "running_balance" in rule or "balance_change" in rule:
         return 0.75
 
-    # 金额类：按 delta
+    # 金额类：结合绝对值 + 相对偏差
     try:
-        d = Decimal(result.delta) if result.delta else None
+        delta = Decimal(result.delta) if result.delta else None
     except Exception:
-        d = None
+        delta = None
 
-    if d is None:
+    if delta is None:
         return 0.9
-    if d < Decimal("0.05"):
+
+    if delta < MONEY_TOLERANCE:
         return 0.5
-    if d < Decimal("1.00"):
-        return 0.7
-    return 0.9
+
+    try:
+        expected = Decimal(result.expected) if result.expected else None
+        actual = Decimal(result.actual) if result.actual else None
+    except Exception:
+        expected = actual = None
+
+    base = max(
+        abs(expected) if expected is not None else Decimal("0"),
+        abs(actual) if actual is not None else Decimal("0"),
+        Decimal("1"),
+    )
+    relative = delta / base
+
+    if relative >= Decimal("0.01"):
+        return 0.9
+    if relative >= Decimal("0.001"):
+        return 0.75
+    return 0.55
 
 
 def rule_result_to_evidence(result: RuleResult) -> Optional[Evidence]:
