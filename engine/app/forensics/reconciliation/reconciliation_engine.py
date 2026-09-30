@@ -123,8 +123,9 @@ class ReconciliationEngine:
         for t in dto_ir.reconciliation.tables:
             # 表页码从 source.observation_ids 反推，如果没有则填 1
             page = 1
-            if t.source and t.source.observation_ids:
-                page = t.source.observation_ids[0] // 1000
+            all_ids = t.collect_all_obs_ids()
+            if all_ids:
+                page = all_ids[0] // 1000
             idx = per_page_counter.get(page, 0)
             per_page_counter[page] = idx + 1
 

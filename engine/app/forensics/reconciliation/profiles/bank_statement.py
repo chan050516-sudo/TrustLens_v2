@@ -58,7 +58,7 @@ def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
         return []
 
     cols = inst.table.columns
-    table_obs = list(inst.table.source.observation_ids) if inst.table.source else []
+    table_obs = inst.table.collect_all_obs_ids()
     results: list[RuleResult] = []
     for i, row in enumerate(inst.table.tuples):
         desc = get_cell(row, cols, "DESC")

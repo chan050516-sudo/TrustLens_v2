@@ -47,9 +47,8 @@ def _row_values(table: BankTransactionTable) -> list[dict]:
     return rows
 
 
-def _table_obs_ids(inst: TableInstance) -> list[int]:
-    src = getattr(inst.table, "source", None)
-    return list(src.observation_ids) if src else []
+def table_obs_ids(inst: TableInstance) -> list[int]:
+    return inst.table.collect_all_obs_ids()
 
 
 # ---------- 规则 ----------
@@ -85,7 +84,7 @@ def opening_matches_first_row(ctx: RuleContext) -> Optional[RuleResult]:
         actual=str(first_balance),
         delta=str(delta),
         evidence_type=None if ok else "RECONCILIATION_BALANCE_MISMATCH",
-        observation_ids=collect_obs_ids(opening_fact.source) + _table_obs_ids(inst),
+        observation_ids=collect_obs_ids(opening_fact.source) + table_obs_ids(inst),
         table_id=inst.internal_id,
         row_index=0,
     )
@@ -105,7 +104,7 @@ def running_balance_recursion(ctx: RuleContext) -> list[RuleResult]:
     if len(rows) < 2:
         return []
 
-    table_obs = _table_obs_ids(inst)
+    table_obs = table_obs_ids(inst)
 
     # 收集所有独立失败行
     failed: list[tuple] = []   # (row_idx, expected, actual, delta, prev_bal, in_v, out_v)
@@ -224,7 +223,7 @@ def closing_matches_last_row(ctx: RuleContext) -> Optional[RuleResult]:
         actual=str(last_balance),
         delta=str(delta),
         evidence_type=None if ok else "RECONCILIATION_BALANCE_MISMATCH",
-        observation_ids=collect_obs_ids(closing_fact.source) + _table_obs_ids(inst),
+        observation_ids=collect_obs_ids(closing_fact.source) + table_obs_ids(inst),
         table_id=inst.internal_id,
         row_index=len(rows) - 1,
     )
@@ -271,7 +270,7 @@ def sum_flow_matches_balance_change(ctx: RuleContext) -> Optional[RuleResult]:
         evidence_type=None if ok else "RECONCILIATION_BALANCE_MISMATCH",
         observation_ids=(
             collect_obs_ids(opening_fact.source, closing_fact.source)
-            + _table_obs_ids(inst)
+            + table_obs_ids(inst)
         ),
         table_id=inst.internal_id,
     )
@@ -283,7 +282,7 @@ def flow_signed_consistency(ctx: RuleContext) -> list[RuleResult]:
     if inst is None:
         return []
     rows = _row_values(inst.table)
-    table_obs = _table_obs_ids(inst)
+    table_obs = table_obs_ids(inst)
     results: list[RuleResult] = []
     for i, r in enumerate(rows):
         s = r["signed"]
@@ -322,7 +321,7 @@ def row_flow_exclusive(ctx: RuleContext) -> list[RuleResult]:
     if inst is None:
         return []
     rows = _row_values(inst.table)
-    table_obs = _table_obs_ids(inst)
+    table_obs = table_obs_ids(inst)
     results: list[RuleResult] = []
     zero = Decimal("0")
     for i, r in enumerate(rows):

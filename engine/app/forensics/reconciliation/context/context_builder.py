@@ -84,9 +84,7 @@ class ContextBuilder:
                     for c in t.columns
                 ],
                 row_count=len(t.tuples),
-                observation_ids=(
-                    list(t.source.observation_ids) if t.source else []
-                ),
+                observation_ids=t.collect_all_obs_ids(),
             ))
 
         # ---------- 汇总 ----------

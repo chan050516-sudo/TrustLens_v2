@@ -31,9 +31,8 @@ def _find_first_commercial_table(ctx: RuleContext) -> Optional[TableInstance]:
     return None
 
 
-def _table_obs_ids(inst: TableInstance) -> list[int]:
-    src = getattr(inst.table, "source", None)
-    return list(src.observation_ids) if src else []
+def table_obs_ids(inst: TableInstance) -> list[int]:
+    return inst.table.collect_all_obs_ids()
 
 
 def row_total_arithmetic(ctx: RuleContext) -> list[RuleResult]:
@@ -43,7 +42,7 @@ def row_total_arithmetic(ctx: RuleContext) -> list[RuleResult]:
         return []
     cols = inst.table.columns
     results: list[RuleResult] = []
-    table_obs = _table_obs_ids(inst)
+    table_obs = table_obs_ids(inst)
 
     for i, row in enumerate(inst.table.tuples):
         qty = to_decimal(get_cell(row, cols, "QUANTITY"))
@@ -125,7 +124,7 @@ def subtotal_equals_sum_row_totals(ctx: RuleContext) -> Optional[RuleResult]:
         delta=str(delta),
         evidence_type=None if ok else "RECONCILIATION_SUBTOTAL_MISMATCH",
         observation_ids=(
-            collect_obs_ids(subtotal_fact.source) + _table_obs_ids(inst)
+            collect_obs_ids(subtotal_fact.source) + table_obs_ids(inst)
         ),
         table_id=inst.internal_id,
     )
@@ -167,7 +166,7 @@ def tax_equals_sum_row_tax(ctx: RuleContext) -> Optional[RuleResult]:
         delta=str(delta),
         evidence_type=None if ok else "RECONCILIATION_TAX_MISMATCH",
         observation_ids=(
-            collect_obs_ids(tax_fact.source) + _table_obs_ids(inst)
+            collect_obs_ids(tax_fact.source) + table_obs_ids(inst)
         ),
         table_id=inst.internal_id,
     )

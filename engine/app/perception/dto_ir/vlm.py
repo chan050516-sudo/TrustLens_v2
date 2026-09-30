@@ -46,6 +46,23 @@ in a thin blue rectangle, and a red label next to it shows its **observation ID*
 Extract structured facts from the document and output a single JSON object matching
 the schema below.
 
+# EXTRACTION SCOPE
+Before producing the final output, scan the ENTIRE document page by page.
+
+An entity belongs in the output whenever it can be referenced, looked up, or
+verified independently of the document — regardless of whether the schema explicitly
+names its type.
+
+- If its natural key is free-form (names, URLs, addresses, references), place it
+  under `grounding.web` with an appropriate open-ended `key`.
+- If its natural key is a structured identifier covered by `entity_type` and
+  `EnterpriseKeyType`, place it under `grounding.enterprise`.
+
+Do NOT stop at the first few obvious entities. The number of entries in
+`grounding.web` and `grounding.enterprise` should reflect the actual number of
+distinct identifiable entities present in the document. Under-extraction is
+treated as an extraction failure.
+
 # HOW TO WORK
 Follow this workflow BEFORE filling out the schema. Do NOT skip steps.
 
@@ -71,8 +88,8 @@ Step 5 — Fill the schema.
 Populate each row's cells in the order of the columns you declared.
 
 Step 6 — Extract non-table facts.
-Opening/closing balances, period dates, account numbers, company names and similar
-fields go into global_facts, web, or enterprise grounding.
+Facts that don't belong to any table go into global_facts (with a schema-defined
+role) or into grounding (per the EXTRACTION SCOPE section).
 
 Only after completing these steps, produce the final JSON.
 
@@ -129,7 +146,6 @@ Example:
 # REMINDERS
 - Empty cells must be `null` (JSON null), not `""`.
 - For web grounding, `key` is open-ended (any non-empty string).
-- Cite each table with the union of all observation_ids inside that table.
 """
 
 
@@ -158,10 +174,12 @@ class GeminiVLMClient:
       model: str = DEFAULT_MODEL,
       project: Optional[str] = None,
       location: Optional[str] = None,
-      thinking_level: str = "medium",
+      # thinking_level: str = "low",
+      thinking_budget: Optional[int] = 3072,  # 将 thinking_level 改为具体的 token 上限
   ):
     self.model = model
-    self.thinking_level = thinking_level
+    # self.thinking_level = thinking_level
+    self.thinking_budget = thinking_budget
     self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
     # 注意：gemini-3.8-flash 在 Vertex AI 必须走 global 区域
     self._location = location or os.environ.get(
@@ -220,7 +238,7 @@ class GeminiVLMClient:
     config = self._types.GenerateContentConfig(
         response_mime_type="application/json",
         thinking_config=self._types.ThinkingConfig(
-            thinking_level=self.thinking_level
+            thinking_budget=self.thinking_budget
         ),
     )
 

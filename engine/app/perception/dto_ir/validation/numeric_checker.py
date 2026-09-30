@@ -62,10 +62,20 @@ def extract_numeric_tokens(texts: Iterable[str]) -> set[str]:
     return out
 
 
-def is_numeric_cell(cell: Optional[str]) -> bool:
+def is_numeric_cell(cell):
     if cell is None:
         return False
-    return normalize_numeric(cell) is not None
+    s = str(cell).strip()
+    if not s:
+        return False
+    letters = sum(1 for c in s if c.isalpha())
+    digits = sum(1 for c in s if c.isdigit())
+    if digits == 0:
+        return False
+    # 至少 4 位数字，且字母 ≤ 2（排除 IBAN 这类混合串）
+    if digits < 4 or letters > 2:
+        return False
+    return True
 
 
 def match_numeric_against_sources(

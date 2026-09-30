@@ -92,11 +92,28 @@ def parse_date_fuzzy(s: Optional[str]) -> Optional[date]:
 
 
 def _find_day_positions(text: str, day: int) -> list[int]:
-    """在文本中查找所有"day 作为独立数字"的位置。"""
-    day_str = str(day)
+    """
+    在文本中查找所有"day 作为独立数字"的位置。
+
+    同时匹配单双位形式：
+      - day=1  → 匹配 "1" 和 "01"
+      - day=25 → 匹配 "25"
+    """
     positions: list[int] = []
-    for m in re.finditer(rf"(?<!\d){re.escape(day_str)}(?!\d)", text):
-        positions.append(m.start())
+    seen: set[int] = set()
+
+    # 候选形式
+    forms = {str(day)}
+    if day < 10:
+        forms.add(f"0{day}")
+
+    for form in forms:
+        pattern = rf"(?<!\d){re.escape(form)}(?!\d)"
+        for m in re.finditer(pattern, text):
+            if m.start() not in seen:
+                positions.append(m.start())
+                seen.add(m.start())
+    positions.sort()
     return positions
 
 

@@ -241,12 +241,12 @@ class MatrixBase(BaseModel):
         * 单 obs：直接是 int
         * 多 obs：list[int]
         * 无来源：null
+    - 表级 obs 集合由 source_ids 推导（不单独存）。
     """
     model_config = ConfigDict(extra="forbid")
 
     tuples: list[list[Cell]] = Field(default_factory=list)
     raw_headers: list[str] | None = None
-    source: SourceRef | None = None
     source_ids: list[list[int | list[int] | None]] | None = None
 
     @model_validator(mode="after")
@@ -256,15 +256,12 @@ class MatrixBase(BaseModel):
             return self
         expected = len(cols)
 
-        # tuples 宽度校验
         for i, row in enumerate(self.tuples):
             if len(row) != expected:
                 raise ValueError(
-                    f"Row {i} has {len(row)} cells, expected {expected} "
-                    f"(columns={list(cols)})"
+                    f"Row {i} has {len(row)} cells, expected {expected}"
                 )
 
-        # source_ids 形状校验
         if self.source_ids is not None:
             if len(self.source_ids) != len(self.tuples):
                 raise ValueError(
@@ -277,8 +274,20 @@ class MatrixBase(BaseModel):
                         f"source_ids row {i} has {len(row)} cells, "
                         f"expected {expected}"
                     )
-
         return self
+
+    def collect_all_obs_ids(self) -> list[int]:
+        """把 source_ids 里所有 observation_id 收集起来，去重排序。"""
+        if not self.source_ids:
+            return []
+        ids: set[int] = set()
+        for row in self.source_ids:
+            for cell in row:
+                if isinstance(cell, list):
+                    ids.update(i for i in cell if isinstance(i, int))
+                elif isinstance(cell, int):
+                    ids.add(cell)
+        return sorted(ids)
 
 
 # ============================================================

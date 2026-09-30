@@ -175,13 +175,17 @@ class CrossValidator:
         conflicts: list[DTOIRConflict] = []
 
         has_rows = len(table.tuples) > 0
-        if has_rows and (table.source is None or not table.source.observation_ids):
+        all_table_obs_ids = table.collect_all_obs_ids()
+
+        # 表级 source 存在性 → 改为 source_ids 非空
+        if has_rows and not all_table_obs_ids:
             conflicts.append(DTOIRConflict(
                 severity="warning",
                 type=DTOIRConflictType.MISSING_SOURCE,
-                message=f"Table at {path} has rows but no table-level source",
+                message=f"Table at {path} has rows but no source_ids",
                 context={"path": path, "table_type": table.table_type},
             ))
+            return conflicts
 
         if not has_rows:
             return conflicts
@@ -197,10 +201,8 @@ class CrossValidator:
             # 没有 cell 级 source → 无法做 cell 级检查
             return conflicts
 
-        # 表级 ocr pool（用于文字 token 覆盖）
-        table_ocr_texts: list[str] = []
-        if table.source and table.source.observation_ids:
-            table_ocr_texts = self._collect_ocr_texts(table.source, mapper)
+        # 表级 ocr pool 从 source_ids 推导
+        table_ocr_texts = self._collect_ocr_by_ids(all_table_obs_ids, mapper)
 
         text_mismatch_count = 0
         numeric_mismatch_count = 0
@@ -548,6 +550,18 @@ class CrossValidator:
             ),
             context=ctx,
         )
+
+    @staticmethod
+    def _collect_ocr_by_ids(
+        obs_ids: list[int],
+        mapper: ObservationMapper,
+    ) -> list[str]:
+        out: list[str] = []
+        for oid in obs_ids:
+            obs = mapper.get(oid)
+            if obs and obs.text:
+                out.append(obs.text)
+        return out
 
 
 def _as_list(x) -> list[int] | None:

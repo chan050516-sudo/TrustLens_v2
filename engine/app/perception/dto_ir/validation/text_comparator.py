@@ -95,14 +95,17 @@ def should_check_text(cell: str | None, min_length: int = 3) -> bool:
       - None / 空字符串
       - 纯数字（含小数点、逗号、负号）
       - 纯符号
-      - 长度 < min_length 的短串（"BP"、"CR" 这类缩写）
+      - 长度 < min_length 的短串
     """
     if cell is None:
         return False
     s = cell.strip()
     if len(s) < min_length:
         return False
-    # 至少包含 1 个字母
-    if not re.search(r"[A-Za-z]", s):
-        return False
-    return True
+    # 含字母 → 走 text
+    if re.search(r"[A-Za-z]", s):
+        return True
+    # ★ 含空格分隔的多个数字组（电话、编号等）→ 视为标识符，走 text
+    if re.search(r"\d\s+\d", s):
+        return True
+    return False

@@ -349,12 +349,13 @@ def validate_observation_ids(
     valid_ids: set[int],
 ) -> list[DTOIRConflict]:
     """
-    就地把所有 SourceRef.observation_ids 中的无效 id 剔除，
+    就地把所有 SourceRef.observation_ids / Table.source_ids 中的无效 id 剔除，
     返回 conflicts 列表。
     """
     conflicts: list[DTOIRConflict] = []
 
-    def _filter(ref, path: str):
+    # ---- 处理 SourceRef（document / global_facts / grounding）----
+    def _filter_ref(ref, path: str):
         if ref is None or not ref.observation_ids:
             return
         kept = []
@@ -372,15 +373,71 @@ def validate_observation_ids(
             )
         ref.observation_ids = kept
 
-    _filter(dto_ir.document.source, "document.source")
+    # ---- 处理 Table.source_ids（嵌套结构）----
+    def _filter_table_source_ids(table, path: str):
+        if not table.source_ids:
+            return
+        for r_idx, row in enumerate(table.source_ids):
+            if not isinstance(row, list):
+                continue
+            for c_idx, cell in enumerate(row):
+                if cell is None:
+                    continue
+                # 单值 int
+                if isinstance(cell, int):
+                    if cell not in valid_ids:
+                        _add_conflict(
+                            conflicts,
+                            DTOIRConflictType.INVALID_OBSERVATION_ID,
+                            f"Removed invalid observation_id at "
+                            f"{path}.source_ids[{r_idx}][{c_idx}]: {cell}",
+                            {
+                                "path": path,
+                                "row_index": r_idx,
+                                "col_index": c_idx,
+                                "invalid_id": cell,
+                            },
+                        )
+                        table.source_ids[r_idx][c_idx] = None
+                # list[int]
+                elif isinstance(cell, list):
+                    kept = []
+                    invalid = []
+                    for oid in cell:
+                        if isinstance(oid, int) and oid in valid_ids:
+                            kept.append(oid)
+                        else:
+                            invalid.append(oid)
+                    if invalid:
+                        _add_conflict(
+                            conflicts,
+                            DTOIRConflictType.INVALID_OBSERVATION_ID,
+                            f"Removed invalid observation_ids at "
+                            f"{path}.source_ids[{r_idx}][{c_idx}]: {invalid}",
+                            {
+                                "path": path,
+                                "row_index": r_idx,
+                                "col_index": c_idx,
+                                "invalid_ids": invalid,
+                                "kept": kept,
+                            },
+                        )
+                    table.source_ids[r_idx][c_idx] = kept if kept else None
+
+    # ---- 遍历所有位置 ----
+    _filter_ref(dto_ir.document.source, "document.source")
+
     for i, gf in enumerate(dto_ir.reconciliation.global_facts):
-        _filter(gf.source, f"reconciliation.global_facts[{i}].source")
+        _filter_ref(gf.source, f"reconciliation.global_facts[{i}].source")
+
     for i, t in enumerate(dto_ir.reconciliation.tables):
-        _filter(t.source, f"reconciliation.tables[{i}].source")
+        _filter_table_source_ids(t, f"reconciliation.tables[{i}]")
+
     for i, w in enumerate(dto_ir.grounding.web):
-        _filter(w.source, f"grounding.web[{i}].source")
+        _filter_ref(w.source, f"grounding.web[{i}].source")
+
     for i, e in enumerate(dto_ir.grounding.enterprise):
-        _filter(e.source, f"grounding.enterprise[{i}].source")
+        _filter_ref(e.source, f"grounding.enterprise[{i}].source")
 
     return conflicts
 
