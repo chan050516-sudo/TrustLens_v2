@@ -5,7 +5,7 @@ from app.core.dto_ir import DocumentType, GlobalFactRole
 from app.forensics.reconciliation.models.rule_result import RuleResult
 from app.forensics.reconciliation.rules.base import RuleContext
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import additive_partition, temporal_interval, statistical
+from ..topologies import additive_partition, temporal_interval, state_transition, statistical
 from app.core.dto_ir import PayrollTable
 
 
@@ -56,6 +56,15 @@ def _benford_payslip(ctx: RuleContext) -> list[RuleResult]:
     )
 
 
+def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
+    return state_transition.chronology_monotonic_for_table(
+        ctx,
+        table_cls=PayrollTable,
+        date_column="EVENT_DATE",
+        rule_name="payroll.chronology_monotonic",
+    )
+
+
 def _rules():
     return [
         additive_partition.payslip_gross_pay_check,
@@ -64,6 +73,7 @@ def _rules():
         additive_partition.payslip_net_pay_check,
         additive_partition.payslip_statutory_rate_check,
         _period_length_reasonable,
+        _chronology_monotonic,      # ★ 新增
         _benford_payslip,
     ]
 

@@ -13,7 +13,11 @@ from app.forensics.reconciliation.models.rule_result import (
 )
 from app.forensics.reconciliation.operators.decimal_ops import money_eq
 from app.forensics.reconciliation.rules.base import (
-    RuleContext, collect_obs_ids, extract_money, get_first_fact,
+    RuleContext, collect_obs_ids, extract_date,
+    extract_money, get_first_fact,
+)
+from app.forensics.reconciliation.topologies.identifiers import (
+    extract_date_from_reference,
 )
 from app.forensics.reconciliation.rules.registry import register
 from ..topologies import product_integrity, temporal_interval, statistical
@@ -115,6 +119,82 @@ def _issue_le_due(ctx: RuleContext) -> Optional[RuleResult]:
     )
 
 
+def _id_date_vs_issue_date(ctx: RuleContext) -> list[RuleResult]:
+    """
+    INVOICE_NUMBER / REFERENCE 内嵌日期 vs ISSUE_DATE。
+
+    正常：ID 内嵌日期 ≤ ISSUE_DATE（可能延迟录入）
+    可疑：ID 内嵌日期 > ISSUE_DATE（时间悖论）
+    """
+    from app.core.dto_ir import EnterpriseKeyType
+
+    issue_fact = get_first_fact(ctx, GlobalFactRole.ISSUE_DATE)
+    if issue_fact is None:
+        return []
+    issue_date = extract_date(issue_fact.value)
+    if issue_date is None:
+        return []
+
+    # 收集候选参考号
+    candidates: list[tuple[str, str, list[int]]] = []   # (label, value, obs_ids)
+
+    # enterprise keys
+    for i, item in enumerate(ctx.dto_ir.grounding.enterprise):
+        for k in item.keys:
+            if k.key in (
+                EnterpriseKeyType.INVOICE_NUMBER,
+                EnterpriseKeyType.QUOTATION_NUMBER,
+                EnterpriseKeyType.RECEIPT_NUMBER,
+                EnterpriseKeyType.TRANSACTION_REFERENCE,
+            ):
+                obs = list(item.source.observation_ids) if item.source else []
+                candidates.append((k.key.value, k.value, obs))
+
+    # web items（按 key 关键字过滤）
+    for w in ctx.dto_ir.grounding.web:
+        key_lower = (w.key or "").lower()
+        if any(t in key_lower for t in (
+            "invoice", "reference", "ref_no", "receipt", "quotation",
+        )):
+            obs = list(w.source.observation_ids) if w.source else []
+            candidates.append((w.key, w.value, obs))
+
+    results: list[RuleResult] = []
+    for label, value, obs_ids in candidates:
+        embedded = extract_date_from_reference(value)
+        if embedded is None:
+            continue
+
+        delta = (issue_date - embedded).days
+        if delta >= 0:
+            continue
+
+        results.append(RuleResult(
+            rule_name="commercial.id_date_vs_issue_date",
+            document_type=ctx.document_type,
+            status=RuleStatus.FAILED,
+            severity=RuleSeverity.WARNING,
+            description=(
+                f"Reference '{value}' ({label}) embeds date {embedded}, "
+                f"but ISSUE_DATE={issue_date} is earlier "
+                f"({-delta} days before)"
+            ),
+            inputs={
+                "reference": value,
+                "reference_key": label,
+                "embedded_date": embedded.isoformat(),
+                "issue_date": issue_date.isoformat(),
+            },
+            expected="ID date <= ISSUE_DATE",
+            actual=f"ID date {embedded} > ISSUE_DATE {issue_date}",
+            delta=str(delta),
+            evidence_type="RECONCILIATION_DATE_ORDER_VIOLATION",
+            observation_ids=collect_obs_ids(issue_fact.source) + obs_ids,
+        ))
+
+    return results
+
+
 def _benford_invoice(ctx: RuleContext) -> list[RuleResult]:
     return statistical.benford_first_digit(
         ctx,
@@ -128,9 +208,11 @@ def _rules():
         product_integrity.row_total_arithmetic,
         product_integrity.subtotal_equals_sum_row_totals,
         product_integrity.tax_equals_sum_row_tax,
+        product_integrity.tax_rate_multiplier,      # ★ 新增
         _total_arithmetic,
         _payment_arithmetic,
         _issue_le_due,
+        _id_date_vs_issue_date,                     # ★ 新增
         _benford_invoice,
     ]
 

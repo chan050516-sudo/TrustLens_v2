@@ -109,6 +109,11 @@ def _sample_bank_statement_dto_ir() -> dict:
                     ],
                     "source": {"observation_ids": [1025]},
                 },
+                {
+                    "entity_type": "INVOICE",
+                    "keys": [{"key": "INVOICE_NUMBER", "value": "INV-20231125-001"}],
+                    "source": {"observation_ids": [1000]},
+                }
             ],
         },
         "conflicts": [],

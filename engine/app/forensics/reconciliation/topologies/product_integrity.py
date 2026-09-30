@@ -23,6 +23,7 @@ from app.forensics.reconciliation.operators.decimal_ops import (
 from app.forensics.reconciliation.rules.base import (
     RuleContext, TableInstance, collect_obs_ids,
     extract_money, get_cell, get_first_fact,
+    normalize_rate_multiplier,
 )
 
 
@@ -218,3 +219,66 @@ def tax_equals_sum_row_tax(ctx: RuleContext) -> list[RuleResult]:
             table_id=inst.internal_id,
         ))
     return results
+
+
+def tax_rate_multiplier(ctx: RuleContext) -> list[RuleResult]:
+    """
+    TAX_AMOUNT ≈ (SUBTOTAL - DISCOUNT_AMOUNT) × TAX_RATE
+
+    设计依据：
+      - 马来西亚 SST 对折后税前金额征收
+      - base = SUBTOTAL - DISCOUNT_AMOUNT（若无 discount，则为 SUBTOTAL）
+      - TAX_RATE 支持 PercentageValue（"6" = 6%）和 DecimalStr（"0.06" 或 "6"）
+    """
+    subtotal_fact = get_first_fact(ctx, GlobalFactRole.SUBTOTAL)
+    tax_amount_fact = get_first_fact(ctx, GlobalFactRole.TAX_AMOUNT)
+    tax_rate_fact = get_first_fact(ctx, GlobalFactRole.TAX_RATE)
+    if (
+        subtotal_fact is None
+        or tax_amount_fact is None
+        or tax_rate_fact is None
+    ):
+        return []
+
+    subtotal = extract_money(subtotal_fact.value)
+    tax_amount = extract_money(tax_amount_fact.value)
+    multiplier = normalize_rate_multiplier(tax_rate_fact.value)
+    if subtotal is None or tax_amount is None or multiplier is None:
+        return []
+
+    disc_fact = get_first_fact(ctx, GlobalFactRole.DISCOUNT_AMOUNT)
+    disc = extract_money(disc_fact.value) if disc_fact else Decimal("0")
+    disc = disc or Decimal("0")
+
+    base = subtotal - disc
+    if base <= 0:
+        return []
+
+    expected_tax = base * multiplier
+    ok, delta = money_eq(expected_tax, tax_amount, MONEY_TOLERANCE)
+
+    sources = [subtotal_fact, tax_amount_fact, tax_rate_fact]
+    if disc_fact:
+        sources.append(disc_fact)
+
+    return [RuleResult(
+        rule_name="commercial.tax_rate_multiplier",
+        document_type=ctx.document_type,
+        status=RuleStatus.PASSED if ok else RuleStatus.FAILED,
+        severity=RuleSeverity.INFO if ok else RuleSeverity.WARNING,
+        description=(
+            f"base ({base}) × rate ({multiplier}) = {expected_tax} "
+            f"vs TAX_AMOUNT = {tax_amount}"
+        ),
+        inputs={
+            "subtotal": str(subtotal),
+            "discount": str(disc),
+            "base": str(base),
+            "rate_multiplier": str(multiplier),
+        },
+        expected=str(expected_tax),
+        actual=str(tax_amount),
+        delta=str(delta),
+        evidence_type=None if ok else "RECONCILIATION_TAX_MISMATCH",
+        observation_ids=collect_obs_ids(*(s.source for s in sources)),
+    )]

@@ -71,28 +71,15 @@ def is_valid_luhn(value: str) -> bool:
 # ============================================================
 
 # 出生地代码白名单（JPN 公开的州属/联邦直辖区代码）
-_MYKAD_STATE_CODES = {
-    "01",  # 柔佛
-    "02",  # 吉打
-    "03",  # 吉兰丹
-    "04",  # 马六甲
-    "05",  # 森美兰
-    "06",  # 彭亨
-    "07",  # 槟城
-    "08",  # 霹雳
-    "09",  # 玻璃市
-    "10",  # 雪兰莪
-    "11",  # 登嘉楼
-    "12",  # 沙巴
-    "13",  # 砂拉越
-    "14",  # 吉隆坡
-    "15",  # 纳闽
-    "16",  # 布城
-    "21",  # 外籍/未确定出生地
-    "22",  # 外籍
-    "23",  # 外籍
-    "24",  # 外籍
-}
+# 结构：01-16（各州主代码）+ 21-59（扩展代码）+ 82（未确定）
+_MYKAD_STATE_CODES = (
+    # 主代码
+    {f"{i:02d}" for i in range(1, 17)}        # 01-16
+    # 扩展代码
+    | {f"{i:02d}" for i in range(21, 60)}     # 21-59
+    # 未确定/外籍
+    | {"82"}
+)
 
 _MYKAD_PLAIN_RE = re.compile(r"^\d{12}$")
 # 带连字符格式：YYMMDD-PB-####
@@ -170,3 +157,127 @@ def validate_mykad_format(value: str) -> tuple[bool, Optional[str]]:
         return False, f"non_numeric_serial:{serial_part}"
 
     return True, None
+
+
+# ============================================================
+# 从参考号 / 发票号中提取内嵌日期
+# ============================================================
+
+# 紧凑形态：8 位数字，前后不是数字
+_REF_DATE_COMPACT_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+
+# 分隔形态
+_REF_DATE_SEPARATED = [
+    # YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+    (re.compile(r"(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)"),
+     ("y", "m", "d")),
+    # DD-MM-YYYY / DD/MM/YYYY / DD.MM.YYYY
+    (re.compile(r"(?<!\d)(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?!\d)"),
+     ("d", "m", "y")),
+]
+
+# DD Mon YY / DD Mon YYYY
+_REF_DATE_MONTH_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[\s\-]"
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
+    r"[\s\-](\d{2,4})(?!\d)",
+    re.IGNORECASE,
+)
+
+_MONTH_ABBR = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _try_yyyymmdd(s: str, min_year: int, max_year: int) -> Optional[date]:
+    if len(s) != 8 or not s.isdigit():
+        return None
+    try:
+        y, m, d = int(s[0:4]), int(s[4:6]), int(s[6:8])
+    except ValueError:
+        return None
+    if not (min_year <= y <= max_year):
+        return None
+    try:
+        return date(y, m, d)
+    except ValueError:
+        return None
+
+
+def _try_ordered(
+    g1: str, g2: str, g3: str,
+    order: tuple,
+    min_year: int, max_year: int,
+) -> Optional[date]:
+    parts: dict = {}
+    for name, val in zip(order, (g1, g2, g3)):
+        try:
+            parts[name] = int(val)
+        except ValueError:
+            return None
+    y, m, d = parts.get("y"), parts.get("m"), parts.get("d")
+    if y is None or m is None or d is None:
+        return None
+    if not (min_year <= y <= max_year):
+        return None
+    try:
+        return date(y, m, d)
+    except ValueError:
+        return None
+
+
+def extract_date_from_reference(
+    ref: str,
+    min_year: int = 2015,
+    max_year: int = 2040,
+) -> Optional[date]:
+    """
+    从参考号 / 发票号里提取内嵌日期。
+
+    支持：
+      - YYYYMMDD（8 位连续数字）
+      - YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD
+      - DD-MM-YYYY / DD/MM/YYYY / DD.MM.YYYY
+      - DD Mon YY / DD Mon YYYY
+
+    只返回"合法年份范围内的合法日期"，避免把无关数字误当日期。
+    无法提取返回 None。
+    """
+    if not ref:
+        return None
+    s = str(ref).strip()
+    if not s:
+        return None
+
+    # 1. YYYYMMDD 紧凑形态
+    for m in _REF_DATE_COMPACT_RE.finditer(s):
+        parsed = _try_yyyymmdd(m.group(1), min_year, max_year)
+        if parsed is not None:
+            return parsed
+
+    # 2. 分隔形态
+    for pattern, order in _REF_DATE_SEPARATED:
+        for m in pattern.finditer(s):
+            parsed = _try_ordered(
+                m.group(1), m.group(2), m.group(3),
+                order, min_year, max_year,
+            )
+            if parsed is not None:
+                return parsed
+
+    # 3. DD Mon YYYY
+    for m in _REF_DATE_MONTH_RE.finditer(s):
+        d_str, mon_str, y_str = m.group(1), m.group(2), m.group(3)
+        try:
+            d = int(d_str)
+            mon = _MONTH_ABBR[mon_str.lower()[:3]]
+            y = int(y_str)
+            if y < 100:
+                y = 2000 + y if y <= 30 else 1900 + y
+            if min_year <= y <= max_year:
+                return date(y, mon, d)
+        except (ValueError, KeyError):
+            continue
+
+    return None

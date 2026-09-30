@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import date
 from typing import Optional
 
 from app.core.dto_ir import (
@@ -390,4 +391,110 @@ def row_flow_exclusive(ctx: RuleContext) -> list[RuleResult]:
                     table_id=inst.internal_id,
                     row_index=i,
                 ))
+    return results
+
+
+# ---------- 通用：日期单调性（适用于任何有序表） ----------
+
+def chronology_monotonic_for_table(
+    ctx: RuleContext,
+    table_cls: type,
+    date_column: str = "EVENT_DATE",
+    rule_name: str = "temporal.chronology_monotonic",
+) -> list[RuleResult]:
+    """
+    某表内日期列应单调递增或递减（同日允许）。
+
+    方向由首末日期决定；只要中途出现反向即为违反。
+    无日期的行跳过（不参与判定）。
+
+    Args:
+        ctx: RuleContext
+        table_cls: 需要检查的表类型（如 BankTransactionTable / PayrollTable）
+        date_column: 日期列名
+        rule_name: 输出的 rule_name
+    """
+    results: list[RuleResult] = []
+
+    for inst in ctx.tables:
+        if not isinstance(inst.table, table_cls):
+            continue
+
+        cols = inst.table.columns
+        dated_rows: list[tuple[int, "date"]] = []   # (row_idx, date)
+        for i, row in enumerate(inst.table.tuples):
+            d = to_date(get_cell(row, cols, date_column))
+            if d is None:
+                continue
+            dated_rows.append((i, d))
+
+        if len(dated_rows) < 2:
+            continue
+
+        first_d = dated_rows[0][1]
+        last_d = dated_rows[-1][1]
+        if first_d == last_d:
+            continue
+        expected_ascending = first_d < last_d
+
+        violations: list[tuple[int, int, "date", "date"]] = []
+        for k in range(len(dated_rows) - 1):
+            i_prev, d_prev = dated_rows[k]
+            i_next, d_next = dated_rows[k + 1]
+            if d_prev == d_next:
+                continue
+            if expected_ascending and d_next < d_prev:
+                violations.append((i_prev, i_next, d_prev, d_next))
+            elif (not expected_ascending) and d_next > d_prev:
+                violations.append((i_prev, i_next, d_prev, d_next))
+
+        table_obs = inst.table.collect_all_obs_ids()
+
+        if not violations:
+            results.append(RuleResult(
+                rule_name=rule_name,
+                document_type=ctx.document_type,
+                status=RuleStatus.PASSED,
+                severity=RuleSeverity.INFO,
+                description=(
+                    f"[{inst.internal_id}] {len(dated_rows)} dated rows in "
+                    f"{'ascending' if expected_ascending else 'descending'} order"
+                ),
+                inputs={
+                    "num_dated_rows": len(dated_rows),
+                    "direction": "ascending" if expected_ascending else "descending",
+                },
+                table_id=inst.internal_id,
+                observation_ids=table_obs,
+            ))
+            continue
+
+        for i_prev, i_next, d_prev, d_next in violations[:3]:
+            results.append(RuleResult(
+                rule_name=rule_name,
+                document_type=ctx.document_type,
+                status=RuleStatus.FAILED,
+                severity=RuleSeverity.WARNING,
+                description=(
+                    f"[{inst.internal_id}] Row {i_prev} → {i_next}: "
+                    f"{d_prev} → {d_next} breaks "
+                    f"{'ascending' if expected_ascending else 'descending'} order"
+                ),
+                inputs={
+                    "prev_row": i_prev,
+                    "next_row": i_next,
+                    "prev_date": d_prev.isoformat(),
+                    "next_date": d_next.isoformat(),
+                    "expected_direction": (
+                        "ascending" if expected_ascending else "descending"
+                    ),
+                },
+                expected=("ascending" if expected_ascending else "descending"),
+                actual=f"{d_prev} → {d_next}",
+                evidence_type="RECONCILIATION_DATE_ORDER_VIOLATION",
+                table_id=inst.internal_id,
+                row_index=i_next,
+                observation_ids=table_obs,
+            ))
+
     return results

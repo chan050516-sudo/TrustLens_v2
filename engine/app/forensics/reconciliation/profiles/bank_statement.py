@@ -101,12 +101,22 @@ def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
             ))
     return results
 
+
 def _benford_bank(ctx: RuleContext) -> list[RuleResult]:
     return statistical.benford_first_digit(
         ctx,
         table_classes=[BankTransactionTable],
         amount_columns=["FLOW_OUT", "FLOW_IN"],
         min_samples=30,
+    )
+
+
+def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
+    return state_transition.chronology_monotonic_for_table(
+        ctx,
+        table_cls=BankTransactionTable,
+        date_column="EVENT_DATE",
+        rule_name="bank.chronology_monotonic",
     )
 
 def _rules():
@@ -118,6 +128,7 @@ def _rules():
         state_transition.flow_signed_consistency,
         state_transition.row_flow_exclusive,
         _period_contains_all_txns,
+        _chronology_monotonic,      # ★ 新增
         _benford_bank,
     ]
 
