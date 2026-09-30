@@ -16,7 +16,8 @@ from app.forensics.reconciliation.rules.base import (
     extract_date, get_first_fact, collect_obs_ids, get_cell,
 )
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import state_transition, temporal_interval
+from ..topologies import state_transition, temporal_interval, statistical
+from app.core.dto_ir import BankTransactionTable
 
 
 # 期间两端各放宽的天数，容纳"上一期最后一笔交易落在声明期间开始日之前几天"
@@ -100,6 +101,13 @@ def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
             ))
     return results
 
+def _benford_bank(ctx: RuleContext) -> list[RuleResult]:
+    return statistical.benford_first_digit(
+        ctx,
+        table_classes=[BankTransactionTable],
+        amount_columns=["FLOW_OUT", "FLOW_IN"],
+        min_samples=30,
+    )
 
 def _rules():
     return [
@@ -110,7 +118,7 @@ def _rules():
         state_transition.flow_signed_consistency,
         state_transition.row_flow_exclusive,
         _period_contains_all_txns,
+        _benford_bank,
     ]
-
 
 register([DocumentType.BANK_STATEMENT], _rules)

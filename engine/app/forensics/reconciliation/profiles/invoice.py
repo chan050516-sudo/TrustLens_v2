@@ -16,7 +16,8 @@ from app.forensics.reconciliation.rules.base import (
     RuleContext, collect_obs_ids, extract_money, get_first_fact,
 )
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import product_integrity, temporal_interval
+from ..topologies import product_integrity, temporal_interval, statistical
+from app.core.dto_ir import CommercialLinesTable
 
 
 def _total_arithmetic(ctx: RuleContext) -> Optional[RuleResult]:
@@ -114,6 +115,14 @@ def _issue_le_due(ctx: RuleContext) -> Optional[RuleResult]:
     )
 
 
+def _benford_invoice(ctx: RuleContext) -> list[RuleResult]:
+    return statistical.benford_first_digit(
+        ctx,
+        table_classes=[CommercialLinesTable],
+        amount_columns=["ROW_TOTAL", "UNIT_PRICE"],
+        min_samples=30,
+    )
+
 def _rules():
     return [
         product_integrity.row_total_arithmetic,
@@ -122,6 +131,7 @@ def _rules():
         _total_arithmetic,
         _payment_arithmetic,
         _issue_le_due,
+        _benford_invoice,
     ]
 
 

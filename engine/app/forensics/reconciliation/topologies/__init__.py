@@ -3,6 +3,8 @@ from . import (
     product_integrity,
     temporal_interval,
     additive_partition,
+    identifiers,
+    statistical,
 )
 
 __all__ = [
@@ -10,4 +12,6 @@ __all__ = [
     "product_integrity",
     "temporal_interval",
     "additive_partition",
+    "identifiers",
+    "statistical",
 ]

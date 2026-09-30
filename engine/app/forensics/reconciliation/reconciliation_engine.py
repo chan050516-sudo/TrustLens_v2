@@ -67,6 +67,8 @@ class ReconciliationEngine:
             universal.dates_not_in_future,
             universal.currency_consistency,
             universal.percentage_range,
+            universal.account_number_luhn_check,
+            universal.person_id_mykad_check,
         ] + get_rules(dto_ir.document.document_type)
 
         # 3. 逐规则执行

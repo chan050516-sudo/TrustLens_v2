@@ -34,6 +34,10 @@ def _confidence(result: RuleResult) -> float:
 
     rule = result.rule_name.lower()
 
+    # 统计类：Benford 是辅助信号，不给高 confidence
+    if "benford" in rule:
+        return 0.55
+
     # 日期类
     if "date" in rule:
         return 0.9

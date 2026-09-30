@@ -104,6 +104,11 @@ class EvidenceType(str, Enum):
     RECONCILIATION_ROW_FIELD_CONFLICT = "reconciliation_row_field_conflict"
     RECONCILIATION_TOTALS_DONT_COVER_ROWS = "reconciliation_totals_dont_cover_rows"
     RECONCILIATION_STATUTORY_RATE_MISMATCH = "reconciliation_statutory_rate_mismatch"
+    # 标识符校验
+    RECONCILIATION_LUHN_CHECKSUM_FAILED = "reconciliation_luhn_checksum_failed"
+    RECONCILIATION_MYKAD_FORMAT_INVALID = "reconciliation_mykad_format_invalid"
+    # 统计异常
+    RECONCILIATION_BENFORD_ANOMALY = "reconciliation_benford_anomaly"
 
 
 class Evidence(BaseModel):
