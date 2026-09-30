@@ -37,4 +37,11 @@ def _ensure_loaded() -> None:
         return
     _LOADED = True
     # 通用规则对所有文档生效，由 engine 显式拼接，不需注册到 profile。
-    from ..profiles import bank_statement, invoice  # noqa: F401
+    from ..profiles import (  # noqa: F401
+        bank_statement,
+        invoice,
+        payslip,
+        certificate,
+        legal_official,
+        resume,
+    )
