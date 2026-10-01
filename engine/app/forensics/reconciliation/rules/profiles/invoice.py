@@ -16,7 +16,7 @@ from app.forensics.reconciliation.rules.base import (
     RuleContext, collect_obs_ids, extract_date,
     extract_money, get_first_fact,
 )
-from app.forensics.reconciliation.topologies.identifiers import (
+from app.forensics.reconciliation.rules.topologies.identifiers import (
     extract_date_from_reference,
 )
 from app.forensics.reconciliation.rules.registry import register

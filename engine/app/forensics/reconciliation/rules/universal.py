@@ -138,7 +138,7 @@ def percentage_range(ctx: RuleContext) -> list[RuleResult]:
 # 标识符校验（对所有 document_type 生效）
 # ============================================================
 
-from app.forensics.reconciliation.topologies import identifiers
+from .topologies import identifiers
 
 
 def account_number_luhn_check(ctx: RuleContext) -> list[RuleResult]:
