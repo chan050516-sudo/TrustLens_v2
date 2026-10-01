@@ -454,7 +454,6 @@ class WebGroundingItem(BaseModel):
     key: str = Field(min_length=1)
     value: str
     normalized_value: str | None = None
-    query_hint: str | None = None
     source: SourceRef | None = None
 
 

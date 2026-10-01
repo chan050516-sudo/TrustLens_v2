@@ -8,7 +8,7 @@ from app.core.dto_ir import EnterpriseGroundingItem
 from app.forensics.grounding.models.enterprise_result import (
     EnterpriseGroundingResult,
 )
-from engine.app.forensics.grounding.enterprise.connectors import EnterpriseConnector
+from app.forensics.grounding.enterprise.connectors import EnterpriseConnector
 
 logger = logging.getLogger(__name__)
 

@@ -70,11 +70,16 @@ class WebGrounder:
 
     @staticmethod
     def _build_query(item: WebGroundingItem) -> str:
-        """构造搜索查询。优先用 query_hint。"""
-        if item.query_hint:
-            return item.query_hint
-        # fallback：key + value
-        return f"{item.key}: {item.value}"
+        """
+        构造搜索查询。
+
+        设计原则：
+          - 直接使用 `item.value`。搜索引擎对原始字符串识别度最高。
+          - **不**拼接 key 前缀（如 "bank_name: HSBC UK"）——前缀会污染查询，
+            让搜索引擎把字段名当成关键词的一部分。
+          - **不**引用 `query_hint`——该字段已从 DTO IR schema 删除。
+        """
+        return item.value
 
     # ------------------------------------------------------------------
 
@@ -84,7 +89,9 @@ class WebGrounder:
         raw: dict,
     ) -> WebGroundingResult:
         summary = (raw.get("summary") or "").strip()
+        not_found = bool(raw.get("not_found", False))
         sources_raw = raw.get("sources") or []
+        is_fallback = bool(raw.get("fallback", False))
 
         sources = [
             WebSource(
@@ -95,24 +102,18 @@ class WebGrounder:
             for s in sources_raw
         ]
 
-        # 判断是否解析成功
-        is_not_found = (
-            not summary
-            or "not found" in summary.lower()
-            or "cannot find" in summary.lower()
-        )
-
-        if is_not_found:
+        # 判定解析结果
+        if not_found or not summary:
             resolved_value = None
             confidence = 0.0
-            notes = "llm_reported_not_found"
+            notes = "llm_reported_not_found" if not_found else "no_summary"
         else:
             resolved_value = summary
             n_sources = len(sources)
             confidence = 0.6 if n_sources == 0 else min(
                 0.9, 0.6 + 0.1 * n_sources
             )
-            notes = None
+            notes = "flat_fallback" if is_fallback else None
 
         return WebGroundingResult(
             key=item.key,
