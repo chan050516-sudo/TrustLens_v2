@@ -2326,3 +2326,738 @@ l2_visual 节点:
 ## 15. 一句话总结
 
 TrustLens v2 的 `visual` 模块是一个以 `VisualEngine` 为核心、以 `SourceTypeDetector` 判定文档类型、以 `VisualOrchestrator` 分派 native/non-native/image 三条路径、以 `PdfSpanExtractor/PdfDrawingExtractor/PdfImageExtractor/ImageCharSegmenter` 为提取器、以 9 个 Analyzer 为检测器、以 `VisualContext` 为 LLM 上下文的 L2 视觉取证流水线。它通过 `Evidence` 通道输出异常判定，通过 `VisualContext` 通道输出中性观察，两者一起供下游 Detective LLM 综合推理。核心设计是**只输出物理事实 + 中性观察，不做最终判断**，与 Metadata 层的"事实层只输出事实"原则一致。
+
+
+
+
+# TrustLens v2 Reconciliation Engine 模块 Context 总结
+
+## 1. 模块定位
+
+`app.forensics.reconciliation` 是 TrustLens v2 的 **确定性验证层（Reconciliation Layer）**，目标是从 DTO IR 的**结构化事实**出发，通过**数学公理 + 领域规则**做确定性验证，检测会计恒等式违规、时序矛盾、标识符非法、统计异常等。
+
+**设计守则（正交隔离原则）**：
+
+> 下游确定性引擎是否有一套硬编码的数学公式必须拿它来做乘除验算？
+> - 是 → Reconciliation
+> - 否 → Grounding 或 Semantic
+
+核心能力：
+
+- **算术守恒**：金额加减乘除的公理验证（总额、税、净额、运行余额）；
+- **维度归集**：按组件分类的聚合验证（payslip / official / legal）；
+- **乘积守恒**：数量 × 单价 × 折率 + 税的逐行验证；
+- **时序区间**：START ≤ END、日期落在声明区间内；
+- **时序状态机**：运行余额递推、日期单调性；
+- **法定率查询**：EPF / SOCSO / EIS 费率对照（版本化 YAML）；
+- **标识符校验**：Luhn（卡号）、MyKad 格式、参考号内嵌日期；
+- **统计分布**：Benford 首位数字分布异常。
+
+最终产出两类结果：
+
+1. **`List[Evidence]`**：统一证据对象，供下游 Risk Engine / Detective LLM 使用；
+2. **`ReconciliationContext`**：清洗后的高确定性上下文（对应 Metadata 层的 `ForensicContext`、Visual 层的 `VisualContext`）。
+
+整个模块通过 `ReconciliationEngine` 编排，被 LangGraph 取证图作为 `l4_verification`（或独立 reconciliation 节点）调用。
+
+---
+
+## 2. 目录与模块职责
+
+```text
+app/forensics/reconciliation/
+  __init__.py
+  reconciliation_engine.py        # 顶层入口
+  evidence_mapping.py             # RuleResult → Evidence
+  exceptions.py
+
+  models/
+    rule_result.py                # RuleResult / RuleStatus / RuleSeverity
+    reconciliation_context.py     # ReconciliationContext / 子模型
+
+  constants/
+    __init__.py
+    tolerance.py                  # MONEY / PERCENTAGE / QUANTITY 容差
+    statutory_rates.py            # StatutoryRates 加载器
+    statutory_rates.yaml          # 法规常数库（版本化）
+
+  context/
+    __init__.py
+    context_builder.py            # 组装 ReconciliationContext
+
+  operators/
+    __init__.py
+    decimal_ops.py                # Decimal 安全运算（禁 float）
+    date_ops.py                   # 日期解析与比较
+    currency_ops.py               # 币种归一化
+
+  rules/
+    __init__.py
+    base.py                       # RuleContext / TableInstance / 便利函数
+    registry.py                   # 规则注册表
+    universal.py                  # 跨文档通用规则
+
+    profiles/                     # 各文档类型的规则集
+      __init__.py
+      bank_statement.py
+      invoice.py
+      payslip.py
+      certificate.py
+      legal_official.py
+      resume.py
+
+    topologies/                   # 按"数学公理"分类的规则实现
+      __init__.py
+      additive_partition.py       # 维度归集双轨型
+      product_integrity.py        # 乘积守恒型
+      state_transition.py         # 时序状态机型
+      temporal_interval.py        # 时序区间型
+      statistical.py              # 统计分布型（Benford）
+      identifiers.py              # 标识符校验
+
+app/core/
+  dto_ir.py                       # TrustLensDTOIR / 所有 DTO 模型
+  evidence.py                     # Evidence / EvidenceType
+```
+
+主要职责：
+
+| 模块 | 职责 |
+|---|---|
+| `ReconciliationEngine` | 顶层入口，编排规则执行 → Evidence + Context |
+| `ContextBuilder` | 组装 `ReconciliationContext` |
+| `StatutoryRates` | 加载 + 按国家/生效日期选择法规版本 |
+| `operators` | Decimal 安全运算、日期运算、币种归一化 |
+| `rules.base` | `RuleContext` / `TableInstance` / 便利函数 |
+| `rules.registry` | 按 `DocumentType` 注册/查询规则列表 |
+| `rules.universal` | 跨文档通用规则（日期范围、币种一致、百分比范围、Luhn、MyKad） |
+| `rules.profiles.*` | 各文档类型的规则集 |
+| `rules.topologies.*` | 按"数学公理"分类的可复用规则 |
+| `evidence_mapping` | `RuleResult` → `Evidence`（仅 FAILED + evidence_type 非空） |
+
+---
+
+## 3. 核心数据流
+
+### 3.1 ReconciliationEngine 主流程
+
+```text
+TrustLensDTOIR
+  -> ReconciliationEngine.analyze_with_context()
+     -> _build_rule_context()          # 归一化 global_facts + 内部表重编号
+        -> RuleContext
+     -> 收集规则：
+        - universal.dates_not_in_future
+        - universal.currency_consistency
+        - universal.percentage_range
+        - universal.account_number_luhn_check
+        - universal.person_id_mykad_check
+        - get_rules(document_type)      # profile 规则
+     -> 逐规则执行：fn(ctx) -> RuleResult | list[RuleResult] | None
+     -> computations: list[RuleResult]
+     -> RuleResult → Evidence（仅 FAILED + evidence_type 非空）
+     -> ContextBuilder.build(dto_ir, tables, computations, evidence_count)
+        -> ReconciliationContext
+  -> 返回 (List[Evidence], ReconciliationContext)
+```
+
+### 3.2 LangGraph 取证图位置
+
+```text
+START → ingest → route_by_type
+  → 并行分派：
+      l1_metadata
+      l2_visual
+      l3_semantic
+  → l4_verification（ReconciliationEngine 可挂此节点）
+  → build_evidence_graph → risk_engine → finalize → END
+```
+
+---
+
+## 4. 核心数据模型
+
+### 4.1 `RuleStatus` / `RuleSeverity`
+
+```python
+class RuleStatus(str, Enum):
+    PASSED = "passed"           # 规则跑完且通过
+    FAILED = "failed"           # 规则跑完且不通过
+    SKIPPED = "skipped"         # 规则本不适用（无列、无 fact）
+    INCOMPLETE = "incomplete"   # 规则应执行，但数据缺失无法完成
+
+class RuleSeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+```
+
+**status 边界**：
+
+- `PASSED` / `FAILED`：规则完整跑完
+- `SKIPPED`：不适用（表里无所需列、文档无所需 fact）
+- `INCOMPLETE`：应执行但数据缺失（表有列但某行缺值、跨行链断裂）
+
+### 4.2 `RuleResult`
+
+单条规则的执行结果，**无论成败都记录**：
+
+- `rule_name / document_type / status / severity`
+- `description`（人类可读）
+- `inputs / expected / actual / delta`（计算记录）
+- `evidence_type`（**仅 FAILED 时消费**）
+- `observation_ids`（溯源）
+- `table_id / row_index`
+- `unverified_reason`（INCOMPLETE 时的原因标签）
+
+### 4.3 `ReconciliationContext`
+
+Reconciliation 层的 LLM 上下文：
+
+- `document_type / document_id / table_type`
+- `normalized_global_facts: List[NormalizedGlobalFact]`
+- `table_summaries: List[TableSummary]`
+- `computations: List[RuleResult]`（**所有规则结果**，成败都记）
+- `unverified_fields: List[UnverifiedField]`（数据缺失，中性）
+- `data_quality_issues: List[DataQualityIssue]`（格式问题，可疑）
+- `summary: ReconciliationSummary`
+- `metadata`
+
+**设计原则**：
+
+- `computations` 记录所有规则结果；
+- `unverified_fields` 与 `data_quality_issues` 分开；
+- Evidence 只从 `RuleResult(status=FAILED, severity>=warning, evidence_type 非空)` 产出。
+
+### 4.4 `NormalizedGlobalFact` / `TableSummary` / `UnverifiedField` / `DataQualityIssue`
+
+`NormalizedGlobalFact`：
+
+- `role / value_normalized / value_raw / currency / observation_ids`
+
+`TableSummary`：
+
+- `internal_id / table_type / page / columns / row_count / observation_ids`
+
+`UnverifiedField`：
+
+- `field / reason / context`
+
+`DataQualityIssue`：
+
+- `issue / detail / observation_ids`
+
+### 4.5 `ReconciliationSummary`
+
+- `total_rules_run / passed / failed / skipped / incomplete / evidence_count`
+
+### 4.6 `RuleContext`（规则执行的输入）
+
+```python
+@dataclass
+class RuleContext:
+    dto_ir: TrustLensDTOIR
+    document_type: DocumentType
+    global_facts_by_role: dict[GlobalFactRole, list[GlobalFact]]
+    tables: list[TableInstance]
+    statutory: StatutoryRates
+    evaluation_date: date
+```
+
+### 4.7 `TableInstance`
+
+内部重编号的表引用（**不使用 VLM 生成的 `table.id`**）：
+
+- `internal_id`（如 `BANK_TRANSACTIONS_p1_0`）
+- `page / index_on_page`
+- `table`（`ReconciliationTable`，用 `Any` 避免循环 import）
+
+---
+
+## 5. 顶层流水线：`ReconciliationEngine`
+
+构造参数：
+
+- `statutory: Optional[StatutoryRates]`（缺省走单例 `get_default_statutory_rates()`）
+- `enabled_rules: Optional[set[str]]`（None = 全部启用）
+
+主要方法：
+
+- `analyze(dto_ir) -> List[Evidence]`
+- `analyze_with_context(dto_ir) -> (List[Evidence], ReconciliationContext)`
+- `get_last_context() -> Optional[ReconciliationContext]`
+
+`_build_rule_context(dto_ir)` 内部：
+
+1. 归一化 `global_facts` → 按 `role` 分组 `by_role`
+2. 内部表重编号：
+   - 页码从 `source_ids` 反推：`page = all_ids[0] // 1000`
+   - 内部 id 格式：`f"{table_type}_p{page}_{idx}"`
+
+`_run_rule(fn, ctx)`：
+
+- `None` → 空列表（SKIPPED 语义）
+- `RuleResult` → 单元素列表
+- `list` → 原样返回
+
+---
+
+## 6. 规则体系
+
+### 6.1 通用规则（`universal.py`）
+
+**所有 document_type 都跑**：
+
+| 规则 | 产出 | 说明 |
+|---|---|---|
+| `dates_not_in_future` | `RECONCILIATION_DATE_OUT_OF_RANGE` | 日期不得晚于 `evaluation_date + 30d` |
+| `currency_consistency` | `RECONCILIATION_CURRENCY_MISMATCH` | 所有金额币种应一致 |
+| `percentage_range` | `RECONCILIATION_AMOUNT_OUT_OF_RANGE` | 百分比 ∈ [0, 100] |
+| `account_number_luhn_check` | `RECONCILIATION_LUHN_CHECKSUM_FAILED` | 13-19 位纯数字做 Luhn |
+| `person_id_mykad_check` | `RECONCILIATION_MYKAD_FORMAT_INVALID` | 12 位或 YYMMDD-PB-#### 格式 |
+
+**日期 role 白名单**：`_DATE_ROLES`
+**百分比 role 白名单**：`_PERCENTAGE_ROLES`
+
+### 6.2 Profile 规则
+
+#### `bank_statement.py`（`BANK_STATEMENT`）
+
+- `state_transition.opening_matches_first_row` → `RECONCILIATION_BALANCE_MISMATCH`
+- `state_transition.running_balance_recursion` → `RECONCILIATION_RUNNING_BALANCE_MISMATCH`
+- `state_transition.closing_matches_last_row` → `RECONCILIATION_BALANCE_MISMATCH`
+- `state_transition.sum_flow_matches_balance_change` → `RECONCILIATION_BALANCE_MISMATCH`
+- `state_transition.flow_signed_consistency` → `RECONCILIATION_ROW_FIELD_CONFLICT`
+- `state_transition.row_flow_exclusive` → `RECONCILIATION_ROW_FIELD_CONFLICT`
+- `_period_contains_all_txns`（**自定义**）→ `RECONCILIATION_DATE_OUT_OF_PERIOD`
+- `_chronology_monotonic`（**新增**）→ `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_benford_bank`（**新增**）→ `RECONCILIATION_BENFORD_ANOMALY`
+
+**关键设计**：`_PERIOD_TOLERANCE_DAYS = 3`（期间两端各放宽 3 天，容纳正常惯例）；只对有日期的行校验，无日期 = "物理空"，跳过。
+
+#### `invoice.py`（`INVOICE` / `QUOTATION` / `RECEIPT` / `E_RECEIPT`）
+
+- `product_integrity.row_total_arithmetic` → `RECONCILIATION_ROW_MATH_MISMATCH`
+- `product_integrity.subtotal_equals_sum_row_totals` → `RECONCILIATION_SUBTOTAL_MISMATCH`
+- `product_integrity.tax_equals_sum_row_tax` → `RECONCILIATION_TAX_MISMATCH`
+- `product_integrity.tax_rate_multiplier`（**新增**）→ `RECONCILIATION_TAX_MISMATCH`
+- `_total_arithmetic` → `RECONCILIATION_TOTAL_MISMATCH`
+- `_payment_arithmetic` → `RECONCILIATION_TOTAL_MISMATCH`
+- `_issue_le_due` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_id_date_vs_issue_date`（**新增**）→ `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_benford_invoice` → `RECONCILIATION_BENFORD_ANOMALY`
+
+**`_id_date_vs_issue_date` 逻辑**：
+
+- 从 `grounding.enterprise` 的 `INVOICE_NUMBER` / `QUOTATION_NUMBER` / `RECEIPT_NUMBER` / `TRANSACTION_REFERENCE` 提取内嵌日期
+- 从 `grounding.web` 中 key 含 `invoice` / `reference` / `ref_no` / `receipt` / `quotation` 的项提取
+- 内嵌日期 > `ISSUE_DATE` → 时间悖论
+
+#### `payslip.py`（`PAYSLIP`）
+
+- `additive_partition.payslip_gross_pay_check` → `RECONCILIATION_NET_PAY_MISMATCH`
+- `additive_partition.payslip_employee_deduction_check` → `RECONCILIATION_NET_PAY_MISMATCH`
+- `additive_partition.payslip_employer_contribution_check` → `RECONCILIATION_NET_PAY_MISMATCH`
+- `additive_partition.payslip_net_pay_check` → `RECONCILIATION_NET_PAY_MISMATCH`
+- `additive_partition.payslip_statutory_rate_check`（**新增**）→ `RECONCILIATION_STATUTORY_RATE_MISMATCH`
+- `_period_length_reasonable`（**新增**）→ `RECONCILIATION_DATE_OUT_OF_RANGE`
+- `_chronology_monotonic`（**新增**）→ `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_benford_payslip`（**新增**）→ `RECONCILIATION_BENFORD_ANOMALY`
+
+**`payslip_statutory_rate_check` 逻辑**：
+
+- 法规版本按 `PAYMENT_DATETIME` / `PERIOD_END` 选；缺省用 `evaluation_date`
+- 费率来源优先级：
+  1. 表的 `RATE` 列（值 > 1 视为百分比，/ 100）
+  2. `AMOUNT / BASIC_SALARY` 推导
+- 对照 `statutory.get_rate("malaysia", yaml_key, role, effective_date)`
+- 容差来自 `statutory.get_rate_tolerance(...)`，缺省 `0.005`
+
+#### `certificate.py`（`CERTIFICATE`）
+
+- `_certificate_validity_ordered`（两级 fallback）
+  - `VALID_FROM ≤ VALID_UNTIL` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+  - `ISSUE_DATE ≤ DUE_DATE`（复用 DUE_DATE 作 expiry）
+- `_certificate_validity_length_reasonable`
+  - 有效期在 `[min_days, max_days]` 之间（从 YAML 取，默认 1-18250）
+  - 产出 `RECONCILIATION_DATE_OUT_OF_RANGE`
+
+#### `legal_official.py`（`LEGAL_DOC` / `OFFICIAL_DOC`）
+
+- `_deadline_after_issue` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_validity_window` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `additive_partition.official_amounts_non_negative` → `RECONCILIATION_AMOUNT_OUT_OF_RANGE`
+
+#### `resume.py`（`RESUME`）
+
+- `_employment_dates_ordered` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `_education_dates_ordered` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+
+### 6.3 Topology 规则（按"数学公理"分类）
+
+#### `additive_partition.py`（维度归集双轨型）
+
+**数学公理**：`Σ(inflows) - Σ(employee_deductions) = net_amount`
+**旁路**：`Σ(employer_contributions)` 不进入净额计算
+
+组件分类靠闭世界 enum：
+
+- `_PAYSLIP_EARNING`（6 类）
+- `_PAYSLIP_EMPLOYEE_DEDUCTION`（6 类）
+- `_PAYSLIP_EMPLOYER_CONTRIBUTION`（5 类）
+
+法定率查询走 `ctx.statutory`（YAML 版本化 + 容差）。数据缺失记 `INCOMPLETE`，不静默跳过。
+
+#### `product_integrity.py`（乘积守恒型）
+
+**数学公理**：`qty × unit_price - discount + tax = row_total`
+
+支持多表：所有规则遍历所有 `CommercialLinesTable`。
+
+`tax_rate_multiplier`（**新增**）：
+
+- `TAX_AMOUNT ≈ (SUBTOTAL - DISCOUNT_AMOUNT) × TAX_RATE`
+- 依据：马来西亚 SST 对折后税前金额征收
+- `TAX_RATE` 支持 `PercentageValue`（"6" = 6%）和 `DecimalStr`（"0.06" 或 "6"）
+
+#### `state_transition.py`（时序状态机型）
+
+**数学公理**：`balance[t-1] + inflow[t] - outflow[t] = balance[t]`
+
+**连锁失败聚合策略**：
+
+- 连续失败的行走合并为一条 FAILED Evidence
+- 数据缺失行单独记 `INCOMPLETE`
+
+**通用函数 `chronology_monotonic_for_table`**：
+
+- 某表内日期列应单调递增或递减（同日允许）
+- 方向由首末日期决定；中途出现反向即为违反
+- 无日期的行跳过
+- 只报**前 3 处**违反（避免刷屏）
+
+#### `temporal_interval.py`（时序区间型）
+
+- `start_le_end(ctx, start_role, end_role, rule_name)` → `RECONCILIATION_DATE_ORDER_VIOLATION`
+- `within_period(ctx, date_role, start_role, end_role, rule_name)` → `RECONCILIATION_DATE_OUT_OF_PERIOD`
+
+#### `statistical.py`（统计分布型）
+
+**Benford's Law**：`P(d) = log10(1 + 1/d)`，`d ∈ {1, ..., 9}`
+
+**MAD 判据（Nigrini 2012）**：
+
+- `MAD < 0.006`：Close conformity
+- `0.006-0.012`：Acceptable conformity
+- `0.012-0.015`：Marginal conformity（仅记录，不告警）
+- `> 0.015`：Nonconformity → `RECONCILIATION_BENFORD_ANOMALY`
+
+**适用范围**：
+
+- ✅ 多笔独立交易金额（bank / invoice / payslip / receipt）
+- ❌ 结构性数值（账号、日期、汇总值、单价）
+- ❌ 样本量 < 30
+
+#### `identifiers.py`（标识符校验）
+
+**Luhn**（ISO 7812）：
+
+- `is_luhn_applicable(value)`：纯数字 + 长度 13-19
+- `is_valid_luhn(value)`：从右往左，偶数位翻倍，`% 10 == 0`
+
+**MyKad**（马来西亚身份证）：
+
+- 只做**格式校验，不做校验和**（JPN 算法未公开）
+- 支持 `12 位纯数字` 和 `YYMMDD-PB-####`
+- 州属代码白名单：`01-16` + `21-59` + `82`
+- 年份解析：`00-30 → 2000-2030`，`31-99 → 1931-1999`
+
+**`extract_date_from_reference`**：
+
+- 从参考号 / 发票号提取内嵌日期
+- 支持格式：
+  - `YYYYMMDD`（8 位连续数字）
+  - `YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD`
+  - `DD-MM-YYYY / DD/MM/YYYY / DD.MM.YYYY`
+  - `DD Mon YY / DD Mon YYYY`
+- 年份范围限制 `[min_year, max_year]`（默认 2015-2040）
+
+---
+
+## 7. 规则注册（`registry.py`）
+
+```python
+_PROFILES: dict[DocumentType, list[RuleFn]] = {}
+_LOADED = False
+
+def register(doc_types, rules_fn): ...   # 注册 profile
+def get_rules(doc_type) -> list[RuleFn]: ...   # 查询
+def _ensure_loaded(): ...   # 延迟导入所有 profile，触发 register()
+```
+
+**关键设计**：通用规则不注册到 profile，由 engine 显式拼接：
+
+```python
+rule_fns = [
+    universal.dates_not_in_future,
+    universal.currency_consistency,
+    universal.percentage_range,
+    universal.account_number_luhn_check,
+    universal.person_id_mykad_check,
+] + get_rules(document_type)
+```
+
+---
+
+## 8. 法规常数库（`StatutoryRates`）
+
+加载 `statutory_rates.yaml`，按 `(country, effective_date)` 选版本：
+
+- `get_rate(country, key, role, effective_date)` → `Optional[Decimal]`
+- `get_rate_tolerance(country, key, effective_date)` → `Optional[Decimal]`
+- `get_validity_days(country, key, bound)` → `Optional[int]`
+
+**版本选择**：`_select_version(country, effective_date)`
+
+- `effective_date=None`：返回最新版本
+- 否则：取 `effective_from <= effective_date` 的最新版本
+
+**YAML 结构**：
+
+```yaml
+malaysia:
+  versions:
+    - effective_from: "2023-01-01"
+      rates:
+        epf:  {employee: "0.11", employer: "0.13", tolerance: "0.005"}
+        socso: {employee: "0.005", employer: "0.0175", tolerance: "0.002"}
+        eis:  {employee: "0.002", employer: "0.002", tolerance: "0.001"}
+  validity:
+    certificate_min_days: 1
+    certificate_max_days: 18250
+```
+
+**单例**：`get_default_statutory_rates()` 懒加载。
+
+---
+
+## 9. 算子库（`operators/`）
+
+### 9.1 `decimal_ops.py`
+
+**所有金额运算必须走这些函数，禁止 float**：
+
+- `to_decimal(v)`：字符串 / 数字 → `Decimal`，失败返回 `None`
+- `money_eq(a, b, tol)` → `(bool, Decimal)`：返回 (是否相等, 差值)
+- `money_sum(values)` → `Decimal`：`None` 跳过
+- `safe_mul(a, b) / safe_div(a, b)`
+- `quantize_money(d, places=2)`：`ROUND_HALF_UP`
+
+### 9.2 `date_ops.py`
+
+- `to_date(v)`：支持 `datetime / date / str`，ISO 优先，兼容常见格式
+- `date_le(a, b)` / `days_between(a, b)` / `is_within(d, start, end)`
+
+### 9.3 `currency_ops.py`
+
+- `normalize_currency(s)`：把 `"RM"` / `"Ringgit"` → `"MYR"`，`"US$"` → `"USD"` 等
+
+---
+
+## 10. 证据映射（`evidence_mapping.py`）
+
+**规则**：仅 `status=FAILED` 且 `evidence_type` 非空时产出 `Evidence`。
+
+### 10.1 `_confidence(result)` 分级策略
+
+| 规则类型 | confidence |
+|---|---|
+| Benford | 0.55（辅助信号） |
+| 日期类 | 0.9（语义明确） |
+| 余额链类 | 0.75（上游数据敏感） |
+| 金额类 | 按相对偏差：`>=1%` → 0.9；`0.1%-1%` → 0.75；`<0.1%` → 0.55 |
+
+**设计原则**：是否 FAILED 由规则层用绝对容差 `MONEY_TOLERANCE` 判定；confidence 只表达"这个 FAILED 有多可信"，用相对偏差辅助。
+
+### 10.2 `rule_result_to_evidence(result)`
+
+- `type = EvidenceType[result.evidence_type]`（KeyError 时 warning + 返回 None）
+- `value = {expected, actual, delta, inputs}`
+- `location = {observation_ids, table_id?, row_index?}`
+- `source = f"reconciliation.{rule_name}"`
+- `raw_data = {rule_name, inputs}`
+
+---
+
+## 11. 容差常数（`constants/tolerance.py`）
+
+```python
+MONEY_TOLERANCE = Decimal("0.01")        # 一分钱
+PERCENTAGE_TOLERANCE = Decimal("0.01")   # 1 pp
+QUANTITY_TOLERANCE = Decimal("0.001")
+DATE_TOLERANCE_DAYS = 0                  # 日期不允许误差
+```
+
+---
+
+## 12. DTO IR 关键约定（`core/dto_ir.py`）
+
+### 12.1 `SourceRef` 与 observation_id
+
+```python
+class SourceRef(BaseModel):
+    observation_ids: list[int] = Field(default_factory=list)
+```
+
+**observation_id 语义（由 Perception 层保证）**：
+
+```
+id = page * 1000 + local_idx
+page = id // 1000          （1-indexed）
+local_idx = id % 1000      （页内位置，0-indexed）
+```
+
+**因此无需再存 page**。
+
+### 12.2 `MatrixBase.collect_all_obs_ids()`
+
+从 `source_ids` 收集所有 `observation_id`，去重排序：
+
+- `source_ids[i][j]`：单 obs = int；多 obs = list[int]；无来源 = null
+
+### 12.3 8 种具体表
+
+- `BankTransactionTable`（`BANK_TRANSACTIONS`）
+- `PayrollTable`（`PAYROLL_COMPONENTS`）
+- `CommercialLinesTable`（`COMMERCIAL_LINES`）
+- `EmploymentTable`（`EMPLOYMENT`）
+- `EducationTable`（`EDUCATION`）
+- `CertificateValidityTable`（`CERTIFICATE_VALIDITY`）
+- `LegalAmountsTable`（`LEGAL_AMOUNTS`）
+- `OfficialAmountsTable`（`OFFICIAL_AMOUNTS`）
+
+**所有表继承 `MatrixBase`**，宽度校验在 `model_validator(mode="after")` 中完成。
+
+### 12.4 闭世界 enum
+
+- `GlobalFactRole`（约 30 个 role）
+- `PayrollComponent` / `LegalComponent` / `OfficialComponent`
+- `BankColumn` / `PayrollColumn` / `CommercialColumn` / ...
+- `EnterpriseKeyType`（约 30 种 key）
+
+### 12.5 `PercentageValue`
+
+```
+"value": "11" 表示 11%，不是 0.11
+```
+
+---
+
+## 13. 规则便利函数（`rules/base.py`）
+
+- `extract_money(value)`：从 `GlobalFact.value` 提取金额（支持 `CurrencyValue` / `DecimalStr`）
+- `extract_currency(value)`
+- `extract_date(value)`
+- `extract_numeric_value(value)`：支持 `CurrencyValue` / `PercentageValue` / `QuantityValue`
+- `normalize_rate_multiplier(value)`：把 value 归一化为小数乘数
+  - `PercentageValue`：直接 `/ 100`
+  - `DecimalStr`：值 > 1 视为百分比，`/ 100`；否则视为已是乘数
+- `collect_obs_ids(*sources)`：合并多个 `SourceRef` / `GlobalFact` 的 obs_ids，去重排序
+- `get_first_fact(ctx, role)`
+- `get_cell(row, columns, name)`
+
+---
+
+## 14. 异常体系（`exceptions.py`）
+
+```python
+ReconciliationError
+  RuleExecutionError    # 单条规则执行失败
+  DataLoadError         # 常数 / 配置加载失败
+```
+
+---
+
+## 15. 关键设计决策
+
+### 15.1 设计守则
+
+1. **规则无论成败都记录** `RuleResult`，供 `ReconciliationContext` 使用；
+2. **Evidence 只从 `FAILED` + `evidence_type` 非空产出**；
+3. **`unverified_fields`（数据缺失，中性）与 `data_quality_issues`（格式问题，可疑）分开**；
+4. **所有金额运算走 Decimal，禁止 float**；
+5. **法规常数按 (国家, 生效日期) 版本化**，更新法规只新增版本，不改历史；
+6. **规则与 profile 分离**：通用规则由 engine 显式拼接，profile 只提供文档特定的规则；
+7. **内部表重编号**：不使用 VLM 生成的 `table.id`，用 `f"{table_type}_p{page}_{idx}"`；
+8. **连续失败聚合**：`running_balance_recursion` 把连续失败行合并为一条 Evidence。
+
+### 15.2 潜在问题与注意点
+
+- `payroll` 规则里 `RATE` 列解析逻辑：`rate_cell > 1 ? rate_cell / 100 : rate_cell`，无法区分 "1%" 和 "1"（已是 100% 乘数）—— 这是已知取舍；
+- `_id_date_vs_issue_date` 依赖 `grounding.enterprise` 的 `EnterpriseKeyType`，若 VLM 提取到错误的 key 类型，会触发假阳性；
+- `state_transition.chronology_monotonic_for_table` 只报前 3 处违反，大表可能有遗漏；
+- `statistical.benford_first_digit` 对 `sample_size < min_samples` 时静默跳过，不产出 `SKIPPED` 记录（与其他规则不一致）；
+- `product_integrity.tax_rate_multiplier` 只对单一 `TAX_RATE` 检查，不支持多税率；
+- `universal.percentage_range` 用 `extract_money`（走 `amount` 字段），对 `QuantityValue` 会失败；
+- `certificate._certificate_validity_ordered` 复用 `DUE_DATE` 作为 expiry 概念，语义上有轻微错位；
+- `_confidence` 里日期类直接给 0.9，但对 `certificate.validity_length_reasonable` 这类"长度不合理"的规则也走 0.9，可能偏高。
+
+### 15.3 与其它模块的关系
+
+- **上游**：DTO IR（由 VLM 生成）——提供 `global_facts` / `tables` / `grounding`；
+- **并行**：MetadataEngine（L1）/ VisualEngine（L2）/ SemanticEngine（L3）；
+- **下游**：Detective LLM / Risk Engine——消费 `Evidence` 和 `ReconciliationContext`；
+- **编排**：`ForensicGraph` 的 `l4_verification` 节点（或独立 reconciliation 节点）。
+
+---
+
+## 16. 核心调用链
+
+### 完整流程
+
+```text
+ReconciliationEngine.analyze_with_context(dto_ir)
+  -> _build_rule_context(dto_ir)
+     -> 归一化 global_facts → by_role
+     -> 内部表重编号 → TableInstance
+     -> RuleContext
+  -> 收集规则：
+       universal.dates_not_in_future
+       universal.currency_consistency
+       universal.percentage_range
+       universal.account_number_luhn_check
+       universal.person_id_mykad_check
+       + get_rules(document_type)
+  -> 逐规则执行：
+       for fn in rule_fns:
+         result = fn(ctx)
+         computations.extend(...)
+  -> RuleResult → Evidence
+     for r in computations:
+       ev = rule_result_to_evidence(r)
+       if ev: evidences.append(ev)
+  -> ContextBuilder.build(dto_ir, tables, computations, len(evidences))
+     -> ReconciliationContext
+  -> 返回 (evidences, context)
+```
+
+### 单条规则执行（以 bank 为例）
+
+```text
+bank._period_contains_all_txns(ctx)
+  -> get_first_fact(PERIOD_START) / get_first_fact(PERIOD_END)
+  -> extract_date(...) → ps, pe
+  -> lower = ps - 3d, upper = pe + 3d
+  -> for inst in _all_bank_tables(ctx):
+       for i, row in enumerate(inst.table.tuples):
+         d = to_date(get_cell(row, cols, "EVENT_DATE"))
+         if d is None: continue
+         if not (lower <= d <= upper):
+           results.append(RuleResult(status=FAILED, ...))
+```
+
+---
+
+## 17. 一句话总结
+
+TrustLens v2 的 `reconciliation` 模块是一个以 `ReconciliationEngine` 为核心、以 `RuleContext` + `RuleResult` 为执行契约、以 `rules/universal + profiles + topologies` 三级规则体系为检测逻辑、以 `StatutoryRates` 为法规知识库、以 `ReconciliationContext` 为 LLM 上下文的确定性验证流水线。它遵循"正交隔离原则"（有硬编码数学公式的验证归 Reconciliation），通过 `RuleStatus` 四态（PASSED / FAILED / SKIPPED / INCOMPLETE）区分"通过 / 不通过 / 不适用 / 数据不足"，最终产出统一 `Evidence` 和结构化 `ReconciliationContext`。核心设计是**规则无论成败都记录**（供上下文推理），**Evidence 只从 FAILED + evidence_type 非空产出**，与 Metadata / Visual 层的"事实层只输出事实"原则一致。

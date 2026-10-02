@@ -6,3 +6,6 @@
 6. visual engine的native image还可以做PCA, SWT, glyph embedding，camera-captured可以研究physical appearance/ texture层面的detection
 7. dto ir 对 camera captured document的稳定性测试
 8. 在dto ir schema 加入 hierarchical span，并在reconciliation engine中加入相应的算法
+9. dto ir 分为两个并行vlm调用
+10. dto ir 的 web items 需要分类收束
+11. grounding engine实现多策略搜索，tavily太贵，考虑换成serper dev
