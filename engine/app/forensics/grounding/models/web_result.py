@@ -12,6 +12,7 @@ class WebSource(BaseModel):
     url: str
     title: Optional[str] = None
     snippet: Optional[str] = None
+    score: Optional[float] = None        # ★ 新增：Tavily relevance score (0-1)
 
 
 class WebGroundingResult(BaseModel):

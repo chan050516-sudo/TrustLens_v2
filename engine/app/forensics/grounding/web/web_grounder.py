@@ -1,7 +1,22 @@
-"""Web Grounding 路径。"""
+"""Web Grounding 路径。
+
+流程：
+  1. 对每个 WebGroundingItem: clean_key(key) + value → Tavily 查询
+  2. Tavily 并行搜索（basic, max_results=3）
+  3. 一次 Gemini 调用 → 每个 query 的 summary
+  4. 组装：summary 来自 Gemini；sources/confidence 来自 Tavily
+
+设计原则：
+  - Tavily 负责"找资料"（纯搜索 API）
+  - Gemini 负责"读懂资料并总结"（纯文本推理）
+  - 两者解耦，避免 LLM 内部 AFC 死循环
+  - confidence 只在有 summary 时才有值；summary=None 时归零
+  - LLM 失败时降级到 top-1 snippet，用 notes 标记降级
+"""
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from app.core.dto_ir import WebGroundingItem
@@ -10,23 +25,27 @@ from app.forensics.grounding.models.web_result import (
     WebSource,
 )
 from app.forensics.grounding.exceptions import WebGroundingError
-from .llm_search_client import LLMSearchClient
+from .tavily_search_client import TavilySearchClient
+from .llm_summarizer import LLMSummarizer, SummarizeResult
 
 logger = logging.getLogger(__name__)
 
 
+_FALLBACK_SNIPPET_MAX_LEN = 400
+
+
 class WebGrounder:
     """
-    Web Grounding 路径。
-
-    对 DTO IR 的 grounding.web 里的每个条目：
-      1. 构造搜索查询
-      2. 批量调 LLM + Google Search（每批 ≤ 10）
-      3. 解析结果 → WebGroundingResult
+    Web Grounding 路径（Tavily + Gemini Summarizer）。
     """
 
-    def __init__(self, client: Optional[LLMSearchClient] = None):
-        self._client = client or LLMSearchClient()
+    def __init__(
+        self,
+        search_client: Optional[TavilySearchClient] = None,
+        summarizer: Optional[LLMSummarizer] = None,
+    ):
+        self._search_client = search_client or TavilySearchClient()
+        self._summarizer = summarizer or LLMSummarizer()
 
     # ------------------------------------------------------------------
 
@@ -37,94 +56,172 @@ class WebGrounder:
         if not items:
             return []
 
-        queries: list[str] = []
-        for item in items:
-            queries.append(self._build_query(item))
+        # 1. 构造查询
+        queries: list[str] = [
+            self._build_query(item) for item in items
+        ]
 
+        # 2. Tavily 并行搜索
         try:
-            raw_results = self._client.search_batch(queries)
+            search_results = self._search_client.search_batch(queries)
         except WebGroundingError as e:
-            logger.exception(f"[Grounding.web] Batch search failed: {e}")
-            # 全失败时，为每个 item 返回 unresolved
+            logger.exception(f"[Grounding.web] Tavily batch failed: {e}")
             return [
-                WebGroundingResult(
-                    key=item.key,
-                    query_value=item.value,
-                    resolved_value=None,
-                    confidence=0.0,
-                    notes=f"search_failed: {e}",
-                    observation_ids=(
-                        list(item.source.observation_ids)
-                        if item.source else []
-                    ),
-                )
+                self._error_result(item, f"tavily_failed: {e}")
                 for item in items
             ]
 
-        results: list[WebGroundingResult] = []
-        for item, raw in zip(items, raw_results):
-            results.append(self._parse_one(item, raw))
-        return results
+        # 3. 一次 Gemini 调用总结
+        try:
+            summarize_results = self._summarizer.summarize_batch(search_results)
+        except WebGroundingError as e:
+            logger.exception(f"[Grounding.web] Summarizer failed: {e}")
+            summarize_results = [
+                SummarizeResult(summary=None, not_found=False, error=str(e))
+                for _ in search_results
+            ]
+
+        # 4. 组装
+        return [
+            self._assemble_one(item, sres, summ)
+            for item, sres, summ in zip(items, search_results, summarize_results)
+        ]
 
     # ------------------------------------------------------------------
+    # Query 构造
 
     @staticmethod
-    def _build_query(item: WebGroundingItem) -> str:
+    def _clean_key(key: str) -> str:
         """
-        构造搜索查询。
+        清洗 key，便于拼接到搜索查询：
+          - CamelCase 拆分（bankName → bank Name）
+          - 下划线 / 连字符 / 点号 → 空格
+          - 去其它标点
+          - 折叠多空格
+          - 小写
+        """
+        if not key:
+            return ""
+        s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", key)
+        s = s.lower()
+        s = re.sub(r"[_\-\.]+", " ", s)
+        s = re.sub(r"[^\w\s]", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
-        设计原则：
-          - 直接使用 `item.value`。搜索引擎对原始字符串识别度最高。
-          - **不**拼接 key 前缀（如 "bank_name: HSBC UK"）——前缀会污染查询，
-            让搜索引擎把字段名当成关键词的一部分。
-          - **不**引用 `query_hint`——该字段已从 DTO IR schema 删除。
+    def _build_query(self, item: WebGroundingItem) -> str:
         """
-        return item.value
+        拼查询：clean_key + ' ' + value。
+
+        规则：
+          - key 为空 → 只用 value
+          - value 内含空格 → 加双引号包裹（防止搜索引擎把连续数字拆成独立词）
+          - 已加引号的 value 不重复加
+        """
+        cleaned = self._clean_key(item.key)
+        val = item.value.strip()
+        if " " in val and not (val.startswith('"') and val.endswith('"')):
+            val = f'"{val}"'
+        if cleaned:
+            return f"{cleaned} {val}".strip()
+        return val
 
     # ------------------------------------------------------------------
+    # 组装
 
     @staticmethod
-    def _parse_one(
+    def _assemble_one(
         item: WebGroundingItem,
-        raw: dict,
+        sres: dict,
+        summ: SummarizeResult,
     ) -> WebGroundingResult:
-        summary = (raw.get("summary") or "").strip()
-        not_found = bool(raw.get("not_found", False))
-        sources_raw = raw.get("sources") or []
-        is_fallback = bool(raw.get("fallback", False))
+        error = sres.get("error")
+        raw_results = sres.get("results") or []
 
         sources = [
             WebSource(
-                url=s.get("url", ""),
-                title=s.get("title"),
-                snippet=s.get("snippet"),
+                url=r.get("url", "") or "",
+                title=r.get("title"),
+                snippet=r.get("snippet"),
+                score=r.get("score"),
             )
-            for s in sources_raw
+            for r in raw_results
         ]
 
-        # 判定解析结果
-        if not_found or not summary:
-            resolved_value = None
-            confidence = 0.0
-            notes = "llm_reported_not_found" if not_found else "no_summary"
+        # 决定 summary 与 notes 优先级
+        summary: Optional[str] = None
+        notes: Optional[str] = None
+
+        if error:
+            # Tavily 层错误
+            notes = f"tavily_error: {error}"
+        elif not raw_results:
+            # Tavily 没返回结果
+            notes = "no_search_results"
+        elif summ.error:
+            # LLM 调用失败 → 降级到 top-1 snippet
+            top = sources[0] if sources else None
+            if top and top.snippet:
+                snippet = top.snippet.strip()
+                if len(snippet) > _FALLBACK_SNIPPET_MAX_LEN:
+                    snippet = snippet[:_FALLBACK_SNIPPET_MAX_LEN] + "..."
+                summary = snippet
+                notes = "llm_unavailable_fallback_snippet"
+            else:
+                notes = f"llm_error: {summ.error}"
+        elif summ.not_found:
+            # LLM 明确说找不到
+            summary = None
+            notes = "llm_reported_not_found"
+        elif summ.summary:
+            # 正常路径
+            summary = summ.summary
+            notes = None
         else:
-            resolved_value = summary
-            n_sources = len(sources)
-            confidence = 0.6 if n_sources == 0 else min(
-                0.9, 0.6 + 0.1 * n_sources
-            )
-            notes = "flat_fallback" if is_fallback else None
+            # LLM 返回了但 summary 为空（边界）→ 降级到 top-1 snippet
+            top = sources[0] if sources else None
+            if top and top.snippet:
+                snippet = top.snippet.strip()
+                if len(snippet) > _FALLBACK_SNIPPET_MAX_LEN:
+                    snippet = snippet[:_FALLBACK_SNIPPET_MAX_LEN] + "..."
+                summary = snippet
+                notes = "empty_summary_fallback_snippet"
+            else:
+                notes = "empty_summary"
+
+        # ★ confidence 计算：summary is None 时强制归零
+        if not summary:
+            confidence = 0.0
+        else:
+            scores = [s.score for s in sources if s.score is not None]
+            confidence = max(scores) if scores else 0.5
 
         return WebGroundingResult(
             key=item.key,
             query_value=item.value,
-            query_used=list(raw.get("search_queries_used") or []),
-            resolved_value=resolved_value,
+            query_used=[sres.get("query", "")] if sres.get("query") else [],
+            resolved_value=summary,
             confidence=confidence,
             sources=sources,
             notes=notes,
             observation_ids=(
                 list(item.source.observation_ids) if item.source else []
             ),
-            raw_response=raw,
+            raw_response=sres,
+        )
+
+    @staticmethod
+    def _error_result(item: WebGroundingItem, reason: str) -> WebGroundingResult:
+        return WebGroundingResult(
+            key=item.key,
+            query_value=item.value,
+            query_used=[],
+            resolved_value=None,
+            confidence=0.0,
+            sources=[],
+            notes=reason,
+            observation_ids=(
+                list(item.source.observation_ids) if item.source else []
+            ),
+            raw_response=None,
         )

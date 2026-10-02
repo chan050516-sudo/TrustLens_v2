@@ -2,20 +2,24 @@
 
 封装 Gemini grounding with Google Search。
 
-设计决策（与 DTO IR 的 vlm.py 一致）：
-  - 使用 `response_mime_type="application/json"` 要求 JSON 格式，
-    但 **不使用** `response_schema`。
-  - 结构化约束由 prompt 内的 schema 描述 + 下游 JSON 解析保证。
-  - 解析失败时回退到"整段 summary 复制给每个 query"的 flat 模式。
-
-一次调用最多接收 10 个 query，超过则分批。
+设计决策：
+  - **单 query 单 request 并行**：每个 query 独立调用，避免多 query 混淆。
+  - **纯文本输出，不用 JSON**：Google Search tool 与
+    `response_mime_type="application/json"` 底层解码器互斥，实测会导致
+    请求挂起。改用纯文本 + prompt 约定 `NOT_FOUND` 标记。
+  - **直接取 chunks 作为 sources**：单 query 调用下，本次响应的
+    grounding_chunks 物理归属于该 query，无需 URL 匹配。
+  - **结构化 prompt 传 key + value**：key 作为语义角色给 LLM，
+    让它规划搜索策略；value 作为核查主体。
+  - **HTTP 超时兜底**：单次请求 30 秒封顶。
+    **注意**：connect timeout 仍是 httpx 默认的 5 秒，无法通过 SDK 覆盖；
+    若本地无法在 5 秒内握手，需在环境层配置 HTTP_PROXY/HTTPS_PROXY。
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 from google import genai
@@ -27,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MODEL = "gemini-3.8-flash"
-MAX_QUERIES_PER_REQUEST = 10
+DEFAULT_MAX_CONCURRENT = 15
+DEFAULT_REQUEST_TIMEOUT_S = 30.0
+
+# 约定：LLM 找不到时输出恰好这个字符串
+NOT_FOUND_MARKER = "NOT_FOUND"
 
 
 class LLMSearchClient:
@@ -36,7 +44,7 @@ class LLMSearchClient:
 
     使用方式：
         client = LLMSearchClient()
-        results = client.search_batch(queries=["HSBC UK", "HBUKGB4195W"])
+        results = client.search_batch(entities=[("bank_name", "HSBC UK"), ...])
     """
 
     def __init__(
@@ -44,11 +52,20 @@ class LLMSearchClient:
         model: str = DEFAULT_MODEL,
         project: Optional[str] = None,
         location: Optional[str] = None,
+        max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+        request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
     ):
         self.model = model
+        self._max_concurrent = max_concurrent
         self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
         self._location = location or os.environ.get(
-            "GOOGLE_CLOUD_LOCATION", "global"
+            "GOOGLE_CLOUD_LOCATION", "asia-southeast1"
+        )
+
+        # timeout 只影响 read 阶段；connect 仍是 httpx 默认 5 秒
+        # http_options = types.HttpOptions(timeout=request_timeout_s)
+        http_options = types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=1),
         )
 
         try:
@@ -57,9 +74,10 @@ class LLMSearchClient:
                     vertexai=True,
                     project=self._project,
                     location=self._location,
+                    http_options=http_options,
                 )
             else:
-                self._client = genai.Client()
+                self._client = genai.Client(http_options=http_options)
         except Exception as e:
             raise WebGroundingError(
                 f"Failed to initialize Gemini client: {e}"
@@ -69,48 +87,69 @@ class LLMSearchClient:
 
     def search_batch(
         self,
-        queries: list[str],
+        entities: list[tuple[str, str]],
     ) -> list[dict[str, Any]]:
         """
-        批量搜索。超过 10 个 query 时自动分批。
+        并行搜索。每个 (key, value) 独立调用，最多 max_concurrent 并发。
+
+        Args:
+            entities: [(key, value), ...]
 
         Returns:
-            与 queries 一一对应的结果列表，每项格式：
+            与 entities 一一对应的结果列表（顺序保持一致）：
             {
-              "query": str,
+              "key": str,
+              "value": str,
               "summary": str | None,
               "not_found": bool,
               "sources": [{"url": ..., "title": ..., "snippet": ...}],
               "search_queries_used": [str],
-              "fallback": bool,      # 解析失败时标记
+              "error": str | None,
             }
         """
-        if not queries:
+        if not entities:
             return []
 
-        results: list[dict[str, Any]] = []
-        for i in range(0, len(queries), MAX_QUERIES_PER_REQUEST):
-            batch = queries[i:i + MAX_QUERIES_PER_REQUEST]
-            batch_results = self._search_single_batch(batch)
-            results.extend(batch_results)
-        return results
+        n_workers = min(self._max_concurrent, len(entities))
+        logger.info(
+            f"[Grounding.web] Running {len(entities)} entities "
+            f"with max_concurrent={n_workers}"
+        )
+
+        results: list[Optional[dict]] = [None] * len(entities)
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            future_to_idx = {
+                executor.submit(self._search_one, k, v): i
+                for i, (k, v) in enumerate(entities)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                key, value = entities[idx]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.exception(
+                        f"[Grounding.web] {key}={value!r} failed: {e}"
+                    )
+                    results[idx] = self._error_result(key, value, e)
+
+        return [r for r in results if r is not None]
 
     # ------------------------------------------------------------------
 
-    def _search_single_batch(
-        self,
-        queries: list[str],
-    ) -> list[dict[str, Any]]:
-        """单批次搜索（≤ 10 个 query）。"""
-        prompt = self._build_prompt(queries)
+    def _search_one(self, key: str, value: str) -> dict[str, Any]:
+        """单 (key, value) 搜索（纯文本输出）。"""
+        prompt = self._build_prompt(key, value)
 
         grounding_tool = types.Tool(
             google_search=types.GoogleSearch()
         )
         config = types.GenerateContentConfig(
             tools=[grounding_tool],
-            #response_mime_type="application/json",
             temperature=0.0,
+            # ★ 不加 response_mime_type="application/json"
+            #   —— 与 Google Search tool 底层解码器互斥，会导致请求挂起。
         )
 
         try:
@@ -122,55 +161,37 @@ class LLMSearchClient:
         except Exception as e:
             raise WebGroundingError(f"Gemini search failed: {e}") from e
 
-        return self._parse_response(response, queries)
+        return self._parse_response(response, key, value)
 
     # ------------------------------------------------------------------
     # Prompt
 
     @staticmethod
-    def _build_prompt(queries: list[str]) -> str:
-        lines = [
-            "You are a fact-checking assistant for a forensic document analysis system.",
-            "",
-            "Search the web for EACH of the entities listed below, then return your",
-            "findings as a single JSON object.",
-            "",
-            "# OUTPUT SCHEMA",
-            "Return ONLY a JSON object matching this schema. No markdown fences.",
-            "",
-            "{",
-            '  "results": [',
-            "    {",
-            '      "query":          "<string: echo the original query exactly>",',
-            '      "summary":        "<string or null: 1-3 sentences summarizing what you found>",',
-            '      "source_urls":    ["<string>", ...],',
-            '      "not_found":      <bool>',
-            "    },",
-            "    ...",
-            "  ]",
-            "}",
-            "",
-            "# FIELD RULES",
-            "- `query`: must echo the corresponding input query verbatim.",
-            "- `summary`: 1-3 sentences. Set to null if `not_found` is true.",
-            "- `source_urls`: a list of 0-5 URLs that support your summary.",
-            "  Include ALL relevant URLs you found (official site, Wikipedia,",
-            "  news, etc.), not just one. Use URLs exactly as they appear.",
-            "  Empty list is allowed only if you found no supporting sources.",
-            "- `not_found`: true if you could NOT find reliable information.",
-            "",
-            "# CRITICAL RULES",
-            "- The `results` array MUST have EXACTLY the same number of entries",
-            "  as the input list below, in the same order.",
-            "- Do NOT speculate. Do NOT fabricate URLs or facts.",
-            "- If a query cannot be answered, set `not_found: true` and `summary: null`.",
-            "- Output valid JSON only. No commentary.",
-            "",
-            "# ENTITIES TO LOOK UP (in order)",
-        ]
-        for i, q in enumerate(queries):
-            lines.append(f"  [{i}] {q}")
-        return "\n".join(lines)
+    def _build_prompt(key: str, value: str) -> str:
+        """
+        结构化 prompt：key 作为语义角色，value 作为核查主体。
+
+        输出：纯文本。找到 → 1-3 句总结；找不到 → 恰好输出 `NOT_FOUND`。
+        """
+        return (
+            "You are a fact-checking assistant for a document forensics system.\n"
+            "\n"
+            "# FIELD TO VERIFY\n"
+            f"- Key (semantic role): {key}\n"
+            f"- Value (to verify):   {value}\n"
+            "\n"
+            "# TASK\n"
+            "Use web search ONCE to determine whether this value legitimately\n"
+            "exists and what it belongs to. Then produce a concise summary of\n"
+            "what you found.\n"
+            "\n"
+            "# OUTPUT RULES\n"
+            "- Output ONLY the summary text (1-3 sentences). No JSON, no quotes,\n"
+            "  no markdown, no commentary.\n"
+            "- Perform at most ONE search. Do NOT retry with reformulated queries.\n"
+            "- Do NOT speculate or fabricate.\n"
+            "- If you cannot find reliable information, output exactly: NOT_FOUND\n"
+        )
 
     # ------------------------------------------------------------------
     # Response parsing
@@ -178,132 +199,48 @@ class LLMSearchClient:
     def _parse_response(
         self,
         response: Any,
-        queries: list[str],
-    ) -> list[dict[str, Any]]:
-        """
-        解析 Gemini grounding 响应。
-
-        优先尝试结构化 JSON；失败时回退到 flat 模式（整段 summary 复制）。
-        """
-        # 1. 提取 grounding chunks 和实际执行的搜索词
+        key: str,
+        value: str,
+    ) -> dict[str, Any]:
+        """解析单 (key, value) 的 Gemini grounding 响应（纯文本）。"""
         chunks = self._extract_grounding_chunks(response)
         search_queries_used = self._extract_search_queries(response)
 
-        # 2. 尝试 JSON 解析
-        raw_text = getattr(response, "text", "") or ""
-        logger.info(f"[Grounding.web] raw_text received: {raw_text!r}")
-        parsed = self._try_parse_structured_json(raw_text)
+        raw_text = (getattr(response, "text", "") or "").strip()
 
-        if parsed is None or not isinstance(parsed.get("results"), list):
-            logger.info(
-                "[Grounding.web] Structured JSON parse failed, "
-                "falling back to flat mode"
-            )
-            return self._fallback_flat(
-                raw_text, chunks, search_queries_used, queries
-            )
+        logger.info(
+            f"[Grounding.web] key={key!r} value={value!r} → "
+            f"chunks={len(chunks)}, "
+            f"search_queries={search_queries_used}, "
+            f"text_len={len(raw_text)}"
+        )
 
-        items = parsed["results"]
-        if len(items) != len(queries):
-            logger.warning(
-                f"[Grounding.web] Result count mismatch: "
-                f"{len(items)} vs {len(queries)}, falling back to flat"
-            )
-            return self._fallback_flat(
-                raw_text, chunks, search_queries_used, queries
-            )
+        # 判定 not_found：恰好是 NOT_FOUND 标记，或空响应
+        not_found = (raw_text == NOT_FOUND_MARKER) or (not raw_text)
 
-        # 3. 逐条构造
-        results: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                return self._fallback_flat(
-                    raw_text, chunks, search_queries_used, queries
-                )
+        if not_found:
+            summary = None
+            sources: list[dict] = []
+        else:
+            summary = raw_text
+            # 单 query 调用下，chunks 全部归属该 query
+            sources = list(chunks)
 
-            not_found = bool(item.get("not_found", False))
-            summary = item.get("summary")
-            if summary is not None:
-                summary = str(summary).strip() or None
-            if not_found:
-                summary = None
-
-            source_urls = item.get("source_urls") or []
-            if not isinstance(source_urls, list):
-                source_urls = []
-            matched_sources = self._match_urls_to_chunks(source_urls, chunks)
-
-            query = str(item.get("query") or "")
-
-            results.append({
-                "query": query,
-                "summary": summary,
-                "not_found": not_found,
-                "sources": matched_sources,
-                "search_queries_used": search_queries_used,
-                "fallback": False,
-            })
-
-        return results
+        return {
+            "key": key,
+            "value": value,
+            "summary": summary,
+            "not_found": not_found,
+            "sources": sources,
+            "search_queries_used": search_queries_used,
+            "error": None,
+        }
 
     # ------------------------------------------------------------------
     # Helpers
 
     @staticmethod
-    def _try_parse_structured_json(text: str) -> Optional[dict]:
-        """把 LLM 输出解析为 dict。处理 markdown fence 和轻微格式问题。"""
-        if not text:
-            return None
-        t = text.strip()
-
-        # 去 markdown fence
-        if t.startswith("```"):
-            lines = t.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            t = "\n".join(lines).strip()
-
-        # 直接尝试
-        try:
-            return json.loads(t)
-        except json.JSONDecodeError:
-            pass
-
-        # 找第一个平衡的 {...}
-        start = t.find("{")
-        if start < 0:
-            return None
-        depth = 0
-        in_str = False
-        esc = False
-        for i in range(start, len(t)):
-            c = t[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-            else:
-                if c == '"':
-                    in_str = True
-                elif c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(t[start:i + 1])
-                        except json.JSONDecodeError:
-                            return None
-        return None
-
-    @staticmethod
     def _extract_grounding_chunks(response: Any) -> list[dict]:
-        """从 grounding_metadata 提取 sources 列表。"""
         chunks: list[dict] = []
         try:
             candidates = getattr(response, "candidates", None) or []
@@ -312,7 +249,8 @@ class LLMSearchClient:
             gm = getattr(candidates[0], "grounding_metadata", None)
             if gm is None:
                 return chunks
-            for chunk in (getattr(gm, "grounding_chunks", None) or []):
+            raw_chunks = getattr(gm, "grounding_chunks", None) or []
+            for chunk in raw_chunks:
                 web = getattr(chunk, "web", None)
                 if web is not None:
                     chunks.append({
@@ -326,7 +264,6 @@ class LLMSearchClient:
 
     @staticmethod
     def _extract_search_queries(response: Any) -> list[str]:
-        """从 grounding_metadata 提取实际执行的搜索词。"""
         try:
             candidates = getattr(response, "candidates", None) or []
             if not candidates:
@@ -339,74 +276,14 @@ class LLMSearchClient:
             return []
 
     @staticmethod
-    def _normalize_url(url: str) -> str:
-        """URL 归一化：去 scheme、www.、trailing slash，小写。"""
-        s = url.lower().strip()
-        s = re.sub(r"^https?://", "", s)
-        s = re.sub(r"^www\.", "", s)
-        s = s.rstrip("/")
-        return s
-
-    def _match_urls_to_chunks(
-        self,
-        source_urls: list,
-        chunks: list[dict],
-    ) -> list[dict]:
-        """
-        把 LLM 输出的 URL 字符串匹配到 grounding_chunks。
-
-        匹配策略：精确匹配优先，否则归一化匹配。
-        匹配不上的 URL 静默丢弃。
-        """
-        if not source_urls or not chunks:
-            return []
-
-        normalized_chunks = [
-            (self._normalize_url(c["url"]), c) for c in chunks
-        ]
-
-        matched: list[dict] = []
-        seen_urls: set[str] = set()
-
-        for u in source_urls:
-            if not isinstance(u, str):
-                continue
-            u_norm = self._normalize_url(u)
-            if not u_norm or u_norm in seen_urls:
-                continue
-
-            # 精确匹配
-            for chunk in chunks:
-                if chunk["url"] == u:
-                    matched.append(chunk)
-                    seen_urls.add(u_norm)
-                    break
-            else:
-                # 归一化匹配
-                for chunk_norm, chunk in normalized_chunks:
-                    if chunk_norm == u_norm:
-                        matched.append(chunk)
-                        seen_urls.add(u_norm)
-                        break
-
-        return matched
-
-    @staticmethod
-    def _fallback_flat(
-        raw_text: str,
-        chunks: list[dict],
-        search_queries_used: list[str],
-        queries: list[str],
-    ) -> list[dict[str, Any]]:
-        """回退：把整段 text 复制给每个 query。"""
-        results: list[dict[str, Any]] = []
-        for q in queries:
-            results.append({
-                "query": q,
-                "summary": raw_text or None,
-                "not_found": not bool(raw_text),
-                "sources": list(chunks),
-                "search_queries_used": search_queries_used,
-                "fallback": True,
-            })
-        return results
+    def _error_result(key: str, value: str, error: Exception) -> dict[str, Any]:
+        """错误结果：明确记录 error 字段。"""
+        return {
+            "key": key,
+            "value": value,
+            "summary": None,
+            "not_found": False,
+            "sources": [],
+            "search_queries_used": [],
+            "error": str(error),
+        }

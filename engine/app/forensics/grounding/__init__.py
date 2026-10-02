@@ -8,7 +8,7 @@ from .models import (
     EnterpriseGroundingResult,
     WebSource,
 )
-from .web import WebGrounder, LLMSearchClient
+from .web import WebGrounder, TavilySearchClient, LLMSummarizer
 from .enterprise import (
     EnterpriseGrounder,
     EnterpriseConnector,
@@ -25,7 +25,8 @@ __all__ = [
     "EnterpriseGroundingResult",
     "WebSource",
     "WebGrounder",
-    "LLMSearchClient",
+    "TavilySearchClient",
+    "LLMSummarizer",
     "EnterpriseGrounder",
     "EnterpriseConnector",
     "NullConnector",
