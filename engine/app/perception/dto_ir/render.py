@@ -175,13 +175,16 @@ def annotate_observations(
     h_img, w_img = image.shape[:2]
 
     # Pass 1: 计算所有 bbox 的像素矩形
+    # 像素外扩：防止 bbox 描边覆盖字形边缘（如 "10.27" 的 "1"）
+    _BBOX_PAD_PX = 1
+
     items: list[tuple[int, int, int, int, int]] = []
     for obs in observations:
         x0f, y0f, x1f, y1f = observation_bbox_in_pixels(obs, is_pdf, dpi)
-        x0 = max(0, min(int(round(x0f)), w_img - 1))
-        y0 = max(0, min(int(round(y0f)), h_img - 1))
-        x1 = max(x0 + 1, min(int(round(x1f)), w_img))
-        y1 = max(y0 + 1, min(int(round(y1f)), h_img))
+        x0 = max(0, min(int(round(x0f)) - _BBOX_PAD_PX, w_img - 1))
+        y0 = max(0, min(int(round(y0f)) - _BBOX_PAD_PX, h_img - 1))
+        x1 = max(x0 + 1, min(int(round(x1f)) + _BBOX_PAD_PX, w_img))
+        y1 = max(y0 + 1, min(int(round(y1f)) + _BBOX_PAD_PX, h_img))
         items.append((x0, y0, x1, y1, int(obs.observation_id)))
 
     # 构建障碍物 mask：所有 bbox 区域外扩 _OBSTACLE_DILATE 像素

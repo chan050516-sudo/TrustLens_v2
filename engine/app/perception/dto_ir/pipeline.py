@@ -1,17 +1,26 @@
 """
-DTO IR 顶层编排。
+DTO IR 顶层编排（双 channel）。
+
+策略 Y：
+  - 两个 channel 跨 chunk 完全并行
+  - 各自 merge、各自进入下游
+  - 共享渲染结果、共享 ObservationMapper、共享全局 VLM semaphore
 
 流程：
-  1. 渲染 + 标注（Phase 2）
-  2. 分块（max_per_chunk=8）
-  3. 逐 chunk 调 VLM（Phase 3）
-  4. 解析 + 校验 + 归一化（Phase 4）
-  5. SourceMapper id 有效性检查（Phase 5）
-  6. 合并（Phase 6）
+  1. 渲染 + 标注（共享，只跑一次）
+  2. 分块（共享）
+  3. 两个 channel 并行：
+       - reconciliation channel: chunks → VLM → parse → merge → validate
+       - grounding channel:      chunks → VLM → parse → merge → validate
+  4. 返回 DTOIRPair（两个结果，可能其中一个是 None）
 """
 from __future__ import annotations
 
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -28,171 +37,302 @@ from app.perception.dto_ir.render import (
     encode_jpeg,
 )
 from app.perception.dto_ir.vlm import (
-    build_prompt,
+    build_reconciliation_prompt,
+    build_grounding_prompt,
     GeminiVLMClient,
 )
-from app.perception.dto_ir.parsing import parse_and_validate
+from app.perception.dto_ir.parsing import (
+    parse_reconciliation_response,
+    parse_grounding_response,
+    validate_observation_ids_reconciliation,
+    validate_observation_ids_grounding,
+)
 from app.perception.dto_ir.source_mapping import ObservationMapper
-from app.perception.dto_ir.merging import merge_dto_irs
-from app.core.dto_ir import TrustLensDTOIR, DTOIRConflict, DTOIRConflictType
+from app.perception.dto_ir.merging import (
+    merge_reconciliation_irs,
+    merge_grounding_irs,
+)
+from app.perception.dto_ir.validation import CrossValidator
+from app.core.dto_ir import (
+    ReconciliationDTOIR,
+    GroundingDTOIR,
+    DTOIRConflict,
+    DTOIRConflictType,
+    Document,
+    DocumentType,
+    ReconciliationPayload,
+    GroundingTargets,
+)
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_PER_CHUNK = 8
+DEFAULT_VLM_MAX_CONCURRENT = 8
+DEFAULT_MAX_WORKERS_PER_CHANNEL = 4
+
+
+@dataclass
+class DTOIRPair:
+    """双 channel 结果对。任一侧可能为 None（该 channel 失败）。"""
+    reconciliation: Optional[ReconciliationDTOIR]
+    grounding: Optional[GroundingDTOIR]
 
 
 class DTOIRPipeline:
     """
-    DTO IR 生成流水线。
+    DTO IR 双 channel 生成流水线。
 
     用法：
         pipeline = DTOIRPipeline(vlm_client=GeminiVLMClient())
-        dto_ir = pipeline.run(
+        pair = pipeline.run_dual(
             file_path=Path("doc.pdf"),
             mime_type="application/pdf",
             observations_by_page={1: [...], 2: [...]},
-            save_annotated=True,
-            annotated_stem="doc",
         )
     """
 
     def __init__(
         self,
-        vlm_client=None,                # 延迟创建若 None
+        vlm_client=None,
         dpi: int = 250,
         max_per_chunk: int = DEFAULT_MAX_PER_CHUNK,
         jpeg_quality: int = 92,
         output_dir: Optional[Path] = None,
+        vlm_semaphore: Optional[threading.Semaphore] = None,
+        max_workers_per_channel: int = DEFAULT_MAX_WORKERS_PER_CHANNEL,
     ):
         self.vlm_client = vlm_client
         self.dpi = dpi
         self.max_per_chunk = max_per_chunk
         self.jpeg_quality = jpeg_quality
         self.output_dir = Path(output_dir) if output_dir else None
+        self._vlm_semaphore = vlm_semaphore
+        self.max_workers_per_channel = max_workers_per_channel
 
     # ------------------------------------------------------------------
 
-    def run(
+    def run_dual(
         self,
         file_path: Path,
         mime_type: str,
         observations_by_page: dict[int, list[ObservationIR]],
         save_annotated: bool = False,
         annotated_stem: Optional[str] = None,
-    ) -> TrustLensDTOIR:
+    ) -> DTOIRPair:
         """
-        执行 DTO IR 生成。
-
-        Returns:
-            TrustLensDTOIR（可能包含 conflicts）。
+        执行双 channel DTO IR 生成。两个 channel 完全并行。
         """
         file_path = Path(file_path)
         stem = annotated_stem or file_path.stem
 
-        # 0. 构建全局 mapper
+        # 0. 构建全局 mapper（共享）
         all_obs = []
         for obs_list in observations_by_page.values():
             all_obs.extend(obs_list)
         mapper = ObservationMapper(all_obs)
-        logger.info(
-            f"[DTOIR] Built observation mapper with {mapper.size} entries"
-        )
+        logger.info(f"[DTOIR] Built observation mapper with {mapper.size} entries")
 
-        # 1. 渲染 + 标注
-        annotated = render_and_annotate_pages(
-            file_path=file_path,
-            mime_type=mime_type,
-            observations_by_page=observations_by_page,
-            dpi=self.dpi,
-        )
+        # 1. 渲染 + 标注（共享）
+        try:
+            annotated = render_and_annotate_pages(
+                file_path=file_path,
+                mime_type=mime_type,
+                observations_by_page=observations_by_page,
+                dpi=self.dpi,
+            )
+        except Exception as e:
+            logger.exception(f"[DTOIR] Rendering failed: {e}")
+            annotated = []
+
         if not annotated:
-            logger.warning("[DTOIR] No pages were rendered; aborting.")
-            return self._empty_result(
-                doc_id=stem,
-                reason="no_pages_rendered",
+            logger.warning("[DTOIR] No pages were rendered; both channels empty.")
+            return DTOIRPair(
+                reconciliation=self._empty_reconciliation(stem, "no_pages_rendered"),
+                grounding=self._empty_grounding("no_pages_rendered"),
             )
 
-        # 1.5 落盘（若需要）
+        # 1.5 落盘
         if save_annotated and self.output_dir is not None:
             self._save_annotated(annotated, stem)
 
-        # 2. 分块
+        # 2. 分块（共享）
         chunks = chunk_annotated_pages(annotated, max_per_chunk=self.max_per_chunk)
         logger.info(
             f"[DTOIR] {len(annotated)} pages → {len(chunks)} chunks "
             f"(max_per_chunk={self.max_per_chunk})"
         )
 
-        # 3. 逐 chunk 调 VLM
-        client = self.vlm_client or GeminiVLMClient()
-        prompt = build_prompt()
+        # 3. 两个 channel 完全并行
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            recon_future = ex.submit(
+                self._run_reconciliation_channel, chunks, mapper
+            )
+            ground_future = ex.submit(
+                self._run_grounding_channel, chunks, mapper
+            )
+            recon_ir = recon_future.result()
+            ground_ir = ground_future.result()
 
-        partial_irs: list[TrustLensDTOIR] = []
+        return DTOIRPair(reconciliation=recon_ir, grounding=ground_ir)
+
+    # ------------------------------------------------------------------
+    # Reconciliation channel
+
+    def _run_reconciliation_channel(
+        self,
+        chunks: list,
+        mapper: ObservationMapper,
+    ) -> Optional[ReconciliationDTOIR]:
+        prompt = build_reconciliation_prompt()
+        client = self.vlm_client or GeminiVLMClient()
+
+        partial_irs: list[ReconciliationDTOIR] = []
         all_conflicts: list[DTOIRConflict] = []
 
-        for idx, chunk in enumerate(chunks):
-            chunk_page_nums = [p for p, _ in chunk]
-            logger.info(
-                f"[DTOIR] Chunk {idx+1}/{len(chunks)}: pages={chunk_page_nums}"
-            )
-            jpegs = [
-                encode_jpeg(img, quality=self.jpeg_quality) for _, img in chunk
-            ]
-
-            try:
-                raw = client.extract(prompt=prompt, images_jpeg=jpegs)
-            except DTOIRVLMError as e:
-                logger.exception(f"[DTOIR] VLM call failed for chunk {idx}: {e}")
-                all_conflicts.append(DTOIRConflict(
-                    severity="error",
-                    type=DTOIRConflictType.OTHER,
-                    message=f"VLM call failed for chunk {idx}: {e}",
-                    context={"chunk_index": idx, "pages": chunk_page_nums},
-                ))
-                continue
-
-            obj, conflicts = parse_and_validate(raw)
-            all_conflicts.extend(conflicts)
-
-            if obj is None:
-                logger.warning(
-                    f"[DTOIR] Chunk {idx} failed schema validation; skipping."
+        with ThreadPoolExecutor(max_workers=self.max_workers_per_channel) as ex:
+            futures = [
+                ex.submit(
+                    self._call_vlm_one_chunk,
+                    client, prompt, chunk,
+                    parse_reconciliation_response,
                 )
-                continue
+                for chunk in chunks
+            ]
+            for idx, f in enumerate(futures):
+                try:
+                    obj, conflicts = f.result()
+                except Exception as e:
+                    logger.exception(f"[DTOIR.recon] chunk {idx} failed: {e}")
+                    all_conflicts.append(DTOIRConflict(
+                        severity="error",
+                        type=DTOIRConflictType.VLM_CALL_FAILED,
+                        message=f"Reconciliation chunk {idx} failed: {e}",
+                        context={"chunk_index": idx},
+                    ))
+                    continue
+                all_conflicts.extend(conflicts)
+                if obj is not None:
+                    partial_irs.append(obj)
 
-            partial_irs.append(obj)
-
-        # 4. 合并
-        merged = merge_dto_irs(partial_irs)
+        merged = merge_reconciliation_irs(partial_irs)
         if merged is None:
-            merged = self._empty_result(
-                doc_id=stem,
-                reason="no_valid_chunks",
-            )
+            logger.warning("[DTOIR.recon] No valid chunks; producing empty IR.")
+            merged = self._empty_reconciliation("unknown", "no_valid_chunks")
 
-        # 5. id 有效性检查
-        id_conflicts = self._validate_ids(merged, mapper)
+        # id 有效性检查
+        id_conflicts = validate_observation_ids_reconciliation(merged, mapper.valid_ids())
         all_conflicts.extend(id_conflicts)
 
-        # 5.5 交叉校验（DTO IR ↔ ObservationIR）
-        cross_conflicts = self._cross_validate(merged, mapper)
-        all_conflicts.extend(cross_conflicts)
+        # 交叉校验
+        try:
+            validator = CrossValidator()
+            cross_conflicts = validator.validate_reconciliation(merged, mapper)
+            all_conflicts.extend(cross_conflicts)
+        except Exception as e:
+            logger.exception(f"[DTOIR.recon] Cross-validation failed: {e}")
+            all_conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.OTHER,
+                message=f"Reconciliation cross-validation failed: {e}",
+            ))
 
-        # 6. 汇总所有 conflicts（去重合并）
-        merged.conflicts = self._dedupe_conflicts(
-            merged.conflicts + all_conflicts
-        )
-
+        merged.conflicts = self._dedupe_conflicts(merged.conflicts + all_conflicts)
         return merged
 
     # ------------------------------------------------------------------
+    # Grounding channel
 
-    def _save_annotated(
+    def _run_grounding_channel(
         self,
-        annotated: list,
-        stem: str,
-    ) -> None:
+        chunks: list,
+        mapper: ObservationMapper,
+    ) -> Optional[GroundingDTOIR]:
+        prompt = build_grounding_prompt()
+        client = self.vlm_client or GeminiVLMClient()
+
+        partial_irs: list[GroundingDTOIR] = []
+        all_conflicts: list[DTOIRConflict] = []
+
+        with ThreadPoolExecutor(max_workers=self.max_workers_per_channel) as ex:
+            futures = [
+                ex.submit(
+                    self._call_vlm_one_chunk,
+                    client, prompt, chunk,
+                    parse_grounding_response,
+                )
+                for chunk in chunks
+            ]
+            for idx, f in enumerate(futures):
+                try:
+                    obj, conflicts = f.result()
+                except Exception as e:
+                    logger.exception(f"[DTOIR.ground] chunk {idx} failed: {e}")
+                    all_conflicts.append(DTOIRConflict(
+                        severity="error",
+                        type=DTOIRConflictType.VLM_CALL_FAILED,
+                        message=f"Grounding chunk {idx} failed: {e}",
+                        context={"chunk_index": idx},
+                    ))
+                    continue
+                all_conflicts.extend(conflicts)
+                if obj is not None:
+                    partial_irs.append(obj)
+
+        merged = merge_grounding_irs(partial_irs)
+        if merged is None:
+            logger.warning("[DTOIR.ground] No valid chunks; producing empty IR.")
+            merged = self._empty_grounding("no_valid_chunks")
+
+        # id 有效性检查
+        id_conflicts = validate_observation_ids_grounding(merged, mapper.valid_ids())
+        all_conflicts.extend(id_conflicts)
+
+        # 交叉校验
+        try:
+            validator = CrossValidator()
+            cross_conflicts = validator.validate_grounding(merged, mapper)
+            all_conflicts.extend(cross_conflicts)
+        except Exception as e:
+            logger.exception(f"[DTOIR.ground] Cross-validation failed: {e}")
+            all_conflicts.append(DTOIRConflict(
+                severity="warning",
+                type=DTOIRConflictType.OTHER,
+                message=f"Grounding cross-validation failed: {e}",
+            ))
+
+        merged.conflicts = self._dedupe_conflicts(merged.conflicts + all_conflicts)
+        return merged
+
+    # ------------------------------------------------------------------
+    # VLM call
+
+    def _call_vlm_one_chunk(self, client, prompt: str, chunk, parse_fn):
+        """单 chunk 单 VLM 调用。返回 (obj | None, conflicts)。"""
+        jpegs = [
+            encode_jpeg(img, quality=self.jpeg_quality) for _, img in chunk
+        ]
+        ctx = (
+            self._vlm_semaphore
+            if self._vlm_semaphore is not None
+            else nullcontext()
+        )
+        try:
+            with ctx:
+                raw = client.extract(prompt=prompt, images_jpeg=jpegs)
+        except DTOIRVLMError as e:
+            logger.exception(f"[DTOIR] VLM call failed: {e}")
+            return None, [DTOIRConflict(
+                severity="error",
+                type=DTOIRConflictType.VLM_CALL_FAILED,
+                message=f"VLM call failed: {e}",
+                context={},
+            )]
+        return parse_fn(raw)
+
+    # ------------------------------------------------------------------
+
+    def _save_annotated(self, annotated: list, stem: str) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         for page_num, img in annotated:
             out = self.output_dir / f"{stem}_annotated_p{page_num:03d}.jpg"
@@ -201,14 +341,6 @@ class DTOIRPipeline:
                 logger.info(f"[DTOIR] Saved annotated image: {out}")
             else:
                 logger.warning(f"[DTOIR] Failed to save annotated image: {out}")
-
-    @staticmethod
-    def _validate_ids(
-        dto_ir: TrustLensDTOIR,
-        mapper: ObservationMapper,
-    ) -> list[DTOIRConflict]:
-        from app.perception.dto_ir.parsing import validate_observation_ids
-        return validate_observation_ids(dto_ir, mapper.valid_ids())
 
     @staticmethod
     def _dedupe_conflicts(conflicts: list[DTOIRConflict]) -> list[DTOIRConflict]:
@@ -223,12 +355,8 @@ class DTOIRPipeline:
         return out
 
     @staticmethod
-    def _empty_result(doc_id: str, reason: str) -> TrustLensDTOIR:
-        from app.core.dto_ir import (
-            Document, DocumentType,
-            ReconciliationPayload, GroundingTargets,
-        )
-        return TrustLensDTOIR(
+    def _empty_reconciliation(doc_id: str, reason: str) -> ReconciliationDTOIR:
+        return ReconciliationDTOIR(
             document=Document(
                 document_id=doc_id or "unknown",
                 document_type=DocumentType.OFFICIAL_DOC,
@@ -236,33 +364,22 @@ class DTOIRPipeline:
                 source=None,
             ),
             reconciliation=ReconciliationPayload(),
-            grounding=GroundingTargets(),
             conflicts=[DTOIRConflict(
                 severity="error",
                 type=DTOIRConflictType.OTHER,
-                message=f"DTO IR generated empty result: {reason}",
+                message=f"Reconciliation DTO IR generated empty result: {reason}",
                 context={"reason": reason},
             )],
         )
 
     @staticmethod
-    def _cross_validate(
-        dto_ir: TrustLensDTOIR,
-        mapper: ObservationMapper,
-    ) -> list[DTOIRConflict]:
-        try:
-            from app.perception.dto_ir.validation import CrossValidator
-            logger.info("[DTOIR] Running Layer 0 cross-validation...")
-            validator = CrossValidator()
-            conflicts = validator.validate(dto_ir, mapper)
-            logger.info(
-                f"[DTOIR] Cross-validation produced {len(conflicts)} conflict(s)"
-            )
-            return conflicts
-        except Exception as e:
-            logger.exception(f"[DTOIR] Cross-validation failed: {e}")
-            return [DTOIRConflict(
-                severity="warning",
+    def _empty_grounding(reason: str) -> GroundingDTOIR:
+        return GroundingDTOIR(
+            grounding=GroundingTargets(),
+            conflicts=[DTOIRConflict(
+                severity="error",
                 type=DTOIRConflictType.OTHER,
-                message=f"Cross-validation failed: {e}",
-            )]
+                message=f"Grounding DTO IR generated empty result: {reason}",
+                context={"reason": reason},
+            )],
+        )

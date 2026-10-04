@@ -1,4 +1,3 @@
-# engine/app/perception/orchestration/multi_page_pdf_orchestrator.py
 """
 多页 PDF 编排器
 
@@ -27,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.document_ir import DocumentContext
 from app.perception.models.document_ir import DocumentIR, DocumentElement
 from app.perception.models.observation_ir import ObservationIR
+from app.core.dto_ir import ReconciliationDTOIR, GroundingDTOIR
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,8 @@ def _init_non_native_worker(
 def _process_non_native_page(
     pdf_path_str: str,
     page_num: int,
-) -> Tuple[int, DocumentIR, object]:
-    """Worker 任务：处理一个 non-native PDF 页。返回 (page_num, doc_ir, dto_ir)。"""
+) -> Tuple[int, DocumentIR, Optional[ReconciliationDTOIR], Optional[GroundingDTOIR]]:
+    """Worker 任务：返回 (page_num, doc_ir, recon_dto_ir, ground_dto_ir)。"""
     global _non_native_pipeline
     if _non_native_pipeline is None:
         _init_non_native_worker(_worker_dpi)
@@ -82,8 +82,9 @@ def _process_non_native_page(
         page_num=page_num,
         is_native_pdf=False,
     )
-    dto_ir = _non_native_pipeline.get_last_dto_ir()
-    return (page_num, doc_ir, dto_ir)
+    recon_ir = _non_native_pipeline.get_last_reconciliation_ir()
+    ground_ir = _non_native_pipeline.get_last_grounding_ir()
+    return (page_num, doc_ir, recon_ir, ground_ir)
 
 
 # ============================================================
@@ -138,7 +139,8 @@ class MultiPagePdfOrchestrator:
         self.dto_ir_enabled = dto_ir_enabled
         self.dto_ir_output_dir = Path(dto_ir_output_dir) if dto_ir_output_dir else None
         self.dto_ir_vlm_client = dto_ir_vlm_client
-        self._last_merged_dto_ir = None
+        self._last_merged_recon_ir: Optional[ReconciliationDTOIR] = None
+        self._last_merged_ground_ir: Optional[GroundingDTOIR] = None
 
     # ------------------------------------------------------------------
 
@@ -158,7 +160,8 @@ class MultiPagePdfOrchestrator:
         )
 
         all_irs: Dict[int, DocumentIR] = {}
-        all_dto_irs: list = []
+        all_recon_irs: list = []
+        all_ground_irs: list = []
 
         # 2. 分场景调度
         if native_pages and non_native_pages:
@@ -167,43 +170,60 @@ class MultiPagePdfOrchestrator:
                     self._run_non_native_pool,
                     context, non_native_pages,
                 )
-                native_irs, native_dto_irs = self._run_native_pages_inproc(
+                native_irs, native_recon, native_ground = self._run_native_pages_inproc(
                     context, native_pages
                 )
-                non_native_irs, non_native_dto_irs = non_native_future.result()
+                non_native_irs, non_native_recon, non_native_ground = non_native_future.result()
 
             all_irs.update(native_irs)
             all_irs.update(non_native_irs)
-            all_dto_irs.extend(native_dto_irs)
-            all_dto_irs.extend(non_native_dto_irs)
+            all_recon_irs.extend(native_recon)
+            all_recon_irs.extend(non_native_recon)
+            all_ground_irs.extend(native_ground)
+            all_ground_irs.extend(non_native_ground)
 
         elif native_pages:
-            native_irs, native_dto_irs = self._run_native_pages_inproc(
+            native_irs, native_recon, native_ground = self._run_native_pages_inproc(
                 context, native_pages
             )
             all_irs.update(native_irs)
-            all_dto_irs.extend(native_dto_irs)
+            all_recon_irs.extend(native_recon)
+            all_ground_irs.extend(native_ground)
 
         elif non_native_pages:
-            non_native_irs, non_native_dto_irs = self._run_non_native_pool(
+            non_native_irs, non_native_recon, non_native_ground = self._run_non_native_pool(
                 context, non_native_pages
             )
             all_irs.update(non_native_irs)
-            all_dto_irs.extend(non_native_dto_irs)
+            all_recon_irs.extend(non_native_recon)
+            all_ground_irs.extend(non_native_ground)
 
-        # ★ 合并 DTO IR
-        self._last_merged_dto_ir = None
-        if all_dto_irs:
+        # 分别 merge 两个 channel
+        self._last_merged_recon_ir = None
+        self._last_merged_ground_ir = None
+
+        if all_recon_irs:
             try:
-                from app.perception.dto_ir.merging import merge_dto_irs
-                self._last_merged_dto_ir = merge_dto_irs(all_dto_irs)
+                from app.perception.dto_ir.merging import merge_reconciliation_irs
+                self._last_merged_recon_ir = merge_reconciliation_irs(all_recon_irs)
                 logger.info(
-                    f"[Orchestrator] Merged {len(all_dto_irs)} page-level DTO IRs."
+                    f"[Orchestrator] Merged {len(all_recon_irs)} page-level "
+                    f"ReconciliationDTOIRs."
                 )
             except Exception as e:
-                logger.exception(f"[Orchestrator] DTO IR merge failed: {e}")
+                logger.exception(f"[Orchestrator] Reconciliation merge failed: {e}")
 
-        # 3. 合并 DocumentIR
+        if all_ground_irs:
+            try:
+                from app.perception.dto_ir.merging import merge_grounding_irs
+                self._last_merged_ground_ir = merge_grounding_irs(all_ground_irs)
+                logger.info(
+                    f"[Orchestrator] Merged {len(all_ground_irs)} page-level "
+                    f"GroundingDTOIRs."
+                )
+            except Exception as e:
+                logger.exception(f"[Orchestrator] Grounding merge failed: {e}")
+
         return self._merge_document_irs(all_irs, pdf_path, len(profiles))
 
     # ------------------------------------------------------------------
@@ -214,14 +234,12 @@ class MultiPagePdfOrchestrator:
         self,
         context: DocumentContext,
         native_pages: List[int],
-    ) -> Tuple[Dict[int, DocumentIR], list]:
-        """
-        主进程处理 native 页。返回 (DocumentIR 映射, DTO IR 列表)。
-        """
+    ) -> Tuple[Dict[int, DocumentIR], list, list]:
         from app.perception.pipeline import PerceptionPipeline
 
         results: Dict[int, DocumentIR] = {}
-        dto_irs: list = []
+        recon_irs: list = []
+        ground_irs: list = []
 
         pipeline = PerceptionPipeline(
             docling_do_ocr=False,
@@ -236,13 +254,16 @@ class MultiPagePdfOrchestrator:
                 logger.info(f"[Orchestrator] Processing native page {pn} (main process)")
                 ir = pipeline.run(context, page_num=pn, is_native_pdf=True)
                 results[pn] = ir
-                dto_ir = pipeline.get_last_dto_ir()
-                if dto_ir is not None:
-                    dto_irs.append(dto_ir)
+                r = pipeline.get_last_reconciliation_ir()
+                g = pipeline.get_last_grounding_ir()
+                if r is not None:
+                    recon_irs.append(r)
+                if g is not None:
+                    ground_irs.append(g)
             except Exception as e:
                 logger.exception(f"[Orchestrator] Native page {pn} failed: {e}")
 
-        return results, dto_irs
+        return results, recon_irs, ground_irs
 
     # ------------------------------------------------------------------
     # Non-native 页：ProcessPool
@@ -252,10 +273,9 @@ class MultiPagePdfOrchestrator:
         self,
         context: DocumentContext,
         non_native_pages: List[int],
-    ) -> Tuple[Dict[int, DocumentIR], list]:
-        """ProcessPool 处理 non-native 页。返回 (DocumentIR 映射, DTO IR 列表)。"""
+    ) -> Tuple[Dict[int, DocumentIR], list, list]:
         if not non_native_pages:
-            return {}, []
+            return {}, [], []
 
         n_workers = min(self.non_native_workers, len(non_native_pages))
         logger.info(
@@ -265,7 +285,8 @@ class MultiPagePdfOrchestrator:
 
         pdf_path_str = str(context.file_path)
         results: Dict[int, DocumentIR] = {}
-        dto_irs: list = []
+        recon_irs: list = []
+        ground_irs: list = []
 
         with ProcessPoolExecutor(
             max_workers=n_workers,
@@ -283,16 +304,18 @@ class MultiPagePdfOrchestrator:
             for future in as_completed(future_to_pn):
                 pn = future_to_pn[future]
                 try:
-                    page_num, ir, dto_ir = future.result()
+                    page_num, ir, r, g = future.result()
                     results[page_num] = ir
-                    if dto_ir is not None:
-                        dto_irs.append(dto_ir)
+                    if r is not None:
+                        recon_irs.append(r)
+                    if g is not None:
+                        ground_irs.append(g)
                 except Exception as e:
                     logger.exception(
                         f"[Orchestrator] Non-native page {pn} failed: {e}"
                     )
 
-        return results, dto_irs
+        return results, recon_irs, ground_irs
 
     # ------------------------------------------------------------------
     # 逐页探测
@@ -404,6 +427,12 @@ class MultiPagePdfOrchestrator:
             },
         )
 
+    def get_merged_reconciliation_ir(self) -> Optional[ReconciliationDTOIR]:
+        return self._last_merged_recon_ir
+
+    def get_merged_grounding_ir(self) -> Optional[GroundingDTOIR]:
+        return self._last_merged_ground_ir
+
     def get_merged_dto_ir(self):
         """返回合并后的文档级 DTO IR（未生成则 None）。"""
-        return self._last_merged_dto_ir
+        return self._last_merged_ground_ir

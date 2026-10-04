@@ -1,17 +1,11 @@
 """
 TrustLens v2 DTO IR — canonical Pydantic schema.
 
-设计原则：
-  - Pydantic 是唯一 canonical，JSON Schema 自动生成。
-  - SourceRef 只保留 observation_ids（page 可从 id 反推：page = id // 1000）。
-  - 保留所有省 output token 的设计：
-      * table 用 columns + tuples，不用 dict list
-      * 闭世界 enum 代替自然语言
-      * 所有金额/数值都是 DecimalStr（字符串），不用 float
-      * COMPONENT 有限闭世界
-      * Web grounding 完全 open-world；Enterprise key type 闭世界，key value 开放
-  - table_type → columns 用 discriminated union 表达。
-  - Matrix 宽度校验、行宽校验在 Pydantic model_validator 里完成。
+本版本将 DTO IR 拆分为两个独立顶层类型：
+  - ReconciliationDTOIR：供 ReconciliationEngine 消费（document + reconciliation）
+  - GroundingDTOIR：     供 GroundingEngine 消费（grounding targets only）
+
+Grounding 目标合并为单一 `targets` 列表（不再分 web / enterprise）。
 """
 from __future__ import annotations
 
@@ -49,8 +43,6 @@ class SourceRef(BaseModel):
       id = page * 1000 + local_idx
       page = id // 1000          （1-indexed）
       local_idx = id % 1000      （页内位置，0-indexed）
-
-    因此无需再存 page。
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -68,9 +60,7 @@ class CurrencyValue(BaseModel):
 
 
 class PercentageValue(BaseModel):
-    """
-    Percentage expressed as a number, e.g. "11" means 11%, not 0.11.
-    """
+    """Percentage expressed as a number, e.g. "11" means 11%, not 0.11."""
     model_config = ConfigDict(extra="forbid")
     value: DecimalStr
     unit: Literal["PERCENT"] = "PERCENT"
@@ -115,7 +105,7 @@ class GlobalFactRole(str, Enum):
     OPENING_BALANCE = "OPENING_BALANCE"
     CLOSING_BALANCE = "CLOSING_BALANCE"
 
-    SUBTOTAL = "SUBTOTAL" # SUBTOTAL = sum of row totals after row-level discounts, before tax and shipping.
+    SUBTOTAL = "SUBTOTAL"
     DISCOUNT_AMOUNT = "DISCOUNT_AMOUNT"
     TAX_AMOUNT = "TAX_AMOUNT"
     SHIPPING_FEE = "SHIPPING_FEE"
@@ -233,16 +223,6 @@ Cell = str | None
 
 
 class MatrixBase(BaseModel):
-    """
-    表格矩阵基类。
-
-    - `tuples`: 行 × 列的 cell 值。
-    - `source_ids`: 与 tuples 同形状，每个 cell 引用其来源 observation_id。
-        * 单 obs：直接是 int
-        * 多 obs：list[int]
-        * 无来源：null
-    - 表级 obs 集合由 source_ids 推导（不单独存）。
-    """
     model_config = ConfigDict(extra="forbid")
 
     tuples: list[list[Cell]] = Field(default_factory=list)
@@ -291,7 +271,7 @@ class MatrixBase(BaseModel):
 
 
 # ============================================================
-# Column enums (per table_type)
+# Column enums
 # ============================================================
 
 class BankColumn(str, Enum):
@@ -364,7 +344,7 @@ class OfficialColumn(str, Enum):
 
 
 # ============================================================
-# 8 Concrete tables (discriminated by table_type)
+# 8 Concrete tables
 # ============================================================
 
 class BankTransactionTable(MatrixBase):
@@ -446,18 +426,16 @@ class ReconciliationPayload(BaseModel):
 
 
 # ============================================================
-# Grounding
+# Entity (unified)
 # ============================================================
 
-class WebGroundingItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    key: str = Field(min_length=1)
-    value: str
-    normalized_value: str | None = None
-    source: SourceRef | None = None
+class EntityType(str, Enum):
+    """
+    Grounding 目标的闭世界实体类型。
 
-
-class EnterpriseEntityType(str, Enum):
+    命名沿用旧 EnterpriseEntityType，并新增若干外部可验证类型。
+    """
+    # --- 原 EnterpriseEntityType 保留 ---
     PERSON = "PERSON"
     ORGANIZATION = "ORGANIZATION"
     PRODUCT = "PRODUCT"
@@ -475,6 +453,13 @@ class EnterpriseEntityType(str, Enum):
     CERTIFICATE = "CERTIFICATE"
     CASE = "CASE"
     OTHER = "OTHER"
+    # --- 新增 ---
+    GOVERNMENT_AGENCY = "GOVERNMENT_AGENCY"
+    UNIVERSITY = "UNIVERSITY"
+    PROFESSIONAL_BODY = "PROFESSIONAL_BODY"
+    LAW_FIRM = "LAW_FIRM"
+    WEBSITE = "WEBSITE"
+    ADDRESS = "ADDRESS"
 
 
 class EnterpriseKeyType(str, Enum):
@@ -527,17 +512,28 @@ class EnterpriseKey(BaseModel):
     normalized_value: str | None = None
 
 
-class EnterpriseGroundingItem(BaseModel):
+# ============================================================
+# Grounding
+# ============================================================
+
+class GroundingTarget(BaseModel):
+    """
+    单个待验证实体。
+
+    不携带 verification_intent——由 GroundingEngine 的确定性 router 决策。
+    """
     model_config = ConfigDict(extra="forbid")
-    entity_type: EnterpriseEntityType
-    keys: list[EnterpriseKey] = Field(min_length=1)
+
+    entity_type: EntityType
+    value: str
+    keys: list[EnterpriseKey] = Field(default_factory=list)
+    subkey: str | None = None
     source: SourceRef | None = None
 
 
 class GroundingTargets(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    web: list[WebGroundingItem] = Field(default_factory=list)
-    enterprise: list[EnterpriseGroundingItem] = Field(default_factory=list)
+    targets: list[GroundingTarget] = Field(default_factory=list)
 
 
 # ============================================================
@@ -556,6 +552,7 @@ class DTOIRConflictType(str, Enum):
     VLM_OCR_NUMERIC_MISMATCH = "vlm_ocr_numeric_mismatch"
     VLM_OCR_DATE_MISMATCH = "vlm_ocr_date_mismatch"
     VLM_DATE_FORMAT_VIOLATION = "vlm_date_format_violation"
+    VLM_CALL_FAILED = "vlm_call_failed"
     OTHER = "other"
 
 
@@ -568,18 +565,20 @@ class DTOIRConflict(BaseModel):
 
 
 # ============================================================
-# Root
+# DTO IR types
 # ============================================================
 
-class TrustLensDTOIR(BaseModel):
-    """
-    DTO IR 顶层容器。
-
-    注意：无 schema_version 字段（由代码版本隐式管理）。
-    """
+class DTOIRBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    conflicts: list[DTOIRConflict] = Field(default_factory=list)
 
+
+class ReconciliationDTOIR(DTOIRBase):
+    """IR1：供 ReconciliationEngine 消费。"""
     document: Document
     reconciliation: ReconciliationPayload
+
+
+class GroundingDTOIR(DTOIRBase):
+    """IR2：供 GroundingEngine 消费。不携带 document 元数据。"""
     grounding: GroundingTargets
-    conflicts: list[DTOIRConflict] = Field(default_factory=list)

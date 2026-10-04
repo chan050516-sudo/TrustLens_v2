@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -16,9 +17,12 @@ from app.perception.builders import DocumentIRBuilder
 from app.perception.preprocessors import ImagePreprocessor
 from app.perception.models.document_ir import DocumentIR
 from app.perception.models.observation_ir import ObservationIR
-from app.perception.dto_ir.pipeline import DTOIRPipeline
+from app.perception.dto_ir.pipeline import DTOIRPipeline, DTOIRPair
+from app.core.dto_ir import ReconciliationDTOIR, GroundingDTOIR
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_VLM_MAX_CONCURRENT = 8
 
 
 class PerceptionPipeline:
@@ -46,6 +50,7 @@ class PerceptionPipeline:
         dto_ir_output_dir: Optional[Path] = None,
         dto_ir_vlm_client=None,
         dto_ir_dpi: int = 250,
+        vlm_max_concurrent: int = DEFAULT_VLM_MAX_CONCURRENT,
     ):
         """
         Args:
@@ -69,16 +74,21 @@ class PerceptionPipeline:
         # Docling parser 按 do_ocr 缓存
         self._docling_parsers: Dict[bool, DoclingRegionParser] = {}
 
+        # 全局 VLM semaphore（双 channel 共享）
+        self._vlm_semaphore = threading.Semaphore(vlm_max_concurrent)
+
         self._dto_ir_pipeline: Optional[DTOIRPipeline] = (
             DTOIRPipeline(
                 vlm_client=dto_ir_vlm_client,
                 dpi=dto_ir_dpi,
                 max_per_chunk=8,
                 output_dir=dto_ir_output_dir,
+                vlm_semaphore=self._vlm_semaphore,
             )
             if dto_ir_enabled else None
         )
-        self._last_dto_ir = None
+        self._last_reconciliation_ir: Optional[ReconciliationDTOIR] = None
+        self._last_grounding_ir: Optional[GroundingDTOIR] = None
         self.dto_ir_enabled = dto_ir_enabled
 
     # ------------------------------------------------------------------
@@ -431,18 +441,11 @@ class PerceptionPipeline:
         annotated_stem: str,
     ) -> None:
         """
-        非阻塞触发 DTO IR。失败不影响 DocumentIR 构建。
-
-        Args:
-            observations: 已提取的 observations（复用，不重跑 OCR）
-            render_path: DTO IR 渲染用文件路径
-                        - native PDF: 原 PDF 路径
-                        - image/deskew: effective_path（图片或 deskew 后临时图）
-            mime_type: 用于渲染时判断是 PDF 还是图片
-            annotated_stem: 标注图文件名 stem（用于落盘）
+        非阻塞触发双 channel DTO IR。失败不影响 DocumentIR 构建。
         """
         if self._dto_ir_pipeline is None or not observations:
-            self._last_dto_ir = None
+            self._last_reconciliation_ir = None
+            self._last_grounding_ir = None
             return
 
         try:
@@ -450,21 +453,38 @@ class PerceptionPipeline:
             for o in observations:
                 obs_by_page.setdefault(o.page, []).append(o)
 
-            self._last_dto_ir = self._dto_ir_pipeline.run(
+            pair: DTOIRPair = self._dto_ir_pipeline.run_dual(
                 file_path=render_path,
                 mime_type=mime_type,
                 observations_by_page=obs_by_page,
                 save_annotated=self._dto_ir_pipeline.output_dir is not None,
                 annotated_stem=annotated_stem,
             )
+            self._last_reconciliation_ir = pair.reconciliation
+            self._last_grounding_ir = pair.grounding
+
+            n_tables = (
+                len(pair.reconciliation.reconciliation.tables)
+                if pair.reconciliation else 0
+            )
+            n_targets = (
+                len(pair.grounding.grounding.targets)
+                if pair.grounding else 0
+            )
             logger.info(
                 f"[Pipeline] DTO IR generated: "
-                f"{len(self._last_dto_ir.reconciliation.tables)} table(s), "
-                f"{len(self._last_dto_ir.reconciliation.global_facts)} global_fact(s)"
+                f"{n_tables} table(s), {n_targets} grounding target(s)"
             )
         except Exception as e:
             logger.exception(f"[Pipeline] DTO IR generation failed (non-fatal): {e}")
-            self._last_dto_ir = None
+            self._last_reconciliation_ir = None
+            self._last_grounding_ir = None
+
+    def get_last_reconciliation_ir(self) -> Optional[ReconciliationDTOIR]:
+        return self._last_reconciliation_ir
+
+    def get_last_grounding_ir(self) -> Optional[GroundingDTOIR]:
+        return self._last_grounding_ir
 
     # ------------------------------------------------------------------
 

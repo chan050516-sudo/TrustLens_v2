@@ -15,20 +15,23 @@ from .render import (
 )
 from .vlm import (
     GeminiVLMClient,
-    build_prompt,
+    build_reconciliation_prompt,
+    build_grounding_prompt,
     DEFAULT_MODEL,
 )
 from .parsing import (
     parse_response,
-    normalize_enums,
-    validate_dtoir,
-    validate_observation_ids,
-    parse_and_validate,
+    normalize_enums_reconciliation,
+    normalize_enums_grounding,
+    parse_reconciliation_response,
+    parse_grounding_response,
+    validate_observation_ids_reconciliation,
+    validate_observation_ids_grounding,
 )
 from .source_mapping import ObservationMapper
-from .merging import merge_dto_irs
+from .merging import merge_reconciliation_irs, merge_grounding_irs
 from .validation import CrossValidator
-from .pipeline import DTOIRPipeline, DEFAULT_MAX_PER_CHUNK
+from .pipeline import DTOIRPipeline, DTOIRPair, DEFAULT_MAX_PER_CHUNK
 
 __all__ = [
     # exceptions
@@ -46,21 +49,26 @@ __all__ = [
     "encode_jpeg",
     # vlm
     "GeminiVLMClient",
-    "build_prompt",
+    "build_reconciliation_prompt",
+    "build_grounding_prompt",
     "DEFAULT_MODEL",
     # parsing
     "parse_response",
-    "normalize_enums",
-    "validate_dtoir",
-    "validate_observation_ids",
-    "parse_and_validate",
+    "normalize_enums_reconciliation",
+    "normalize_enums_grounding",
+    "parse_reconciliation_response",
+    "parse_grounding_response",
+    "validate_observation_ids_reconciliation",
+    "validate_observation_ids_grounding",
     # mapping
     "ObservationMapper",
     # merging
-    "merge_dto_irs",
+    "merge_reconciliation_irs",
+    "merge_grounding_irs",
     # validation
     "CrossValidator",
     # pipeline
     "DTOIRPipeline",
+    "DTOIRPair",
     "DEFAULT_MAX_PER_CHUNK",
 ]
