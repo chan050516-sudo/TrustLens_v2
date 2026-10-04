@@ -19,7 +19,7 @@ import logging
 from typing import Optional
 
 from app.core.dto_ir import (
-    DocumentType, TrustLensDTOIR,
+    DocumentType, ReconciliationDTOIR,
 )
 from app.core.evidence import Evidence
 from app.forensics.reconciliation.constants.statutory_rates import (
@@ -47,22 +47,20 @@ class ReconciliationEngine:
         enabled_rules: Optional[set[str]] = None,
     ):
         self._statutory = statutory or get_default_statutory_rates()
-        self._enabled_rules = enabled_rules   # None = 全部启用
+        self._enabled_rules = enabled_rules
         self._last_context: Optional[ReconciliationContext] = None
 
     # ------------------------------------------------------------------
 
-    def analyze(self, dto_ir: TrustLensDTOIR) -> list[Evidence]:
+    def analyze(self, dto_ir: ReconciliationDTOIR) -> list[Evidence]:
         evidences, _ = self.analyze_with_context(dto_ir)
         return evidences
 
     def analyze_with_context(
-        self, dto_ir: TrustLensDTOIR
+        self, dto_ir: ReconciliationDTOIR
     ) -> tuple[list[Evidence], ReconciliationContext]:
-        # 1. 构建规则上下文
         ctx = self._build_rule_context(dto_ir)
 
-        # 2. 收集规则
         rule_fns = [
             universal.dates_not_in_future,
             universal.currency_consistency,
@@ -71,7 +69,6 @@ class ReconciliationEngine:
             universal.person_id_mykad_check,
         ] + get_rules(dto_ir.document.document_type)
 
-        # 3. 逐规则执行
         computations: list[RuleResult] = []
         for fn in rule_fns:
             rule_name = getattr(fn, "__name__", repr(fn))
@@ -90,14 +87,12 @@ class ReconciliationEngine:
                 )]
             computations.extend(results)
 
-        # 4. → Evidence
         evidences: list[Evidence] = []
         for r in computations:
             ev = rule_result_to_evidence(r)
             if ev is not None:
                 evidences.append(ev)
 
-        # 5. → Context
         context = ContextBuilder.build(
             dto_ir=dto_ir,
             tables=ctx.tables,
@@ -111,15 +106,12 @@ class ReconciliationEngine:
         return self._last_context
 
     # ------------------------------------------------------------------
-    # 内部
 
-    def _build_rule_context(self, dto_ir: TrustLensDTOIR) -> RuleContext:
-        # 归一化 global_facts（按 role 分组）
+    def _build_rule_context(self, dto_ir: ReconciliationDTOIR) -> RuleContext:
         by_role: dict = {}
         for gf in dto_ir.reconciliation.global_facts:
             by_role.setdefault(gf.role, []).append(gf)
 
-        # 内部表重编号
         tables: list[TableInstance] = []
         per_page_counter: dict[int, int] = {}
         for t in dto_ir.reconciliation.tables:

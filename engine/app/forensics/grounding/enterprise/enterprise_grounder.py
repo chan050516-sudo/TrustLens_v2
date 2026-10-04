@@ -1,13 +1,14 @@
-"""Enterprise Grounding 路径。"""
+"""Enterprise Grounding 路径（签名改为 GroundingTarget）。"""
 from __future__ import annotations
 
 import logging
 from typing import Optional
 
-from app.core.dto_ir import EnterpriseGroundingItem
+from app.core.dto_ir import GroundingTarget
 from app.forensics.grounding.models.enterprise_result import (
     EnterpriseGroundingResult,
 )
+from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
 from app.forensics.grounding.enterprise.connectors import EnterpriseConnector
 
 logger = logging.getLogger(__name__)
@@ -39,18 +40,17 @@ class EnterpriseGrounder:
 
     def ground(
         self,
-        items: list[EnterpriseGroundingItem],
+        targets: list[GroundingTarget],
     ) -> list[EnterpriseGroundingResult]:
         results: list[EnterpriseGroundingResult] = []
 
-        for item in items:
-            entity_type = item.entity_type.value
+        for t in targets:
+            entity_type = t.entity_type.value
             keys_queried = [
-                {"key": k.key.value, "value": k.value}
-                for k in item.keys
+                {"key": k.key.value, "value": k.value} for k in t.keys
             ]
             obs_ids = (
-                list(item.source.observation_ids) if item.source else []
+                list(t.source.observation_ids) if t.source else []
             )
 
             matched_record: Optional[dict] = None
@@ -74,8 +74,10 @@ class EnterpriseGrounder:
                 results.append(EnterpriseGroundingResult(
                     entity_type=entity_type,
                     keys_queried=keys_queried,
+                    subkey=t.subkey,
                     match_found=True,
                     matched_record=matched_record,
+                    outcome=GroundingOutcome.EXACT_MATCH,
                     match_confidence=0.9,
                     source=matched_source,
                     observation_ids=obs_ids,
@@ -84,8 +86,10 @@ class EnterpriseGrounder:
                 results.append(EnterpriseGroundingResult(
                     entity_type=entity_type,
                     keys_queried=keys_queried,
+                    subkey=t.subkey,
                     match_found=False,
                     matched_record=None,
+                    outcome=GroundingOutcome.NOT_FOUND,
                     match_confidence=0.0,
                     source=None,
                     observation_ids=obs_ids,

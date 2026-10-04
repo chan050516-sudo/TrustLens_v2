@@ -2,12 +2,12 @@ from .grounding_engine import GroundingEngine
 from .models import (
     GroundingContext,
     GroundingSummary,
-    ResolvedEntity,
-    UnresolvedEntity,
+    GroundingOutcome,
     WebGroundingResult,
     EnterpriseGroundingResult,
     WebSource,
 )
+from .routing import GroundingStrategyRouter, RoutingDecision
 from .web import WebGrounder, TavilySearchClient, LLMSummarizer
 from .enterprise import (
     EnterpriseGrounder,
@@ -19,11 +19,12 @@ __all__ = [
     "GroundingEngine",
     "GroundingContext",
     "GroundingSummary",
-    "ResolvedEntity",
-    "UnresolvedEntity",
+    "GroundingOutcome",
     "WebGroundingResult",
     "EnterpriseGroundingResult",
     "WebSource",
+    "GroundingStrategyRouter",
+    "RoutingDecision",
     "WebGrounder",
     "TavilySearchClient",
     "LLMSummarizer",

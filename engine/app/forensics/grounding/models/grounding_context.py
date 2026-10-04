@@ -6,40 +6,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .web_result import WebGroundingResult
 from .enterprise_result import EnterpriseGroundingResult
-
-
-class ResolvedEntity(BaseModel):
-    """成功解析的实体。"""
-    model_config = ConfigDict(extra="forbid")
-
-    entity_type: str
-    query_value: str
-    resolved_value: Optional[str] = None
-    source: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    observation_ids: list[int] = Field(default_factory=list)
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class UnresolvedEntity(BaseModel):
-    """未能解析的实体。"""
-    model_config = ConfigDict(extra="forbid")
-
-    entity_type: str
-    query_value: str
-    source: str
-    reason: str
-    observation_ids: list[int] = Field(default_factory=list)
+from .grounding_outcome import GroundingOutcome
 
 
 class GroundingSummary(BaseModel):
+    """
+    5 态计数 + backend 使用统计。
+
+    去掉了 resolved/unresolved 二分，改为 5 态直接统计。
+    """
     model_config = ConfigDict(extra="forbid")
 
-    web_queries_total: int = 0
-    web_queries_resolved: int = 0
-    enterprise_queries_total: int = 0
-    enterprise_queries_resolved: int = 0
-    unresolved_total: int = 0
+    total_targets: int = 0
+    exact_match: int = 0
+    fuzzy_match: int = 0
+    conflict_found: int = 0
+    not_found: int = 0
+    unverifiable: int = 0
+
+    # 成本可观测性
+    web_queries: int = 0
+    enterprise_queries: int = 0
+    summarizer_calls: int = 0
 
 
 class GroundingContext(BaseModel):
@@ -49,18 +37,20 @@ class GroundingContext(BaseModel):
     设计原则：
       - Grounding 只产出 Context，不产出 Evidence。
         它的本质是"查资料"，查找结果本身不是异常。
-      - resolved_entities 记录"查到了什么"
-      - unresolved_entities 记录"查不到什么"
-      - Detective LLM 拿这些 + 其他引擎的 Evidence 综合判断
+      - 每个 target 一条 result，携带 5 态 outcome。
+      - 不携带 document_id（IR2 没有 document 元数据）。
     """
     model_config = ConfigDict(extra="forbid")
 
-    document_id: str
-
     web_results: list[WebGroundingResult] = Field(default_factory=list)
     enterprise_results: list[EnterpriseGroundingResult] = Field(default_factory=list)
-    resolved_entities: list[ResolvedEntity] = Field(default_factory=list)
-    unresolved_entities: list[UnresolvedEntity] = Field(default_factory=list)
 
     summary: GroundingSummary = Field(default_factory=GroundingSummary)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# 保留下面的兼容别名，如果需要被外部引用
+__all__ = [
+    "GroundingContext",
+    "GroundingSummary",
+]

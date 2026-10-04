@@ -1,0 +1,8 @@
+# GroundingStrategyRouter — 策略覆盖表（可选）。
+#
+# 若此文件存在，会覆盖内置默认路由。
+# path 取值：web / enterprise / unverifiable
+#
+# 本版本未启用覆盖，保留为空。
+
+strategies: []

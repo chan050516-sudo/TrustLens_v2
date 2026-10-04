@@ -19,11 +19,12 @@ import logging
 import re
 from typing import Optional
 
-from app.core.dto_ir import WebGroundingItem
+from app.core.dto_ir import GroundingTarget
 from app.forensics.grounding.models.web_result import (
     WebGroundingResult,
     WebSource,
 )
+from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
 from app.forensics.grounding.exceptions import WebGroundingError
 from .tavily_search_client import TavilySearchClient
 from .llm_summarizer import LLMSummarizer, SummarizeResult
@@ -35,9 +36,6 @@ _FALLBACK_SNIPPET_MAX_LEN = 400
 
 
 class WebGrounder:
-    """
-    Web Grounding 路径（Tavily + Gemini Summarizer）。
-    """
 
     def __init__(
         self,
@@ -51,44 +49,35 @@ class WebGrounder:
 
     def ground(
         self,
-        items: list[WebGroundingItem],
+        targets: list[GroundingTarget],
     ) -> list[WebGroundingResult]:
-        if not items:
+        if not targets:
             return []
 
-        # 1. 构造查询
-        queries: list[str] = [
-            self._build_query(item) for item in items
-        ]
+        queries = [self._build_query(t) for t in targets]
 
-        # 2. Tavily 并行搜索
         try:
             search_results = self._search_client.search_batch(queries)
         except WebGroundingError as e:
             logger.exception(f"[Grounding.web] Tavily batch failed: {e}")
-            return [
-                self._error_result(item, f"tavily_failed: {e}")
-                for item in items
-            ]
+            return [self._error_result(t, f"tavily_failed: {e}") for t in targets]
 
-        # 3. 一次 Gemini 调用总结
         try:
             summarize_results = self._summarizer.summarize_batch(search_results)
         except WebGroundingError as e:
             logger.exception(f"[Grounding.web] Summarizer failed: {e}")
             summarize_results = [
-                SummarizeResult(summary=None, not_found=False, error=str(e))
+                SummarizeResult(summary=None, outcome=None, error=str(e))
                 for _ in search_results
             ]
 
-        # 4. 组装
         return [
-            self._assemble_one(item, sres, summ)
-            for item, sres, summ in zip(items, search_results, summarize_results)
+            self._assemble_one(t, sres, summ)
+            for t, sres, summ in zip(targets, search_results, summarize_results)
         ]
 
     # ------------------------------------------------------------------
-    # Query 构造
+    # Query
 
     @staticmethod
     def _clean_key(key: str) -> str:
@@ -109,29 +98,38 @@ class WebGrounder:
         s = re.sub(r"\s+", " ", s).strip()
         return s
 
-    def _build_query(self, item: WebGroundingItem) -> str:
-        """
-        拼查询：clean_key + ' ' + value。
+    def _build_query(self, target: GroundingTarget) -> str:
+        parts: list[str] = []
+        if target.subkey:
+            cleaned_sub = self._clean_key(target.subkey)
+            if cleaned_sub:
+                parts.append(cleaned_sub)
+        et = target.entity_type.value.lower().replace("_", " ")
+        parts.append(et)
 
-        规则：
-          - key 为空 → 只用 value
-          - value 内含空格 → 加双引号包裹（防止搜索引擎把连续数字拆成独立词）
-          - 已加引号的 value 不重复加
-        """
-        cleaned = self._clean_key(item.key)
-        val = item.value.strip()
+        val = target.value.strip()
         if " " in val and not (val.startswith('"') and val.endswith('"')):
             val = f'"{val}"'
-        if cleaned:
-            return f"{cleaned} {val}".strip()
-        return val
+        parts.append(val)
+
+        for k in target.keys:
+            k_s = self._clean_key(k.key.value)
+            kv = k.value.strip()
+            if " " in kv:
+                kv = f'"{kv}"'
+            if k_s:
+                parts.append(f"{k_s} {kv}")
+            else:
+                parts.append(kv)
+
+        return " ".join(parts).strip()
 
     # ------------------------------------------------------------------
-    # 组装
+    # Assemble
 
     @staticmethod
     def _assemble_one(
-        item: WebGroundingItem,
+        target: GroundingTarget,
         sres: dict,
         summ: SummarizeResult,
     ) -> WebGroundingResult:
@@ -148,18 +146,27 @@ class WebGrounder:
             for r in raw_results
         ]
 
-        # 决定 summary 与 notes 优先级
+        keys_queried = [
+            {"key": k.key.value, "value": k.value} for k in target.keys
+        ]
+        obs_ids = (
+            list(target.source.observation_ids) if target.source else []
+        )
+
+        # 决定 outcome / summary / notes
+        outcome = GroundingOutcome.NOT_FOUND
         summary: Optional[str] = None
         notes: Optional[str] = None
 
         if error:
-            # Tavily 层错误
+            outcome = GroundingOutcome.NOT_FOUND
             notes = f"tavily_error: {error}"
         elif not raw_results:
-            # Tavily 没返回结果
+            outcome = GroundingOutcome.NOT_FOUND
             notes = "no_search_results"
         elif summ.error:
-            # LLM 调用失败 → 降级到 top-1 snippet
+            # LLM 失败 → 降级：outcome 保持 NOT_FOUND，summary 用 top-1 snippet
+            outcome = GroundingOutcome.NOT_FOUND
             top = sources[0] if sources else None
             if top and top.snippet:
                 snippet = top.snippet.strip()
@@ -169,59 +176,66 @@ class WebGrounder:
                 notes = "llm_unavailable_fallback_snippet"
             else:
                 notes = f"llm_error: {summ.error}"
-        elif summ.not_found:
-            # LLM 明确说找不到
-            summary = None
-            notes = "llm_reported_not_found"
-        elif summ.summary:
-            # 正常路径
+        elif summ.outcome is not None:
+            outcome = summ.outcome
             summary = summ.summary
-            notes = None
         else:
-            # LLM 返回了但 summary 为空（边界）→ 降级到 top-1 snippet
+            # LLM 返回了但没有 outcome → 降级
+            outcome = GroundingOutcome.NOT_FOUND
             top = sources[0] if sources else None
             if top and top.snippet:
                 snippet = top.snippet.strip()
                 if len(snippet) > _FALLBACK_SNIPPET_MAX_LEN:
                     snippet = snippet[:_FALLBACK_SNIPPET_MAX_LEN] + "..."
                 summary = snippet
-                notes = "empty_summary_fallback_snippet"
+                notes = "missing_outcome_fallback_snippet"
             else:
-                notes = "empty_summary"
+                notes = "missing_outcome"
 
-        # ★ confidence 计算：summary is None 时强制归零
-        if not summary:
+        # confidence
+        if outcome == GroundingOutcome.NOT_FOUND:
             confidence = 0.0
         else:
             scores = [s.score for s in sources if s.score is not None]
             confidence = max(scores) if scores else 0.5
 
         return WebGroundingResult(
-            key=item.key,
-            query_value=item.value,
+            entity_type=target.entity_type.value,
+            query_value=target.value,
+            subkey=target.subkey,
+            keys_queried=keys_queried,
             query_used=[sres.get("query", "")] if sres.get("query") else [],
             resolved_value=summary,
+            outcome=outcome,
             confidence=confidence,
             sources=sources,
             notes=notes,
-            observation_ids=(
-                list(item.source.observation_ids) if item.source else []
-            ),
+            observation_ids=obs_ids,
             raw_response=sres,
         )
 
     @staticmethod
-    def _error_result(item: WebGroundingItem, reason: str) -> WebGroundingResult:
+    def _error_result(
+        target: GroundingTarget,
+        reason: str,
+    ) -> WebGroundingResult:
+        keys_queried = [
+            {"key": k.key.value, "value": k.value} for k in target.keys
+        ]
+        obs_ids = (
+            list(target.source.observation_ids) if target.source else []
+        )
         return WebGroundingResult(
-            key=item.key,
-            query_value=item.value,
+            entity_type=target.entity_type.value,
+            query_value=target.value,
+            subkey=target.subkey,
+            keys_queried=keys_queried,
             query_used=[],
             resolved_value=None,
+            outcome=GroundingOutcome.NOT_FOUND,
             confidence=0.0,
             sources=[],
             notes=reason,
-            observation_ids=(
-                list(item.source.observation_ids) if item.source else []
-            ),
+            observation_ids=obs_ids,
             raw_response=None,
         )

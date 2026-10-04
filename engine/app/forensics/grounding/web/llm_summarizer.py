@@ -27,6 +27,7 @@ from google import genai
 from google.genai import types
 
 from app.forensics.grounding.exceptions import WebGroundingError
+from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,11 @@ _SNIPPET_MAX_LEN = 300
 class SummarizeResult:
     """单 query 的总结结果。"""
     summary: Optional[str]
-    not_found: bool
+    outcome: Optional[GroundingOutcome]
     error: Optional[str]
 
 
 class LLMSummarizer:
-    """Gemini 总结器。"""
 
     def __init__(
         self,
@@ -54,9 +54,7 @@ class LLMSummarizer:
     ):
         self.model = model
         self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
-        self._location = location or os.environ.get(
-            "GOOGLE_CLOUD_LOCATION", "global"
-        )
+        self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 
         http_options = types.HttpOptions(
             retry_options=types.HttpRetryOptions(attempts=1),
@@ -73,9 +71,7 @@ class LLMSummarizer:
             else:
                 self._client = genai.Client(http_options=http_options)
         except Exception as e:
-            raise WebGroundingError(
-                f"Failed to initialize Gemini client: {e}"
-            ) from e
+            raise WebGroundingError(f"Failed to initialize Gemini client: {e}") from e
 
     # ------------------------------------------------------------------
 
@@ -83,28 +79,12 @@ class LLMSummarizer:
         self,
         queries_with_results: list[dict[str, Any]],
     ) -> list[SummarizeResult]:
-        """
-        一次调用总结所有 query。
-
-        Args:
-            queries_with_results: [
-                {"query": str, "results": [{"title", "url", "snippet", "score"}, ...]},
-                ...
-            ]
-
-        Returns:
-            与输入一一对应的 `SummarizeResult` 列表。
-        """
         n = len(queries_with_results)
         if n == 0:
             return []
 
         prompt = self._build_prompt(queries_with_results)
-
-        config = types.GenerateContentConfig(
-            temperature=0.0,
-            # ★ 不加 response_mime_type="application/json"
-        )
+        config = types.GenerateContentConfig(temperature=0.0)
 
         try:
             response = self._client.models.generate_content(
@@ -116,14 +96,13 @@ class LLMSummarizer:
             logger.exception(f"[Grounding.summarizer] LLM call failed: {e}")
             err_msg = str(e)
             return [
-                SummarizeResult(summary=None, not_found=False, error=err_msg)
+                SummarizeResult(summary=None, outcome=None, error=err_msg)
                 for _ in range(n)
             ]
 
         raw_text = (getattr(response, "text", "") or "").strip()
         logger.info(
-            f"[Grounding.summarizer] summarized {n} queries, "
-            f"text_len={len(raw_text)}"
+            f"[Grounding.summarizer] summarized {n} queries, text_len={len(raw_text)}"
         )
 
         parsed = self._parse_json(raw_text)
@@ -131,9 +110,7 @@ class LLMSummarizer:
             logger.warning("[Grounding.summarizer] JSON parse failed")
             return [
                 SummarizeResult(
-                    summary=None,
-                    not_found=False,
-                    error="json_parse_failed",
+                    summary=None, outcome=None, error="json_parse_failed"
                 )
                 for _ in range(n)
             ]
@@ -144,16 +121,8 @@ class LLMSummarizer:
 
     @staticmethod
     def _extract_summaries(parsed: dict, n: int) -> list[SummarizeResult]:
-        """
-        从解析后的 dict 提取 summaries。
-
-        动态检测 query_index 的 base：
-          - 若最小 index == 0 且 max <= n-1 → 0-based
-          - 若最小 index == 1 且 max == n     → 1-based
-          - 否则按 0-based 处理，越界的丢弃
-        """
         results: list[SummarizeResult] = [
-            SummarizeResult(summary=None, not_found=False, error="missing_from_llm_output")
+            SummarizeResult(summary=None, outcome=None, error="missing_from_llm_output")
             for _ in range(n)
         ]
 
@@ -161,7 +130,6 @@ class LLMSummarizer:
         if not isinstance(items, list):
             return results
 
-        # 收集所有合法 int index，检测 base
         indices = [
             item.get("query_index")
             for item in items
@@ -170,12 +138,8 @@ class LLMSummarizer:
         if not indices:
             return results
 
-        min_idx = min(indices)
-        max_idx = max(indices)
-        if min_idx == 1 and max_idx == n:
-            offset = -1     # 1-based → 转 0-based
-        else:
-            offset = 0      # 默认 0-based
+        min_idx, max_idx = min(indices), max(indices)
+        offset = -1 if (min_idx == 1 and max_idx == n) else 0
 
         for item in items:
             if not isinstance(item, dict):
@@ -187,54 +151,71 @@ class LLMSummarizer:
             if idx < 0 or idx >= n:
                 continue
 
-            not_found = bool(item.get("not_found", False))
+            outcome_raw = item.get("outcome")
+            outcome: Optional[GroundingOutcome] = None
+            if isinstance(outcome_raw, str):
+                try:
+                    outcome = GroundingOutcome(outcome_raw)
+                except ValueError:
+                    outcome = None
+
             summary_raw = item.get("summary")
-            if not_found:
-                summary = None
-            elif summary_raw is None:
-                summary = None
-            else:
-                s = str(summary_raw).strip()
-                summary = s or None
+            summary = None
+            if isinstance(summary_raw, str) and summary_raw.strip():
+                summary = summary_raw.strip()
 
             results[idx] = SummarizeResult(
                 summary=summary,
-                not_found=not_found,
+                outcome=outcome,
                 error=None,
             )
 
         return results
 
     # ------------------------------------------------------------------
-    # Prompt
 
     @staticmethod
     def _build_prompt(queries_with_results: list[dict[str, Any]]) -> str:
         lines = [
-            "You are a forensic fact-checking assistant.",
+            "You are an OBSERVATION engine for a document forensics system.",
             "",
-            "For each numbered query below, you are given a list of search",
-            "results. Produce a concise 1-3 sentence summary of the facts",
-            "you can extract from these results.",
+            "For each numbered query, you are given a list of external search results.",
+            "Your job is to OBSERVE the relationship between the query value and the",
+            "external world. You are NOT asked to judge whether the document is real",
+            "or fake.",
+            "",
+            "# OUTCOME (choose exactly one per query)",
+            "- EXACT_MATCH:      An authoritative external source (official registry,",
+            "                    government site, institutional page) contains the",
+            "                    exact same value.",
+            "- FUZZY_MATCH:      Multiple public web sources mention highly related",
+            "                    values, but no single authoritative source confirms",
+            "                    exactly.",
+            "- CONFLICT_FOUND:   An authoritative external source contains a DIFFERENT",
+            "                    value for the SAME identifier (e.g. the registration",
+            "                    number belongs to a different company).",
+            "- NOT_FOUND:        No relevant results.",
+            "- UNVERIFIABLE:     Should NOT be used by you; decided upstream.",
             "",
             "# OUTPUT SCHEMA (JSON only, no markdown fences)",
             "{",
             '  "results": [',
             '    {',
             '      "query_index": <int, counting from 0>,',
-            '      "summary":     "<string or null>",',
-            '      "not_found":   <bool>',
-            '    },',
+            '      "outcome":     "EXACT_MATCH"|"FUZZY_MATCH"|"CONFLICT_FOUND"|"NOT_FOUND",',
+            '      "summary":     "<1-3 sentences or null>"',
+            "    },",
             "    ...",
             "  ]",
             "}",
             "",
             "# CRITICAL RULES",
-            "- `query_index` MUST start from 0 (not 1). Query 0 is the first one.",
-            "- The number of entries in `results` MUST equal the number of queries.",
-            "- `summary`: 1-3 sentences. Set to null if `not_found` is true.",
-            "- `not_found`: true if the search results do NOT contain reliable",
-            "  information for that query.",
+            "- `query_index` MUST start from 0 (not 1).",
+            "- `summary` describes what the external world says, NOT what the",
+            "  document is. Do NOT use words like 'fake', 'fraud', 'suspicious',",
+            "  'authentic', 'genuine'.",
+            "- For NOT_FOUND, set `summary` to null.",
+            "- For CONFLICT_FOUND, include the external value in the summary.",
             "- Do NOT fabricate. Do NOT invent sources. Do NOT output URLs.",
             "- Output valid JSON only. No commentary, no markdown fences.",
             "",
@@ -259,14 +240,12 @@ class LLMSummarizer:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # JSON parse
 
     @staticmethod
     def _parse_json(text: str) -> Optional[dict]:
         if not text:
             return None
         t = text.strip()
-
         if t.startswith("```"):
             lines = t.splitlines()
             if lines and lines[0].startswith("```"):

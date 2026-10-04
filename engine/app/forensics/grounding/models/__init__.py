@@ -1,18 +1,13 @@
+from .grounding_outcome import GroundingOutcome
 from .web_result import WebSource, WebGroundingResult
 from .enterprise_result import EnterpriseGroundingResult
-from .grounding_context import (
-    GroundingContext,
-    GroundingSummary,
-    ResolvedEntity,
-    UnresolvedEntity,
-)
+from .grounding_context import GroundingContext, GroundingSummary
 
 __all__ = [
+    "GroundingOutcome",
     "WebSource",
     "WebGroundingResult",
     "EnterpriseGroundingResult",
     "GroundingContext",
     "GroundingSummary",
-    "ResolvedEntity",
-    "UnresolvedEntity",
 ]
