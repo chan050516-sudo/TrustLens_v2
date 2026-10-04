@@ -177,6 +177,19 @@ For each entity you identify:
   "brand_name", "registered_address")
 - Cite the source with `source.observation_ids`
 
+# EXTRACTION BOUNDARY
+Extract entities that identify the COUNTERPARTIES, ISSUERS, or ASSETS
+involved in the document's primary claims.
+
+Do NOT extract:
+- Payment methods or card networks (e.g. VISA, MASTERCARD, PayPal, bank
+  transfer, cheque, direct debit) when they appear merely as a transaction
+  channel rather than a counterparty.
+- Generic product names or category terms (e.g. "consulting services",
+  "delivery", "utilities").
+- Generic amounts, dates, or reference numbers that have no independent
+  meaning outside the document.
+
 # CRITICAL RULES
 1. **DO NOT decide verification strategy.** Do NOT decide whether to search the web
    or the enterprise database. That is the downstream engine's job.

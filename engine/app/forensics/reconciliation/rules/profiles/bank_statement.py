@@ -1,4 +1,13 @@
-"""BANK_STATEMENT 的规则集。"""
+"""BANK_STATEMENT 的规则集。
+
+注意：state_transition 系列规则（opening/running_balance/closing/sum_flow/
+flow_signed/row_flow_exclusive）已移到 rules/common.py 的 common_rules()，
+对所有 document_type 生效。
+
+本 profile 只保留：
+  - 依赖 PERIOD_START/PERIOD_END global_fact 的文档级区间检查
+  - 针对 EVENT_DATE 列的单调性检查（列名是 bank 特有的）
+"""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -16,15 +25,9 @@ from app.forensics.reconciliation.rules.base import (
     extract_date, get_first_fact, collect_obs_ids, get_cell,
 )
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import state_transition, temporal_interval, statistical
-from app.core.dto_ir import BankTransactionTable
+from ..topologies import state_transition
 
 
-# 期间两端各放宽的天数，容纳"上一期最后一笔交易落在声明期间开始日之前几天"
-# 这类正常排版惯例。放宽后不再依赖"B/F C/F 关键词"来决定是否豁免——而是：
-#   1. 无日期的行 → 直接跳过（这是"物理空"，不是违规）
-#   2. 有日期的行 → 在 [ps - N, pe + N] 内视为合规
-# 两个都是**通用规则**，不绑定任何文档特定的关键词或语言。
 _PERIOD_TOLERANCE_DAYS = 3
 
 
@@ -66,7 +69,6 @@ def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
         for i, row in enumerate(inst.table.tuples):
             d = to_date(get_cell(row, cols, "EVENT_DATE"))
             if d is None:
-                # 无日期的行：物理空，不做区间判定
                 continue
             if lower <= d <= upper:
                 continue
@@ -102,15 +104,6 @@ def _period_contains_all_txns(ctx: RuleContext) -> list[RuleResult]:
     return results
 
 
-def _benford_bank(ctx: RuleContext) -> list[RuleResult]:
-    return statistical.benford_first_digit(
-        ctx,
-        table_classes=[BankTransactionTable],
-        amount_columns=["FLOW_OUT", "FLOW_IN"],
-        min_samples=30,
-    )
-
-
 def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
     return state_transition.chronology_monotonic_for_table(
         ctx,
@@ -119,17 +112,12 @@ def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
         rule_name="bank.chronology_monotonic",
     )
 
+
 def _rules():
     return [
-        state_transition.opening_matches_first_row,
-        state_transition.running_balance_recursion,
-        state_transition.closing_matches_last_row,
-        state_transition.sum_flow_matches_balance_change,
-        state_transition.flow_signed_consistency,
-        state_transition.row_flow_exclusive,
         _period_contains_all_txns,
-        _chronology_monotonic,      # ★ 新增
-        _benford_bank,
+        _chronology_monotonic,
     ]
+
 
 register([DocumentType.BANK_STATEMENT], _rules)

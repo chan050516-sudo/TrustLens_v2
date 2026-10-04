@@ -33,7 +33,7 @@ from app.forensics.reconciliation.models.reconciliation_context import (
 from app.forensics.reconciliation.models.rule_result import (
     RuleResult, RuleSeverity, RuleStatus,
 )
-from app.forensics.reconciliation.rules import get_rules, universal
+from app.forensics.reconciliation.rules import get_rules, universal, common
 from app.forensics.reconciliation.rules.base import RuleContext, TableInstance
 
 logger = logging.getLogger(__name__)
@@ -61,13 +61,18 @@ class ReconciliationEngine:
     ) -> tuple[list[Evidence], ReconciliationContext]:
         ctx = self._build_rule_context(dto_ir)
 
-        rule_fns = [
-            universal.dates_not_in_future,
-            universal.currency_consistency,
-            universal.percentage_range,
-            universal.account_number_luhn_check,
-            universal.person_id_mykad_check,
-        ] + get_rules(dto_ir.document.document_type)
+        # 收集规则（universal → common topology → profile-specific）
+        rule_fns = (
+            [
+                universal.dates_not_in_future,
+                universal.currency_consistency,
+                universal.percentage_range,
+                universal.account_number_luhn_check,
+                universal.person_id_mykad_check,
+            ]
+            + common.common_rules()
+            + get_rules(dto_ir.document.document_type)
+        )
 
         computations: list[RuleResult] = []
         for fn in rule_fns:

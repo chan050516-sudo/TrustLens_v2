@@ -1,17 +1,24 @@
-"""PAYSLIP 的规则集。"""
+"""PAYSLIP 的规则集。
+
+注意：additive_partition 系列规则已移到 rules/common.py 的 common_rules()，
+对所有 document_type 生效。
+
+本 profile 只保留：
+  - 文档级期间长度合理性
+  - EVENT_DATE 单调性
+"""
 from __future__ import annotations
 
 from app.core.dto_ir import DocumentType, GlobalFactRole
 from app.forensics.reconciliation.models.rule_result import RuleResult
 from app.forensics.reconciliation.rules.base import RuleContext
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import additive_partition, temporal_interval, state_transition, statistical
+from ..topologies import state_transition
 from app.core.dto_ir import PayrollTable
 
 
 def _period_length_reasonable(ctx: RuleContext) -> list[RuleResult]:
     """PERIOD_START 到 PERIOD_END 应在 25-35 天之间。"""
-    from datetime import date
     from app.forensics.reconciliation.models.rule_result import (
         RuleSeverity, RuleStatus,
     )
@@ -47,15 +54,6 @@ def _period_length_reasonable(ctx: RuleContext) -> list[RuleResult]:
     )]
 
 
-def _benford_payslip(ctx: RuleContext) -> list[RuleResult]:
-    return statistical.benford_first_digit(
-        ctx,
-        table_classes=[PayrollTable],
-        amount_columns=["AMOUNT"],
-        min_samples=30,
-    )
-
-
 def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
     return state_transition.chronology_monotonic_for_table(
         ctx,
@@ -67,14 +65,8 @@ def _chronology_monotonic(ctx: RuleContext) -> list[RuleResult]:
 
 def _rules():
     return [
-        additive_partition.payslip_gross_pay_check,
-        additive_partition.payslip_employee_deduction_check,
-        additive_partition.payslip_employer_contribution_check,
-        additive_partition.payslip_net_pay_check,
-        additive_partition.payslip_statutory_rate_check,
         _period_length_reasonable,
-        _chronology_monotonic,      # ★ 新增
-        _benford_payslip,
+        _chronology_monotonic,
     ]
 
 

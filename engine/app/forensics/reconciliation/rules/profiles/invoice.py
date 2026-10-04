@@ -1,4 +1,12 @@
-"""INVOICE / QUOTATION / RECEIPT 的规则集。"""
+"""INVOICE / QUOTATION / RECEIPT 的规则集。
+
+注意：product_integrity 系列规则已移到 rules/common.py 的 common_rules()，
+对所有 document_type 生效。
+
+本 profile 只保留：
+  - 依赖 global_fact 组合的文档级金额守恒
+  - 文档级日期逻辑（issue/due、内嵌日期）
+"""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -20,8 +28,7 @@ from app.forensics.reconciliation.rules.topologies.identifiers import (
     extract_date_from_reference,
 )
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import product_integrity, temporal_interval, statistical
-from app.core.dto_ir import CommercialLinesTable
+from ..topologies import temporal_interval
 
 
 def _total_arithmetic(ctx: RuleContext) -> Optional[RuleResult]:
@@ -135,11 +142,9 @@ def _id_date_vs_issue_date(ctx: RuleContext) -> list[RuleResult]:
     if issue_date is None:
         return []
 
-    # 收集候选参考号
-    candidates: list[tuple[str, str, list[int]]] = []   # (label, value, obs_ids)
+    candidates: list[tuple[str, str, list[int]]] = []
 
-    # enterprise keys
-    for i, item in enumerate(ctx.dto_ir.grounding.enterprise):
+    for i, item in enumerate(ctx.dto_ir.grounding.targets):
         for k in item.keys:
             if k.key in (
                 EnterpriseKeyType.INVOICE_NUMBER,
@@ -149,15 +154,6 @@ def _id_date_vs_issue_date(ctx: RuleContext) -> list[RuleResult]:
             ):
                 obs = list(item.source.observation_ids) if item.source else []
                 candidates.append((k.key.value, k.value, obs))
-
-    # web items（按 key 关键字过滤）
-    for w in ctx.dto_ir.grounding.web:
-        key_lower = (w.key or "").lower()
-        if any(t in key_lower for t in (
-            "invoice", "reference", "ref_no", "receipt", "quotation",
-        )):
-            obs = list(w.source.observation_ids) if w.source else []
-            candidates.append((w.key, w.value, obs))
 
     results: list[RuleResult] = []
     for label, value, obs_ids in candidates:
@@ -195,25 +191,12 @@ def _id_date_vs_issue_date(ctx: RuleContext) -> list[RuleResult]:
     return results
 
 
-def _benford_invoice(ctx: RuleContext) -> list[RuleResult]:
-    return statistical.benford_first_digit(
-        ctx,
-        table_classes=[CommercialLinesTable],
-        amount_columns=["ROW_TOTAL", "UNIT_PRICE"],
-        min_samples=30,
-    )
-
 def _rules():
     return [
-        product_integrity.row_total_arithmetic,
-        product_integrity.subtotal_equals_sum_row_totals,
-        product_integrity.tax_equals_sum_row_tax,
-        product_integrity.tax_rate_multiplier,      # ★ 新增
         _total_arithmetic,
         _payment_arithmetic,
         _issue_le_due,
-        _id_date_vs_issue_date,                     # ★ 新增
-        _benford_invoice,
+        _id_date_vs_issue_date,
     ]
 
 

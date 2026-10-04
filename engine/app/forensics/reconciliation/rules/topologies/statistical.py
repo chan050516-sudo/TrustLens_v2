@@ -200,3 +200,37 @@ def benford_first_digit(
             ))
 
     return results
+
+
+# ============================================================
+# 通用 Benford：对所有已知 table_type 自动跑
+# ============================================================
+
+# 每种表类型对应的"金额列"。样本量不足 30 时 benford_first_digit
+# 内部会静默跳过。
+_BENFORD_COLUMNS_BY_TABLE_CLS: dict[type, list[str]] = {
+    BankTransactionTable: ["FLOW_OUT", "FLOW_IN"],
+    CommercialLinesTable: ["ROW_TOTAL", "UNIT_PRICE"],
+    PayrollTable: ["AMOUNT"],
+    # Official / Legal 表暂不纳入——常见样本量不足以做统计判定
+}
+
+
+def benford_for_all_tables(ctx: RuleContext) -> list[RuleResult]:
+    """
+    对 ctx.tables 里所有已登记 table_type 跑 Benford 首位数字分析。
+
+    每种表类型的金额列由 _BENFORD_COLUMNS_BY_TABLE_CLS 指定。
+    样本不足 min_samples 的组合会被 benford_first_digit 静默跳过。
+    """
+    results: list[RuleResult] = []
+    for table_cls, amount_cols in _BENFORD_COLUMNS_BY_TABLE_CLS.items():
+        results.extend(
+            benford_first_digit(
+                ctx,
+                table_classes=[table_cls],
+                amount_columns=amount_cols,
+                min_samples=_MIN_SAMPLES,
+            )
+        )
+    return results

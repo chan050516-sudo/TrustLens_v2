@@ -1,16 +1,16 @@
 """LEGAL_DOC / OFFICIAL_DOC 的规则集。
 
-Reconciliation 对这两类文档的职责有限——正文中的法条与责任判定
-属于 Semantic Engine 范畴。这里只做：
-  1. 时序区间（START ≤ END、DEADLINE ≥ ISSUE_DATE）
-  2. Official 金额非负（具体白名单在 topological rule 里）
+注意：additive_partition.official_amounts_non_negative 已移到
+rules/common.py 的 common_rules()。
+
+本 profile 只保留时序区间规则。
 """
 from __future__ import annotations
 
 from app.core.dto_ir import DocumentType, GlobalFactRole
 from app.forensics.reconciliation.rules.base import RuleContext
 from app.forensics.reconciliation.rules.registry import register
-from ..topologies import additive_partition, temporal_interval
+from ..topologies import temporal_interval
 
 
 def _deadline_after_issue(ctx: RuleContext):
@@ -35,7 +35,6 @@ def _rules():
     return [
         _deadline_after_issue,
         _validity_window,
-        additive_partition.official_amounts_non_negative,
     ]
 
 
