@@ -19,7 +19,7 @@ import logging
 from typing import Optional
 
 from app.core.dto_ir import (
-    DocumentType, ReconciliationDTOIR,
+    DocumentType, ReconciliationDTOIR, GroundingDTOIR
 )
 from app.core.evidence import Evidence
 from app.forensics.reconciliation.constants.statutory_rates import (
@@ -52,13 +52,25 @@ class ReconciliationEngine:
 
     # ------------------------------------------------------------------
 
-    def analyze(self, dto_ir: ReconciliationDTOIR) -> list[Evidence]:
+    def analyze(self, dto_ir: ReconciliationDTOIR, grounding_ir: Optional[GroundingDTOIR] = None,) -> list[Evidence]:
         evidences, _ = self.analyze_with_context(dto_ir)
         return evidences
 
     def analyze_with_context(
-        self, dto_ir: ReconciliationDTOIR
+        self,
+        dto_ir: ReconciliationDTOIR,
+        grounding_dto_ir: Optional["GroundingDTOIR"] = None,
     ) -> tuple[list[Evidence], ReconciliationContext]:
+        """
+        Args:
+            dto_ir: IR1（必填）
+            grounding_dto_ir: IR2（可选）。若提供，会把它的 grounding 字段
+                            注入到 dto_ir 供 universal ID 校验使用。
+        """
+        if grounding_dto_ir is not None and dto_ir.grounding is None:
+            dto_ir = dto_ir.model_copy(
+                update={"grounding": grounding_dto_ir.grounding}
+            )
         ctx = self._build_rule_context(dto_ir)
 
         # 收集规则（universal → common topology → profile-specific）
@@ -112,7 +124,7 @@ class ReconciliationEngine:
 
     # ------------------------------------------------------------------
 
-    def _build_rule_context(self, dto_ir: ReconciliationDTOIR) -> RuleContext:
+    def _build_rule_context(self, dto_ir: ReconciliationDTOIR, grounding_ir: Optional[GroundingDTOIR] = None,) -> RuleContext:
         by_role: dict = {}
         for gf in dto_ir.reconciliation.global_facts:
             by_role.setdefault(gf.role, []).append(gf)

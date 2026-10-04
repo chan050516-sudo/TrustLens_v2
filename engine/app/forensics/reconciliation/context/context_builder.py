@@ -2,13 +2,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable
 
-from app.core.dto_ir import (
-    GlobalFact, GlobalFactRole, TrustLensDTOIR,
-)
+from app.core.dto_ir import ReconciliationDTOIR
 from app.forensics.reconciliation.models.reconciliation_context import (
-    DataQualityIssue,
     NormalizedGlobalFact,
     ReconciliationContext,
     ReconciliationSummary,
@@ -16,7 +12,6 @@ from app.forensics.reconciliation.models.reconciliation_context import (
     UnverifiedField,
 )
 from app.forensics.reconciliation.models.rule_result import RuleResult
-from app.forensics.reconciliation.operators.currency_ops import normalize_currency
 from app.forensics.reconciliation.rules.base import (
     TableInstance, extract_currency, extract_money,
 )
@@ -28,7 +23,7 @@ class ContextBuilder:
 
     @staticmethod
     def build(
-        dto_ir: TrustLensDTOIR,
+        dto_ir: ReconciliationDTOIR,
         tables: list[TableInstance],
         computations: list[RuleResult],
         evidence_count: int,

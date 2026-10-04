@@ -142,6 +142,10 @@ def _id_date_vs_issue_date(ctx: RuleContext) -> list[RuleResult]:
     if issue_date is None:
         return []
 
+    grounding = getattr(ctx.dto_ir, "grounding", None)
+    if grounding is None:
+        return []
+
     candidates: list[tuple[str, str, list[int]]] = []
 
     for i, item in enumerate(ctx.dto_ir.grounding.targets):

@@ -143,15 +143,21 @@ from .topologies import identifiers
 
 def account_number_luhn_check(ctx: RuleContext) -> list[RuleResult]:
     """
-    对 grounding.enterprise 里的 ACCOUNT_NUMBER 做 Luhn 校验。
+    对 grounding.targets 里的 ACCOUNT_NUMBER 做 Luhn 校验。
 
     只对"看起来像卡号"（纯数字 + 长度 13-19）的值执行；
     普通银行账号（马来西亚本地账号）跳过。
+
+    若 dto_ir.grounding 为 None（调度层未注入），跳过。
     """
     from app.core.dto_ir import EnterpriseKeyType
 
+    grounding = getattr(ctx.dto_ir, "grounding", None)
+    if grounding is None:
+        return []
+
     results: list[RuleResult] = []
-    for i, item in enumerate(ctx.dto_ir.grounding.enterprise):
+    for i, item in enumerate(grounding.targets):
         for j, k in enumerate(item.keys):
             if k.key != EnterpriseKeyType.ACCOUNT_NUMBER:
                 continue
@@ -169,7 +175,7 @@ def account_number_luhn_check(ctx: RuleContext) -> list[RuleResult]:
                 status=RuleStatus.FAILED,
                 severity=RuleSeverity.WARNING,
                 description=(
-                    f"enterprise[{i}].keys[{j}] ACCOUNT_NUMBER '{value}' "
+                    f"targets[{i}].keys[{j}] ACCOUNT_NUMBER '{value}' "
                     f"fails Luhn checksum"
                 ),
                 inputs={"value_length": len(value)},
@@ -185,15 +191,21 @@ def account_number_luhn_check(ctx: RuleContext) -> list[RuleResult]:
 
 def person_id_mykad_check(ctx: RuleContext) -> list[RuleResult]:
     """
-    对 grounding.enterprise 里的 PERSON_ID 做 MyKad 格式校验。
+    对 grounding.targets 里的 PERSON_ID 做 MyKad 格式校验。
 
     只对"看起来像 MyKad"（12 位数字或 YYMMDD-PB-#### 形态）的值执行；
     其它国家 ID 跳过。仅校验结构，不校验校验和。
+
+    若 dto_ir.grounding 为 None（调度层未注入），跳过。
     """
     from app.core.dto_ir import EnterpriseKeyType
 
+    grounding = getattr(ctx.dto_ir, "grounding", None)
+    if grounding is None:
+        return []
+
     results: list[RuleResult] = []
-    for i, item in enumerate(ctx.dto_ir.grounding.enterprise):
+    for i, item in enumerate(grounding.targets):
         for j, k in enumerate(item.keys):
             if k.key != EnterpriseKeyType.PERSON_ID:
                 continue
@@ -211,7 +223,7 @@ def person_id_mykad_check(ctx: RuleContext) -> list[RuleResult]:
                 status=RuleStatus.FAILED,
                 severity=RuleSeverity.WARNING,
                 description=(
-                    f"enterprise[{i}].keys[{j}] PERSON_ID '{value}' "
+                    f"targets[{i}].keys[{j}] PERSON_ID '{value}' "
                     f"invalid MyKad format ({reason})"
                 ),
                 inputs={"value": value, "reason": reason},

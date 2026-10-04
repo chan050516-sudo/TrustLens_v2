@@ -1,12 +1,15 @@
 """
 Reconciliation Engine 端到端测试。
 
-输入：一个内联构造的 TrustLensDTOIR（模拟银行对账单），
-      或接受命令行传入的 DTO IR JSON 文件。
-
 用法：
+    # 使用内置样本（来自 bank_statement_image_test_4.jpg 的真实测试结果）
     python engine/tests/test_reconciliation_engine.py
-    python engine/tests/test_reconciliation_engine.py path/to/dto_ir.json
+
+    # 从文件加载（可分别提供 recon / ground）
+    python engine/tests/test_reconciliation_engine.py recon.json ground.json
+
+    # 只跑 reconciliation（无 grounding）
+    python engine/tests/test_reconciliation_engine.py recon.json
 """
 from __future__ import annotations
 
@@ -16,19 +19,23 @@ import logging
 import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.core.dto_ir import TrustLensDTOIR
+from app.core.dto_ir import ReconciliationDTOIR, GroundingDTOIR
 from app.forensics.reconciliation.reconciliation_engine import ReconciliationEngine
 
 
-def _sample_bank_statement_dto_ir() -> dict:
-    """模拟之前测试输出的银行对账单 DTO IR。"""
+# ============================================================
+# 内置样本 —— 来自 bank_statement_image_test_4.jpg 的真实双 channel 输出
+# ============================================================
+
+def _sample_reconciliation_ir() -> dict:
+    """上一轮测试中 ReconciliationDTOIR 的真实输出。"""
     return {
+        "conflicts": [],
         "document": {
-            "document_id": "bank_statement_p1",
+            "document_id": "doc_0",
             "document_type": "BANK_STATEMENT",
             "page_count": 1,
             "source": {"observation_ids": [1006]},
@@ -38,12 +45,12 @@ def _sample_bank_statement_dto_ir() -> dict:
                 {
                     "role": "OPENING_BALANCE",
                     "value": {"amount": "0.57", "currency": "GBP"},
-                    "source": {"observation_ids": [1013, 1014]},
+                    "source": {"observation_ids": [1014]},
                 },
                 {
                     "role": "CLOSING_BALANCE",
                     "value": {"amount": "2139.27", "currency": "GBP"},
-                    "source": {"observation_ids": [1020, 1021]},
+                    "source": {"observation_ids": [1021]},
                 },
                 {
                     "role": "PERIOD_START",
@@ -58,7 +65,7 @@ def _sample_bank_statement_dto_ir() -> dict:
             ],
             "tables": [
                 {
-                    "id": "table_transactions",
+                    "id": "table_0",
                     "table_type": "BANK_TRANSACTIONS",
                     "columns": [
                         "EVENT_DATE", "DESC", "FLOW_OUT", "FLOW_IN", "RUNNING_BALANCE",
@@ -68,17 +75,17 @@ def _sample_bank_statement_dto_ir() -> dict:
                         "Paid out", "Paid in", "Balance",
                     ],
                     "tuples": [
-                        ["24 Nov 23", "BALANCE BROUGHT FORWARD", None, None, "0.57"],
-                        ["25 Nov 23", "CR Transfer", None, "2212.14", "2212.71"],
-                        ["26 Nov 23", "BP Telephone Bill Payment MASTERCARD", "60.00", None, "152.71"],
-                        ["27 Nov 23", "BP DHL delivery services", "30.50", None, "122.71"],
-                        ["28 Dec 23", "CR Cheque Deposit", None, "425.23", None],
-                        ["29 Nov 23", "CR Jessica George", None, "500.00", None],
+                        ["2023-11-24", "BALANCE BROUGHT FORWARD", None, None, "0.57"],
+                        ["2023-11-25", "CR Transfer", None, "2212.14", "2212.71"],
+                        ["2023-11-26", "BP Telephone Bill Payment MASTERCARD", "60.00", None, "152.71"],
+                        ["2023-11-27", "BP DHL delivery services", "30.50", None, "122.71"],
+                        ["2023-12-28", "CR Cheque Deposit", None, "425.23", None],
+                        ["2023-11-29", "CR Jessica George", None, "500.00", None],
                         [None, "BP Shell 2-4 NEW CROSS ROAD", "202.34", None, "27.76"],
                         [None, "BP Pizza Union Hoxton", "15.13", None, "27.76"],
-                        ["30 Dec 23", "BP Uber", "28.90", None, "1.53"],
-                        ["01 Dec 23", "BP British Gas Payment MASTERCARD", None, None, "17.27"],
-                        ["02 Dec 23", "BP Costa Cofee", "1.00", None, "0.27"],
+                        ["2023-12-30", "BP Uber", "28.90", None, "1.53"],
+                        ["2023-12-01", "BP British Gas Payment MASTERCARD", None, None, "17.27"],
+                        ["2023-12-02", "BP Costa Cofee", "1.00", None, "10.27"],
                         [None, "BALANCE CARRIED FORWARD", None, None, "2139.27"],
                     ],
                     "source_ids": [
@@ -98,31 +105,137 @@ def _sample_bank_statement_dto_ir() -> dict:
                 },
             ],
         },
-        "grounding": {
-            "web": [],
-            "enterprise": [
-                {
-                    "entity_type": "ACCOUNT",
-                    "keys": [
-                        {"key": "ACCOUNT_NUMBER", "value": "4242424242424242"},  # Luhn-valid
-                        {"key": "ACCOUNT_NUMBER", "value": "4242424242424241"},  # Luhn-invalid
-                    ],
-                    "source": {"observation_ids": [1025]},
-                },
-                {
-                    "entity_type": "INVOICE",
-                    "keys": [{"key": "INVOICE_NUMBER", "value": "INV-20231125-001"}],
-                    "source": {"observation_ids": [1000]},
-                }
-            ],
-        },
-        "conflicts": [],
     }
 
 
+def _sample_grounding_ir() -> dict:
+    """上一轮测试中 GroundingDTOIR 的真实输出。"""
+    return {
+        "conflicts": [],
+        "grounding": {
+            "targets": [
+                {
+                    "entity_type": "BANK",
+                    "value": "HSBC UK",
+                    "keys": [
+                        {"key": "BANK_ID", "value": "HBUKGB4195W"},
+                    ],
+                    "subkey": None,
+                    "source": {"observation_ids": [1000, 1028]},
+                },
+                {
+                    "entity_type": "WEBSITE",
+                    "value": "www.hsbc.co.uk",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1005]},
+                },
+                {
+                    "entity_type": "CUSTOMER",
+                    "value": "Mr Toby Grant",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1007]},
+                },
+                {
+                    "entity_type": "ADDRESS",
+                    "value": "Flat 2 27 Argyll Road London W8 7DA",
+                    "keys": [],
+                    "subkey": "recipient_address",
+                    "source": {"observation_ids": [1008, 1009, 1010, 1011]},
+                },
+                {
+                    "entity_type": "ACCOUNT",
+                    "value": "Mr Toby Grant",
+                    "keys": [
+                        {"key": "ACCOUNT_NUMBER", "value": "GB24HBUK408913829263"},
+                        {"key": "ACCOUNT_ID", "value": "74329263"},
+                        {"key": "OTHER_ID", "value": "40-25-01"},
+                    ],
+                    "subkey": "bank_account",
+                    "source": {"observation_ids": [1025, 1033, 1034, 1035]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "MASTERCARD",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1054, 1086]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "DHL delivery services",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1059]},
+                },
+                {
+                    "entity_type": "PERSON",
+                    "value": "Jessica George",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1068]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "Shell 2-4 NEW CROSS ROAD",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1071]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "Pizza Union Hoxton",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1075]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "Uber",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1080]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "British Gas",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1085]},
+                },
+                {
+                    "entity_type": "ORGANIZATION",
+                    "value": "Costa Cofee",
+                    "keys": [],
+                    "subkey": None,
+                    "source": {"observation_ids": [1090]},
+                },
+            ],
+        },
+    }
+
+
+# ============================================================
+# 主流程
+# ============================================================
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("dto_ir_json", nargs="?", type=Path, default=None)
+    parser.add_argument(
+        "recon_json",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="Path to ReconciliationDTOIR JSON (optional; uses inline sample if absent)",
+    )
+    parser.add_argument(
+        "ground_json",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="Path to GroundingDTOIR JSON (optional; uses inline sample if absent)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -130,23 +243,50 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    if args.dto_ir_json:
-        print(f"[test] Loading DTO IR from {args.dto_ir_json}")
-        data = json.loads(args.dto_ir_json.read_text(encoding="utf-8"))
+    # ---------- 加载 ReconciliationDTOIR ----------
+    if args.recon_json:
+        print(f"[test] Loading ReconciliationDTOIR from {args.recon_json}")
+        recon_data = json.loads(args.recon_json.read_text(encoding="utf-8"))
     else:
-        print("[test] Using inline sample DTO IR (bank statement)")
-        data = _sample_bank_statement_dto_ir()
+        print("[test] Using inline sample ReconciliationDTOIR (bank statement)")
+        recon_data = _sample_reconciliation_ir()
 
-    dto_ir = TrustLensDTOIR.model_validate(data)
+    # ---------- 加载 GroundingDTOIR ----------
+    if args.ground_json:
+        print(f"[test] Loading GroundingDTOIR from {args.ground_json}")
+        ground_data = json.loads(args.ground_json.read_text(encoding="utf-8"))
+    elif args.recon_json:
+        # 用户只提供了 recon，明确表示不注入 grounding
+        print("[test] No GroundingDTOIR provided; running without grounding data")
+        ground_data = None
+    else:
+        print("[test] Using inline sample GroundingDTOIR")
+        ground_data = _sample_grounding_ir()
 
+    # ---------- 构造 ----------
+    recon_ir = ReconciliationDTOIR.model_validate(recon_data)
+    ground_ir = (
+        GroundingDTOIR.model_validate(ground_data)
+        if ground_data is not None
+        else None
+    )
+
+    if ground_ir is not None:
+        print(f"[test] Grounding targets: {len(ground_ir.grounding.targets)}")
+    else:
+        print("[test] Grounding targets: <none>")
+
+    # ---------- 执行 ----------
     engine = ReconciliationEngine()
-    evidences, context = engine.analyze_with_context(dto_ir)
+    evidences, context = engine.analyze_with_context(recon_ir, ground_ir)
 
+    # ---------- 输出：Context ----------
     print()
     print("=" * 72)
-    print("RECONCILIATION CONTEXT (computations)")
+    print("RECONCILIATION CONTEXT (excluding computations)")
     print("=" * 72)
     print(context.model_dump_json(indent=2, exclude={"computations"}))
+
     print()
     print(f"[test] total rules run: {context.summary.total_rules_run}")
     print(f"[test] passed:          {context.summary.passed}")
@@ -155,10 +295,13 @@ def main():
     print(f"[test] incomplete:      {context.summary.incomplete}")
     print(f"[test] evidences:       {len(evidences)}")
 
+    # ---------- 输出：Evidence ----------
     print()
     print("=" * 72)
     print("EVIDENCES")
     print("=" * 72)
+    if not evidences:
+        print("  <none>")
     for ev in evidences:
         print(json.dumps({
             "type": ev.type.value if hasattr(ev.type, "value") else str(ev.type),
@@ -169,6 +312,7 @@ def main():
         }, indent=2, default=str))
         print("-" * 72)
 
+    # ---------- 输出：所有 computations ----------
     print()
     print("=" * 72)
     print("ALL COMPUTATIONS (including PASSED/INCOMPLETE)")
@@ -183,7 +327,7 @@ def main():
         marker = marker_map.get(r.status.value, "?")
         print(f"  {marker} [{r.status.value:10s}] {r.rule_name}: {r.description}")
 
-    # 落盘
+    # ---------- 落盘 ----------
     out_dir = Path(__file__).resolve().parent / "test_results"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "reconciliation_context.json"

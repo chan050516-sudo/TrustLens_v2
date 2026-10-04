@@ -574,9 +574,18 @@ class DTOIRBase(BaseModel):
 
 
 class ReconciliationDTOIR(DTOIRBase):
-    """IR1：供 ReconciliationEngine 消费。"""
+    """
+    IR1：供 ReconciliationEngine 消费。
+
+    grounding 字段为**可选注入**：
+      - VLM 的 reconciliation channel 不输出此字段
+      - 调度层可将 GroundingDTOIR.grounding 注入此处，供 universal ID 校验
+        （Luhn / MyKad）以及 invoice 的内嵌日期校验使用
+      - 若为 None，依赖 grounding 的规则会自然跳过
+    """
     document: Document
     reconciliation: ReconciliationPayload
+    grounding: GroundingTargets | None = None
 
 
 class GroundingDTOIR(DTOIRBase):
