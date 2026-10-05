@@ -2,25 +2,44 @@
 
 使用 RDAP（Registration Data Access Protocol）——ICANN 规定的 WHOIS 替代品。
 免费、无需 API key、返回结构化 JSON。
+
+依赖：
+  pip install tldextract
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Optional
 
 import httpx
 
 from app.core.dto_ir import GroundingTarget
 from app.forensics.grounding.backends.base import BackendResult, SearchBackend
 from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
+from app.forensics.grounding.models.deterministic_result import DeterministicSource
 
 logger = logging.getLogger(__name__)
 
 _RDAP_BASE = "https://rdap.org/domain"
 _TIMEOUT = 10.0
+DEFAULT_MAX_CONCURRENT = 8
+
+
+def _get_tld_extract():
+    """
+    获取 tldextract 实例（禁用网络刷新，用内置快照）。
+    延迟加载，避免模块 import 时初始化。
+    """
+    import tldextract
+    return tldextract.TLDExtract(suffix_list_urls=())
 
 
 class WhoisBackend(SearchBackend):
+
+    def __init__(self, max_concurrent: int = DEFAULT_MAX_CONCURRENT):
+        self._max_concurrent = max_concurrent
+        self._tld = None    # 延迟加载
 
     @property
     def name(self) -> str:
@@ -29,11 +48,33 @@ class WhoisBackend(SearchBackend):
     def is_available(self) -> bool:
         return True    # RDAP 无需 key
 
+    # ------------------------------------------------------------------
+
     def search(self, targets: list[GroundingTarget]) -> list[BackendResult]:
-        results: list[BackendResult] = []
-        for t in targets:
-            results.append(self._lookup_one(t))
-        return results
+        if not targets:
+            return []
+        n_workers = min(self._max_concurrent, len(targets))
+        results: list[Optional[BackendResult]] = [None] * len(targets)
+
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            future_to_idx = {
+                ex.submit(self._lookup_one, t): i
+                for i, t in enumerate(targets)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    logger.exception(f"[WHOIS] target {idx} failed: {e}")
+                    results[idx] = BackendResult(
+                        target=targets[idx],
+                        outcome=GroundingOutcome.UNVERIFIABLE,
+                        notes=f"whois_internal_error: {e}",
+                    )
+        return [r for r in results if r is not None]
+
+    # ------------------------------------------------------------------
 
     def _lookup_one(self, t: GroundingTarget) -> BackendResult:
         domain = self._extract_domain(t.value)
@@ -74,7 +115,6 @@ class WhoisBackend(SearchBackend):
                 notes="rdap_invalid_json",
             )
 
-        # 提取关键字段
         events = {
             e.get("eventAction"): e.get("eventDate", "")
             for e in (data.get("events") or [])
@@ -87,32 +127,46 @@ class WhoisBackend(SearchBackend):
             "registration": events.get("registration", ""),
             "expiration": events.get("expiration", ""),
         }
-        sources = [{
-            "url": f"https://rdap.org/domain/{domain}",
-            "title": f"RDAP record for {domain}",
-            "snippet": None,
-            "score": None,
-        }]
         return BackendResult(
             target=t, outcome=GroundingOutcome.EXACT_MATCH,
-            matched_record=matched, sources=sources,
-            confidence=0.95, notes=None,
+            matched_record=matched,
+            sources=[DeterministicSource(
+                url=f"https://rdap.org/domain/{domain}",
+                title=f"RDAP record for {domain}",
+                authority="RDAP / ICANN",
+            )],
+            confidence=0.95,
+            notes=None,
         )
 
-    @staticmethod
-    def _extract_domain(value: str) -> str | None:
+    # ------------------------------------------------------------------
+
+    def _extract_domain(self, value: str) -> Optional[str]:
+        """
+        用 tldextract 正确解析域名（处理 .co.uk / .com.my 等双重后缀）。
+        """
+        if not value:
+            return None
         v = value.strip().lower()
         if v.startswith("http://"):
             v = v[7:]
         elif v.startswith("https://"):
             v = v[8:]
-        v = v.split("/")[0].split("?")[0]
-        if "." not in v or len(v) < 4:
+        v = v.split("/")[0].split("?")[0].split("#")[0]
+
+        if "." not in v:
             return None
-        return v
+
+        if self._tld is None:
+            self._tld = _get_tld_extract()
+
+        ext = self._tld(v)
+        if not ext.domain or not ext.suffix:
+            return None
+        return f"{ext.domain}.{ext.suffix}"
 
     @staticmethod
-    def _extract_registrar(data: dict) -> str | None:
+    def _extract_registrar(data: dict) -> Optional[str]:
         for e in (data.get("entities") or []):
             if "registrar" in (e.get("roles") or []):
                 vcard = e.get("vcardArray") or []

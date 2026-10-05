@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .web_result import WebGroundingResult
 from .enterprise_result import EnterpriseGroundingResult
-from .grounding_outcome import GroundingOutcome
+from .deterministic_result import DeterministicGroundingResult
 
 
 class GroundingSummary(BaseModel):
-    """
-    5 态计数 + backend 使用统计。
-
-    去掉了 resolved/unresolved 二分，改为 5 态直接统计。
-    """
+    """5 态计数 + backend 使用统计。"""
     model_config = ConfigDict(extra="forbid")
 
     total_targets: int = 0
@@ -27,6 +23,7 @@ class GroundingSummary(BaseModel):
     # 成本可观测性
     web_queries: int = 0
     enterprise_queries: int = 0
+    deterministic_queries: int = 0
     summarizer_calls: int = 0
 
 
@@ -36,21 +33,17 @@ class GroundingContext(BaseModel):
 
     设计原则：
       - Grounding 只产出 Context，不产出 Evidence。
-        它的本质是"查资料"，查找结果本身不是异常。
-      - 每个 target 一条 result，携带 5 态 outcome。
-      - 不携带 document_id（IR2 没有 document 元数据）。
+      - 三种来源平级：
+          * web_results           —— 公开网络搜索（Tavily + LLM 摘要）
+          * enterprise_results    —— 企业内部 DB
+          * deterministic_results —— 权威外部源（SSM / BNM / WHOIS）
+      - 三种来源字段差异大，不做统一基类（避免类型退化）。
     """
     model_config = ConfigDict(extra="forbid")
 
     web_results: list[WebGroundingResult] = Field(default_factory=list)
     enterprise_results: list[EnterpriseGroundingResult] = Field(default_factory=list)
+    deterministic_results: list[DeterministicGroundingResult] = Field(default_factory=list)
 
     summary: GroundingSummary = Field(default_factory=GroundingSummary)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-# 保留下面的兼容别名，如果需要被外部引用
-__all__ = [
-    "GroundingContext",
-    "GroundingSummary",
-]
