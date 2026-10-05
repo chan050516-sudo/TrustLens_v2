@@ -20,43 +20,59 @@ from app.core.dto_ir import EntityType, GroundingTarget
 
 logger = logging.getLogger(__name__)
 
-
 _DEFAULT_STRATEGIES_PATH = Path(__file__).parent / "strategies.yaml"
 
 
 @dataclass
 class RoutingDecision:
-    """单个 target 的路由决策。"""
     target: GroundingTarget
-    path: str        # "web" | "enterprise" | "unverifiable"
-    reason: str      # 人类可读
+    path: str
+    reason: str
 
 
 class GroundingStrategyRouter:
     """
-    确定性路由。
+    EntityType → route_name 的确定性映射。
 
-    路由表（内置默认）：
-      - ENTERPRISE_ONLY: ACCOUNT / TRANSACTION / INVOICE / QUOTATION /
-                         RECEIPT / PURCHASE_ORDER / CONTRACT
-                         → 内部单号，只走 enterprise
-      - UNVERIFIABLE:    （暂不列入任何 entity_type，预留）
-      - WEB 默认：       其余全部
+    路由空间：
+      - 确定性 backend: "ssm" / "bnm" / "whois"
+      - 企业内部: "enterprise"
+      - 兜底: "tavily"
+      - 不可验证: "unverifiable"
     """
 
-    # 内部单号类型（只走 enterprise）
-    _ENTERPRISE_ONLY = {
-        EntityType.ACCOUNT,
-        EntityType.TRANSACTION,
-        EntityType.INVOICE,
-        EntityType.QUOTATION,
-        EntityType.RECEIPT,
-        EntityType.PURCHASE_ORDER,
-        EntityType.CONTRACT,
-    }
+    _ROUTE_TABLE: dict[EntityType, str] = {
+        # --- 确定性 backend ---
+        EntityType.ORGANIZATION:       "ssm",
+        EntityType.VENDOR:             "ssm",
+        EntityType.BANK:               "bnm",
+        EntityType.WEBSITE:            "whois",
 
-    # 完全不可验证的类型（预留，目前为空）
-    _UNVERIFIABLE: set[EntityType] = set()
+        # --- 企业内部 DB ---
+        EntityType.ACCOUNT:            "enterprise",
+        EntityType.TRANSACTION:        "enterprise",
+        EntityType.INVOICE:            "enterprise",
+        EntityType.QUOTATION:          "enterprise",
+        EntityType.RECEIPT:            "enterprise",
+        EntityType.PURCHASE_ORDER:     "enterprise",
+        EntityType.CONTRACT:           "enterprise",
+        EntityType.CASE:               "enterprise",
+        EntityType.CERTIFICATE:        "enterprise",
+
+        # --- 未接入 → 不可验证 ---
+        EntityType.UNIVERSITY:         "unverifiable",
+        EntityType.PROFESSIONAL_BODY:  "unverifiable",
+        EntityType.LAW_FIRM:           "unverifiable",
+        EntityType.GOVERNMENT_AGENCY:  "unverifiable",
+
+        # --- 无确定性策略 → Tavily ---
+        EntityType.PRODUCT:            "tavily",
+        EntityType.PERSON:             "tavily",
+        EntityType.EMPLOYEE:           "tavily",
+        EntityType.CUSTOMER:           "tavily",
+        EntityType.ADDRESS:            "tavily",
+        EntityType.OTHER:              "tavily",
+    }
 
     def __init__(self, strategies_path: Optional[Path] = None):
         self._path = strategies_path or _DEFAULT_STRATEGIES_PATH
@@ -64,7 +80,6 @@ class GroundingStrategyRouter:
         self._load_yaml_overrides()
 
     def _load_yaml_overrides(self) -> None:
-        """可选：从 YAML 加载覆盖表。文件不存在则跳过。"""
         if not self._path.exists():
             return
         try:
@@ -83,60 +98,20 @@ class GroundingStrategyRouter:
         except Exception as e:
             logger.warning(f"[Grounding.router] Failed to load YAML: {e}")
 
-    # ------------------------------------------------------------------
-
     def route(self, target: GroundingTarget) -> RoutingDecision:
         et = target.entity_type
-
-        # 1. YAML 覆盖优先
         if et in self._override:
-            return RoutingDecision(
-                target=target,
-                path=self._override[et],
-                reason="yaml_override",
-            )
-
-        # 2. UNVERIFIABLE
-        if et in self._UNVERIFIABLE:
-            return RoutingDecision(
-                target=target,
-                path="unverifiable",
-                reason="entity_type_marked_unverifiable",
-            )
-
-        # 3. ENTERPRISE_ONLY
-        if et in self._ENTERPRISE_ONLY:
-            return RoutingDecision(
-                target=target,
-                path="enterprise",
-                reason="entity_type_is_internal_identifier",
-            )
-
-        # 4. 默认走 web
-        return RoutingDecision(
-            target=target,
-            path="web",
-            reason="default_web_path",
-        )
+            return RoutingDecision(target, self._override[et], "yaml_override")
+        path = self._ROUTE_TABLE.get(et, "tavily")
+        return RoutingDecision(target, path, f"entity_type_{et.value.lower()}")
 
     def route_many(
         self,
         targets: list[GroundingTarget],
-    ) -> tuple[
-        list[GroundingTarget],
-        list[GroundingTarget],
-        list[GroundingTarget],
-    ]:
-        """批量路由。返回 (web_targets, enterprise_targets, unverifiable_targets)。"""
-        web: list[GroundingTarget] = []
-        ent: list[GroundingTarget] = []
-        unv: list[GroundingTarget] = []
+    ) -> dict[str, list[GroundingTarget]]:
+        """批量路由。返回 {route_name: [targets]}。"""
+        by_route: dict[str, list[GroundingTarget]] = {}
         for t in targets:
             d = self.route(t)
-            if d.path == "web":
-                web.append(t)
-            elif d.path == "enterprise":
-                ent.append(t)
-            else:
-                unv.append(t)
-        return web, ent, unv
+            by_route.setdefault(d.path, []).append(t)
+        return by_route
