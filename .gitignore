@@ -229,3 +229,6 @@ weights/
 *.tar
 *.ckpt
 *.bin
+
+# 数据下载（原始输入，可重新获取）
+scripts/_downloads/

@@ -1,0 +1,2366 @@
+{
+  "metadata": {
+    "source_authority": "Bank Negara Malaysia (BNM)",
+    "count": 237,
+    "generated_at": "2026-10-05T22:50:11",
+    "type_breakdown": {
+      "BANK": 156,
+      "INSURANCE": 54,
+      "MONEY_SERVICES": 12,
+      "PAYMENT_OPERATOR": 10,
+      "FINANCIAL_SERVICE": 5
+    }
+  },
+  "entities": [
+    {
+      "company_name": "2C2P System (Malaysia) Sdn Bhd",
+      "normalized_name": "2c2p system malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Adyen Malaysia Sdn Bhd",
+      "normalized_name": "adyen malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AEON Bank (M) Berhad",
+      "normalized_name": "aeon bank m",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Digital Bank",
+        "Debit Card Issuer"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AEON Credit Service (M) Berhad",
+      "normalized_name": "aeon credit service m",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)",
+        "Credit Card Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Affin Bank Berhad",
+      "normalized_name": "affin bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Affin Hwang Investment Bank Berhad",
+      "normalized_name": "affin hwang investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Affin Islamic Bank Berhad",
+      "normalized_name": "affin islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AIA Berhad",
+      "normalized_name": "aia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AIA General Berhad",
+      "normalized_name": "aia general",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AIA PUBLIC Takaful Berhad",
+      "normalized_name": "aia public takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AIG Malaysia Insurance Berhad",
+      "normalized_name": "aig malaysia insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AIMY Merchant Services Sdn Bhd (formerly known as Alipay Malaysia Sdn Bhd)",
+      "normalized_name": "aimy merchant services formerly known as alipay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Akbar Money Changer Sdn. Bhd.",
+      "normalized_name": "akbar money changer",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Aleta Planet Malaysia Sdn Bhd",
+      "normalized_name": "aleta planet malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Alipay Connect Pte Ltd",
+      "normalized_name": "alipay connect pte ltd",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Alliance Bank Malaysia Berhad",
+      "normalized_name": "alliance bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Alliance Islamic Bank Berhad",
+      "normalized_name": "alliance islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Allianz General Insurance Company (Malaysia) Berhad",
+      "normalized_name": "allianz general insurance company malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Allianz Life Insurance Malaysia Berhad",
+      "normalized_name": "allianz life insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Al Rajhi Banking & Investment Corporation (Malaysia) Berhad",
+      "normalized_name": "al rajhi banking investment corporation malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AmBank Islamic Berhad",
+      "normalized_name": "ambank islamic",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AmBank (M) Berhad",
+      "normalized_name": "ambank m",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "E-Money Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "American Express International, Inc.",
+      "normalized_name": "american express international inc",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AmInvestment Bank Berhad",
+      "normalized_name": "aminvestment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AmMetLife Insurance Berhad",
+      "normalized_name": "ammetlife insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AmMetLife Takaful Berhad",
+      "normalized_name": "ammetlife takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Ampersand Pay Sdn Bhd",
+      "normalized_name": "ampersand pay",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "AsiaPay (Malaysia) Sdn Bhd",
+      "normalized_name": "asiapay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Axai Digital Sdn Bhd",
+      "normalized_name": "axai digital",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Axiata Digital E-code Sdn Bhd",
+      "normalized_name": "axiata digital e code",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Axiata Digital eCode Sdn Bhd",
+      "normalized_name": "axiata digital ecode",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bandar Utama City Centre Sdn Bhd",
+      "normalized_name": "bandar utama city centre",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bangkok Bank Berhad",
+      "normalized_name": "bangkok bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Islam Malaysia Berhad",
+      "normalized_name": "bank islam malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Kerjasama Rakyat Malaysia Berhad (Bank Rakyat)",
+      "normalized_name": "bank kerjasama rakyat malaysia bank rakyat",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Full-fledged Islamic prescribed DFI",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Muamalat Malaysia Berhad",
+      "normalized_name": "bank muamalat malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank of America Malaysia Berhad",
+      "normalized_name": "bank of america malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Principal Dealer",
+        "Registed Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank of China (Malaysia) Berhad",
+      "normalized_name": "bank of china malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "E-Money Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Pembangunan Malaysia Berhad",
+      "normalized_name": "bank pembangunan malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Pertanian Malaysia Berhad (Agrobank)",
+      "normalized_name": "bank pertanian malaysia agrobank",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Full-fledged Islamic Prescribed DFI",
+        "Registered Merchant Acquirer",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bank Simpanan Nasional",
+      "normalized_name": "bank simpanan nasional",
+      "primary_type": "BANK",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Approved to operate Islamic Banking Window",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Bayo Pay (M) Sdn Bhd",
+      "normalized_name": "bayo pay m",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Beez Fintech Sdn Bhd",
+      "normalized_name": "beez fintech",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Berjaya Sompo Insurance Berhad",
+      "normalized_name": "berjaya sompo insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "BigPay Malaysia Sdn Bhd",
+      "normalized_name": "bigpay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "BNP Paribas Malaysia Berhad",
+      "normalized_name": "bnp paribas malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Boku Network Services MY Sdn Bhd",
+      "normalized_name": "boku network services my",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Boost Bank Berhad",
+      "normalized_name": "boost bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Digital Bank",
+        "Debit Card Issuer"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Boost Connect Sdn Bhd (formerly known as Apigate Sdn Bhd)",
+      "normalized_name": "boost connect formerly known as apigate",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Boustead Petroleum Marketing Sdn Bhd",
+      "normalized_name": "boustead petroleum marketing",
+      "primary_type": "FINANCIAL_SERVICE",
+      "licenses": [
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Chevron Malaysia Limited",
+      "normalized_name": "chevron malaysia limited",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "China Construction Bank (Malaysia) Berhad",
+      "normalized_name": "china construction bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Chip In Sdn Bhd",
+      "normalized_name": "chip in",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Chubb Insurance Malaysia Berhad",
+      "normalized_name": "chubb insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "CIMB Bank Berhad",
+      "normalized_name": "cimb bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "E-Money Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "CIMB Investment Bank Berhad",
+      "normalized_name": "cimb investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "CIMB Islamic Bank Berhad",
+      "normalized_name": "cimb islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Islamic Principal Dealer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Citibank Berhad",
+      "normalized_name": "citibank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window",
+        "Charge Card Issuer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Commerce DotAsia Payments Sdn Bhd",
+      "normalized_name": "commerce dotasia payments",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Dataprep Payment Solutions Sdn Bhd",
+      "normalized_name": "dataprep payment solutions",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Deutsche Bank (Malaysia) Berhad",
+      "normalized_name": "deutsche bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "DIV Services Sdn Bhd (formerly known as ePetrol Services Sdn Bhd)",
+      "normalized_name": "div services formerly known as epetrol services",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "E-Globex Sdn. Bhd.",
+      "normalized_name": "e globex",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing (Class C) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "EOS Systems Sdn Bhd",
+      "normalized_name": "eos systems",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Etiqa Family Takaful Berhad",
+      "normalized_name": "etiqa family takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Etiqa General Insurance Berhad",
+      "normalized_name": "etiqa general insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Etiqa General Takaful Berhad",
+      "normalized_name": "etiqa general takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Etiqa Life Insurance Berhad",
+      "normalized_name": "etiqa life insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Export-Import Bank of Malaysia Berhad (EXIM Bank)",
+      "normalized_name": "export import bank of malaysia exim bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "EZ Money Sdn. Bhd.",
+      "normalized_name": "ez money",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Fass Payment Solutions Sdn Bhd",
+      "normalized_name": "fass payment solutions",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "FINEXUS Cards Sdn Bhd (formerly known as MAA Cards Sdn Bhd)",
+      "normalized_name": "finexus cards formerly known as maa cards",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "First Data Merchant Solutions (Malaysia) Sdn Bhd",
+      "normalized_name": "first data merchant solutions malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Fullrich Malaysia Sdn Bhd",
+      "normalized_name": "fullrich malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "FWD Insurance Berhad (formerly known as Gibraltar BSN Life Bhd)",
+      "normalized_name": "fwd insurance formerly known as gibraltar bsn life",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "FWD Takaful Berhad",
+      "normalized_name": "fwd takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Generali Insurance Malaysia Berhad",
+      "normalized_name": "generali insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Generali Life Insurance Malaysia Berhad",
+      "normalized_name": "generali life insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Gkash Sdn Bhd",
+      "normalized_name": "gkash",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Golden K.L. Union Sdn. Bhd.",
+      "normalized_name": "golden k l union",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "GoNetPay Sdn Bhd",
+      "normalized_name": "gonetpay",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "GPay Network (M) Sdn Bhd",
+      "normalized_name": "gpay network m",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Great Eastern General Insurance (Malaysia) Berhad",
+      "normalized_name": "great eastern general insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Great Eastern Life Assurance (Malaysia) Berhad",
+      "normalized_name": "great eastern life assurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Great Eastern Takaful Berhad",
+      "normalized_name": "great eastern takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "GX Bank Berhad",
+      "normalized_name": "gx bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Digital Bank",
+        "Debit Card Issuer"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hannover Rueck SE",
+      "normalized_name": "hannover rueck se",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Reinsurance Business",
+        "General Reinsurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hasani Munawarah Exchange Sdn. Bhd.",
+      "normalized_name": "hasani munawarah exchange",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hong Leong Assurance Berhad",
+      "normalized_name": "hong leong assurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hong Leong Bank Berhad",
+      "normalized_name": "hong leong bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hong Leong Investment Bank Berhad",
+      "normalized_name": "hong leong investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hong Leong Islamic Bank Berhad",
+      "normalized_name": "hong leong islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Hong Leong MSIG Takaful Berhad",
+      "normalized_name": "hong leong msig takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "HSBC Amanah Malaysia Berhad",
+      "normalized_name": "hsbc amanah malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "HSBC Bank Malaysia Berhad",
+      "normalized_name": "hsbc bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "Principal Dealer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "IME (M) Sdn Bhd",
+      "normalized_name": "ime m",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Industrial and Commercial Bank of China (Malaysia) Berhad",
+      "normalized_name": "industrial and commercial bank of china malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Instapay Technologies Sdn Bhd",
+      "normalized_name": "instapay technologies",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "JAGS Money Sdn. Bhd.",
+      "normalized_name": "jags money",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money-Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "JCB International Co Ltd",
+      "normalized_name": "jcb international co ltd",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "J.P. Morgan Chase Bank Berhad",
+      "normalized_name": "j p morgan chase bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Principal Dealer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "JuruQuest Consulting Sdn Bhd",
+      "normalized_name": "juruquest consulting",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "KAF Digital Bank Berhad",
+      "normalized_name": "kaf digital bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Digital Bank",
+        "Debit Card Issuer"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "KAF Investment Bank Berhad",
+      "normalized_name": "kaf investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Kenanga Investment Bank Berhad",
+      "normalized_name": "kenanga investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Kiplepay Sdn Bhd (formerly known as Webonline Dot Com Sdn Bhd)",
+      "normalized_name": "kiplepay formerly known as webonline dot com",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Kuwait Finance House (Malaysia) Berhad",
+      "normalized_name": "kuwait finance house malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Liberty General Insurance Berhad",
+      "normalized_name": "liberty general insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Lonpac Insurance Berhad",
+      "normalized_name": "lonpac insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Lulu Money (Malaysia) Sdn. Bhd",
+      "normalized_name": "lulu money malaysia",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Malayan Banking Berhad",
+      "normalized_name": "malayan banking",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "E-Money Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Malaysian Life Reinsurance Group Berhad",
+      "normalized_name": "malaysian life reinsurance group",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Reinsurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Malaysian Reinsurance Berhad",
+      "normalized_name": "malaysian reinsurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Reinsurance Business",
+        "Retakaful Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "ManagePay Services Sdn Bhd",
+      "normalized_name": "managepay services",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Mandiri International Remittance Sdn. Bhd.",
+      "normalized_name": "mandiri international remittance",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Manulife Insurance Berhad",
+      "normalized_name": "manulife insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MasterCard Asia Pacific Pte Ltd",
+      "normalized_name": "mastercard asia pacific pte ltd",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MaxMoney Sdn. Bhd.",
+      "normalized_name": "maxmoney",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Maybank Investment Bank Berhad",
+      "normalized_name": "maybank investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Maybank Islamic Berhad",
+      "normalized_name": "maybank islamic",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Islamic Principal Dealer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MBSB Bank Berhad",
+      "normalized_name": "mbsb bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MBSB Investment Bank Berhad",
+      "normalized_name": "mbsb investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MCIS Insurance Berhad",
+      "normalized_name": "mcis insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Merchantrade Asia Sdn Bhd",
+      "normalized_name": "merchantrade asia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee",
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Mizuho Bank (Malaysia) Berhad",
+      "normalized_name": "mizuho bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Mobile Money International Sdn Bhd",
+      "normalized_name": "mobile money international",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MobilityOne Sdn Bhd",
+      "normalized_name": "mobilityone",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MOL AccessPortal Sdn Bhd",
+      "normalized_name": "mol accessportal",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MoneyMatch Sdn. Bhd.",
+      "normalized_name": "moneymatch",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MRuncit Commerce Sdn Bhd",
+      "normalized_name": "mruncit commerce",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MSIG Insurance (Malaysia) Bhd",
+      "normalized_name": "msig insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MUFG Bank (Malaysia) Berhad",
+      "normalized_name": "mufg bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Münchener Rückversicherungs-Gesellschaft / Munich Re Retakaful",
+      "normalized_name": "münchener rückversicherungs gesellschaft munich re retakaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Retakaful Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "MyEG Alternative Payment Services Sdn Bhd",
+      "normalized_name": "myeg alternative payment services",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "OCBC Al-Amin Bank Berhad",
+      "normalized_name": "ocbc al amin bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "OCBC Bank (Malaysia) Berhad",
+      "normalized_name": "ocbc bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Pacific & Orient Insurance Co. Berhad",
+      "normalized_name": "pacific orient insurance co",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Pacific Insurance Berhad",
+      "normalized_name": "pacific insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Paydee Sdn Bhd (formerly known as Synergy Cards Sdn Bhd)",
+      "normalized_name": "paydee formerly known as synergy cards",
+      "primary_type": "BANK",
+      "licenses": [
+        "Credit Card Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Payments Network Malaysia Sdn Bhd (PayNet)",
+      "normalized_name": "payments network malaysia paynet",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "PayPal Pte Ltd",
+      "normalized_name": "paypal pte ltd",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Pengurusan Danaharta Nasional Berhad (Prokhas Sdn. Bhd.)",
+      "normalized_name": "pengurusan danaharta nasional prokhas",
+      "primary_type": "FINANCIAL_SERVICE",
+      "licenses": [
+        "Other Financial Institution"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "PETRONAS Dagangan Berhad",
+      "normalized_name": "petronas dagangan",
+      "primary_type": "FINANCIAL_SERVICE",
+      "licenses": [
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Petron Fuel International Sdn Bhd",
+      "normalized_name": "petron fuel international",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Presto Pay Sdn Bhd (formerly known as EPP Solution Sdn Bhd)",
+      "normalized_name": "presto pay formerly known as epp solution",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Progressive Insurance Berhad",
+      "normalized_name": "progressive insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Prudential Assurance Malaysia Berhad",
+      "normalized_name": "prudential assurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Prudential BSN Takaful Berhad",
+      "normalized_name": "prudential bsn takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "P.T Bank Muamalat Indonesia, Tbk",
+      "normalized_name": "p t bank muamalat indonesia tbk",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed International Islamic Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Public Bank Berhad",
+      "normalized_name": "public bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Public Investment Bank Berhad",
+      "normalized_name": "public investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Public Islamic Bank Berhad",
+      "normalized_name": "public islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "qBayar Sdn Bhd",
+      "normalized_name": "qbayar",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "QBE Insurance (Malaysia) Berhad",
+      "normalized_name": "qbe insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Radius Business Solutions (Malaysia) Sdn Bhd (formerly known as Radius Fuel Cards Sdn Bhd)",
+      "normalized_name": "radius business solutions malaysia formerly known as radius fuel cards",
+      "primary_type": "FINANCIAL_SERVICE",
+      "licenses": [
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Raffcomm Sdn Bhd",
+      "normalized_name": "raffcomm",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Razorpay Curlec Sdn. Bhd.",
+      "normalized_name": "razorpay curlec",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "RHB Bank Berhad",
+      "normalized_name": "rhb bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "E-Money Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "RHB Insurance Berhad",
+      "normalized_name": "rhb insurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "RHB Investment Bank Berhad",
+      "normalized_name": "rhb investment bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Investment Bank"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "RHB Islamic Bank Berhad",
+      "normalized_name": "rhb islamic bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Islamic Principal Dealer",
+        "Islamic Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Setel Ventures Sdn Bhd",
+      "normalized_name": "setel ventures",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Shell Malaysia Trading Sdn Bhd",
+      "normalized_name": "shell malaysia trading",
+      "primary_type": "FINANCIAL_SERVICE",
+      "licenses": [
+        "Limited Purpose Charge Card Issuer (for purchase of petrol and petroleum products)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "ShopeePay Malaysia Sdn Bhd",
+      "normalized_name": "shopeepay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "SiliconNet Technologies Sdn Bhd",
+      "normalized_name": "siliconnet technologies",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Small Medium Enterprise Development Bank Malaysia Berhad (SME Bank)",
+      "normalized_name": "small medium enterprise development bank malaysia sme bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Development Financial Institution (DFIA 2002 Prescribed Institution)",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "SMJ Teratai Sdn. Bhd.",
+      "normalized_name": "smj teratai",
+      "primary_type": "BANK",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Money Changing & Remittance (Class A) Licensee",
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Standard Chartered Bank Malaysia Berhad",
+      "normalized_name": "standard chartered bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Principal Dealer",
+        "Registered Merchant Acquirer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Standard Chartered Saadiq Berhad",
+      "normalized_name": "standard chartered saadiq",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Islamic Bank",
+        "Debit Card Issuer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Sumitomo Mitsui Banking Corporation Malaysia Berhad",
+      "normalized_name": "sumitomo mitsui banking corporation malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Sun Life Malaysia Assurance Berhad",
+      "normalized_name": "sun life malaysia assurance",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Sun Life Malaysia Takaful Berhad",
+      "normalized_name": "sun life malaysia takaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Swiss Re Asia Pte. Ltd. / Swiss Re Retakaful",
+      "normalized_name": "swiss re asia pte ltd swiss re retakaful",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Retakaful Operator",
+        "General Reinsurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Syarikat Takaful Malaysia Am Berhad",
+      "normalized_name": "syarikat takaful malaysia am",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Syarikat Takaful Malaysia Keluarga Berhad",
+      "normalized_name": "syarikat takaful malaysia keluarga",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Takaful Ikhlas Family Berhad",
+      "normalized_name": "takaful ikhlas family",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Takaful Ikhlas General Berhad",
+      "normalized_name": "takaful ikhlas general",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "TNG Digital Sdn Bhd",
+      "normalized_name": "tng digital",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Toa Reinsurance Company Ltd.",
+      "normalized_name": "toa reinsurance company ltd",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Reinsurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Tokio Marine Insurance (Malaysia) Berhad",
+      "normalized_name": "tokio marine insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Tokio Marine Life Insurance Malaysia Bhd",
+      "normalized_name": "tokio marine life insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Touch 'n Go Sdn Bhd",
+      "normalized_name": "touch n go",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "True Money Malaysia Sdn. Bhd.",
+      "normalized_name": "true money malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Tune Insurance Malaysia Berhad",
+      "normalized_name": "tune insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Uni Comms International Sdn Bhd",
+      "normalized_name": "uni comms international",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "UnionPay International Co Ltd",
+      "normalized_name": "unionpay international co ltd",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "United Overseas Bank (Malaysia) Berhad",
+      "normalized_name": "united overseas bank malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Commercial Bank",
+        "Approved to operate Islamic Banking Window",
+        "Credit Card Issuer",
+        "Debit Card Issuer",
+        "Charge Card Issuer",
+        "Registered Merchant Acquirer",
+        "Principal Dealer",
+        "Physical Cash Operations"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Visa Worldwide Pte Ltd",
+      "normalized_name": "visa worldwide pte ltd",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Approved Payment System Operator"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "WannaPay Sdn Bhd (formerly known as ScanPay Sdn Bhd)",
+      "normalized_name": "wannapay formerly known as scanpay",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Wavpay Systems Sdn Bhd",
+      "normalized_name": "wavpay systems",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank) - White Labelling Provider",
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Western Union Payment (Malaysia) Sdn. Bhd.",
+      "normalized_name": "western union payment malaysia",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Wise Payments Malaysia Sdn Bhd",
+      "normalized_name": "wise payments malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "WorkerzDirect Sdn. Bhd.",
+      "normalized_name": "workerzdirect",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)",
+        "Remittance (Class B) Licensee"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Worldpay (Malaysia) Sdn Bhd",
+      "normalized_name": "worldpay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "XOX Com Sdn Bhd",
+      "normalized_name": "xox com",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "YTL Digital Bank Berhad (Ryt Bank)",
+      "normalized_name": "ytl digital bank ryt bank",
+      "primary_type": "BANK",
+      "licenses": [
+        "Licensed Digital Bank",
+        "Debit Card Issuer"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Zurich General Insurance Malaysia Berhad",
+      "normalized_name": "zurich general insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Zurich General Takaful Malaysia Berhad",
+      "normalized_name": "zurich general takaful malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "General Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Zurich Life Insurance Malaysia Berhad",
+      "normalized_name": "zurich life insurance malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Life Insurance Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Zurich Takaful Malaysia Berhad",
+      "normalized_name": "zurich takaful malaysia",
+      "primary_type": "INSURANCE",
+      "licenses": [
+        "Family Takaful Business"
+      ],
+      "source_file": "BNM_FSP_DIRECTORY"
+    },
+    {
+      "company_name": "Abd. Wahab bin M. Abu Bakar Sdn Bhd",
+      "normalized_name": "abd wahab bin m abu bakar",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Airwallex (Malaysia) Sdn. Bhd.",
+      "normalized_name": "airwallex malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)",
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "CardBiz Payment Services Sdn. Bhd",
+      "normalized_name": "cardbiz payment services",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Global Payments Card Processing Malaysia Sdn Bhd",
+      "normalized_name": "global payments card processing malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Infinitium Infuture Sdn Bhd",
+      "normalized_name": "infinitium infuture",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Interbase Resources Sdn Bhd",
+      "normalized_name": "interbase resources",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "J&C Pacific Sdn Bhd",
+      "normalized_name": "j c pacific",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Ksher Malaysia Sdn Bhd",
+      "normalized_name": "ksher malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "LazadaPay Sdn. Bhd",
+      "normalized_name": "lazadapay",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Leading Innovative Technologies & Systems Sdn. Bhd.",
+      "normalized_name": "leading innovative technologies systems",
+      "primary_type": "BANK",
+      "licenses": [
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Micro Bluetech Sdn Bhd",
+      "normalized_name": "micro bluetech",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Mobi Asia Sdn Bhd (formerly known as Mobiversa Sdn Bhd)",
+      "normalized_name": "mobi asia formerly known as mobiversa",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Mobiedge E-Commerce Sdn Bhd",
+      "normalized_name": "mobiedge e commerce",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Nomu Pay Malaysia Sdn Bhd (formerly known as Wirecard Payment Solutions Malaysia Sdn Bhd)",
+      "normalized_name": "nomu pay malaysia formerly known as wirecard payment solutions malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "NTT DATA Cardpay Sdn Bhd",
+      "normalized_name": "ntt data cardpay",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "NTT DATA eCommerce Solutions Sdn. Bhd. (formerly known as iPay88 (M) Sdn. Bhd.)",
+      "normalized_name": "ntt data ecommerce solutions formerly known as ipay88 m",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "NTT DATA ePayments Sdn Bhd",
+      "normalized_name": "ntt data epayments",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Omise Payment Malaysia Sdn Bhd",
+      "normalized_name": "omise payment malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "OpenSys (Malaysia) Berhad",
+      "normalized_name": "opensys malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "OxPay (Malaysia) Sdn Bhd (formerly known as MC Payment (M) Sdn Bhd)",
+      "normalized_name": "oxpay malaysia formerly known as mc payment m",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Paydibs Sdn Bhd",
+      "normalized_name": "paydibs",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Payex PLT",
+      "normalized_name": "payex plt",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Pine Labs Technologies Sdn Bhd",
+      "normalized_name": "pine labs technologies",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "PIPO (MY) Sdn. Bhd.",
+      "normalized_name": "pipo my",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)",
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Razer Merchant Services Sdn Bhd (formerly known as MOLPay Sdn Bhd)",
+      "normalized_name": "razer merchant services formerly known as molpay",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Revenue Harvest Sdn Bhd",
+      "normalized_name": "revenue harvest",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Revenue Monster Sdn Bhd",
+      "normalized_name": "revenue monster",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Revenue Solution Sdn Bhd",
+      "normalized_name": "revenue solution",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "RinggitPay Sdn. Bhd.",
+      "normalized_name": "ringgitpay",
+      "primary_type": "PAYMENT_OPERATOR",
+      "licenses": [
+        "Registered Merchant Acquirer"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Share Commerce Sdn Bhd",
+      "normalized_name": "share commerce",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Simplepay Gateway Sdn Bhd",
+      "normalized_name": "simplepay gateway",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)",
+        "E-Money Issuer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Sinopay (Malaysia) Sdn Bhd",
+      "normalized_name": "sinopay malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Souqa Fintech Sdn Bhd",
+      "normalized_name": "souqa fintech",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Stripe Payments Malaysia Sdn Bhd",
+      "normalized_name": "stripe payments malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "Syntrino Solutions Sdn Bhd",
+      "normalized_name": "syntrino solutions",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "TML Remittance Centre Sdn. Bhd.",
+      "normalized_name": "tml remittance centre",
+      "primary_type": "MONEY_SERVICES",
+      "licenses": [
+        "Principal Money Services Business (MSB) Licensee"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    },
+    {
+      "company_name": "UniPin (Malaysia) Sdn Bhd",
+      "normalized_name": "unipin malaysia",
+      "primary_type": "BANK",
+      "licenses": [
+        "Registered Merchant Acquirer (Non-bank)"
+      ],
+      "source_file": "BNM_PAYMENT_ACQUIRERS"
+    }
+  ]
+}
