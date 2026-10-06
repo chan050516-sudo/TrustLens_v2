@@ -84,7 +84,7 @@ class GroundingEngine:
                 return self._make_unverifiable_batch(
                     route_targets, "enterprise_disabled"
                 )
-            if route == "tavily":
+            if route == "web_search":
                 if self._web_grounder:
                     return self._web_grounder.ground(route_targets)
                 return self._make_unverifiable_batch(

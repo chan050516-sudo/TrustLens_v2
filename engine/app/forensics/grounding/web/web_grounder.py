@@ -1,4 +1,4 @@
-"""Web Grounding 路径。
+"""Web Grounding 路径。（DuckDuckGo 优先，Tavily 兜底）。
 
 流程：
   1. 对每个 WebGroundingItem: clean_key(key) + value → Tavily 查询
@@ -27,6 +27,7 @@ from app.forensics.grounding.models.web_result import (
 from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
 from app.forensics.grounding.exceptions import WebGroundingError
 from .tavily_search_client import TavilySearchClient
+from .duckduckgo_client import DuckDuckGoClient
 from .llm_summarizer import LLMSummarizer, SummarizeResult
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,31 @@ class WebGrounder:
 
     def __init__(
         self,
-        search_client: Optional[TavilySearchClient] = None,
+        search_client=None,
         summarizer: Optional[LLMSummarizer] = None,
+        # tavily_fallback: Optional[TavilySearchClient] = None,
     ):
-        self._search_client = search_client or TavilySearchClient()
+        # 优先 DuckDuckGo，构造失败时降级到 Tavily
+        if search_client is not None:
+            self._search_client = search_client
+        else:
+            ddg = DuckDuckGoClient()
+            if ddg.is_available():
+                self._search_client = ddg
+                logger.info("[Grounding.web] Using DuckDuckGo as primary search client")
+            else:
+                # ★ 开发阶段：DuckDuckGo 不可用时直接报错，不降级
+                raise WebGroundingError(
+                    "DuckDuckGo unavailable and Tavily fallback is disabled. "
+                    "Install ddgs: pip install ddgs"
+                )
+                # ★ 原 Tavily 降级逻辑已注释：
+                # logger.info("[Grounding.web] DuckDuckGo unavailable, trying Tavily")
+                # self._search_client = TavilySearchClient()
+
         self._summarizer = summarizer or LLMSummarizer()
+        # ★ 注释掉 tavily fallback
+        # self._tavily_fallback = tavily_fallback
 
     # ------------------------------------------------------------------
 
@@ -58,9 +79,21 @@ class WebGrounder:
 
         try:
             search_results = self._search_client.search_batch(queries)
-        except WebGroundingError as e:
-            logger.exception(f"[Grounding.web] Tavily batch failed: {e}")
-            return [self._error_result(t, f"tavily_failed: {e}") for t in targets]
+        except Exception as e:
+            logger.exception(f"[Grounding.web] Search client failed: {e}")
+            # ★ 开发阶段：不降级，直接返回错误结果
+            return [self._error_result(t, f"search_failed: {e}") for t in targets]
+
+            # ★ 原 Tavily 降级逻辑已注释：
+            # if self._tavily_fallback is not None:
+            #     try:
+            #         search_results = self._tavily_fallback.search_batch(queries)
+            #         logger.info("[Grounding.web] Tavily fallback succeeded")
+            #     except Exception as e2:
+            #         logger.exception(f"[Grounding.web] Tavily fallback failed: {e2}")
+            #         return [self._error_result(t, f"all_search_failed: {e}") for t in targets]
+            # else:
+            #     return [self._error_result(t, f"search_failed: {e}") for t in targets]
 
         try:
             summarize_results = self._summarizer.summarize_batch(search_results)
