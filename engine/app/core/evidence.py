@@ -110,6 +110,12 @@ class EvidenceType(str, Enum):
     # 统计异常
     RECONCILIATION_BENFORD_ANOMALY = "RECONCILIATION_BENFORD_ANOMALY"
 
+    # === Semantic Engine ===
+    SEMANTIC_GAP = "SEMANTIC_GAP"                          # 语义漏洞（缺失信息 / 未定义术语 / 循环引用）
+    SEMANTIC_CONTRADICTION = "SEMANTIC_CONTRADICTION"      # 逻辑冲突（矛盾陈述 / 日期冲突 / 数值冲突）
+    SEMANTIC_UNFAIR_CLAUSE = "SEMANTIC_UNFAIR_CLAUSE"      # 不公平条款（单方面 / 任意性 / 违反消费者保护）
+    SEMANTIC_AMBIGUITY = "SEMANTIC_AMBIGUITY"              # 歧义（模糊语言 / 多种解释）
+
 
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""
