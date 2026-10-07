@@ -2,13 +2,13 @@
 
 职责：
   - 从 DocumentIR.elements 按阅读顺序读取文本
-  - 分块后逐块调用 LLM 做语义分析
+  - 分块（默认强制单 chunk）后调用 LLM 做语义分析
   - 汇总 Evidence
 
 设计：
   - 不输出 ForensicContext（只输出 Evidence）
-  - 分块按元素数与字符数双重约束
-  - LLM 失败时优雅降级（记录日志，返回已有结果）
+  - 默认单 chunk：99% 的文档单次 LLM call 就够
+  - 默认关闭 web search：大多数语义问题不需要外部验证
 """
 from __future__ import annotations
 
@@ -27,8 +27,9 @@ from .serializers import serialize_elements
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_ELEMENTS_PER_CHUNK = 50
-DEFAULT_MAX_CHARS_PER_CHUNK = 30000
+# 若 force_single_chunk=False，这两个阈值生效
+DEFAULT_MAX_ELEMENTS_PER_CHUNK = 100
+DEFAULT_MAX_CHARS_PER_CHUNK = 50000
 
 
 class SemanticEngine:
@@ -38,13 +39,15 @@ class SemanticEngine:
         client: Optional[GeminiSemanticClient] = None,
         max_elements_per_chunk: int = DEFAULT_MAX_ELEMENTS_PER_CHUNK,
         max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK,
-        enable_web_search: bool = True,
+        force_single_chunk: bool = True,
+        enable_web_search: bool = False,
     ):
         self._client = client or GeminiSemanticClient(
             enable_web_search=enable_web_search,
         )
         self._max_elements = max_elements_per_chunk
         self._max_chars = max_chars_per_chunk
+        self._force_single_chunk = force_single_chunk
 
     # ------------------------------------------------------------------
 
@@ -120,6 +123,10 @@ class SemanticEngine:
         self,
         elements: list[DocumentElement],
     ) -> list[list[DocumentElement]]:
+        # ★ 强制单 chunk：不切
+        if self._force_single_chunk:
+            return [elements]
+
         chunks: list[list[DocumentElement]] = []
         current: list[DocumentElement] = []
         current_chars = 0

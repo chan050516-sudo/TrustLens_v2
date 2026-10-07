@@ -82,6 +82,36 @@ def _coerce_type(type_str: Any) -> Optional[EvidenceType]:
     return et if et in _VALID_SEMANTIC_TYPES else None
 
 
+def _compute_confidence(
+    text_fragments: list[str],
+    justification: str,
+    sources: list[str],
+) -> float:
+    """
+    动态 confidence：
+      - 基础 0.7（有明确 quotation + justification）
+      - + 0.05 如果 justification 详细（>100 字符）
+      - + 0.10 如果有 2+ 个引用片段（多源证据）
+      - + 0.10 如果有外部 source 支持
+      - 上限 0.9（语义判断永远不达 1.0）
+
+    设计依据：GPT prompt 允许 LLM 报告"候选问题"，所以 confidence
+    需要反映证据强度，而不是固定值。
+    """
+    conf = 0.7
+
+    if len(justification) > 100:
+        conf += 0.05
+
+    if len(text_fragments) >= 2:
+        conf += 0.10
+
+    if sources:
+        conf += 0.10
+
+    return min(round(conf, 2), 0.9)
+
+
 def map_llm_output_to_evidence(llm_output: str) -> list[Evidence]:
     """把 LLM 输出映射为 Evidence 列表。"""
     data = extract_json(llm_output)
@@ -135,6 +165,9 @@ def map_llm_output_to_evidence(llm_output: str) -> list[Evidence]:
             sources = []
         sources = [s for s in sources if isinstance(s, str) and s.strip()]
 
+        # ★ 动态 confidence
+        confidence = _compute_confidence(text, justification, sources)
+
         # page 反推
         page = (obs_clean[0] // 1000) if obs_clean else None
 
@@ -151,7 +184,7 @@ def map_llm_output_to_evidence(llm_output: str) -> list[Evidence]:
                 "justification": justification,
                 "sources": sources,
             },
-            confidence=0.8,
+            confidence=confidence,
             source="semantic_engine",
             description=(justification[:200] if justification else et.value),
             location=location if location else None,
