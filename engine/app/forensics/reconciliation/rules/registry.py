@@ -35,8 +35,7 @@ def _ensure_loaded() -> None:
     global _LOADED
     if _LOADED:
         return
-    _LOADED = True
-    # 通用规则对所有文档生效，由 engine 显式拼接，不需注册到 profile。
+    # ★ 先 import，成功后再置位 —— 避免 import 失败后 _LOADED 卡死为 True
     from .profiles import (  # noqa: F401
         bank_statement,
         invoice,
@@ -45,3 +44,4 @@ def _ensure_loaded() -> None:
         legal_official,
         resume,
     )
+    _LOADED = True

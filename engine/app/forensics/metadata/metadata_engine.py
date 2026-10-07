@@ -313,15 +313,18 @@ class MetadataEngine:
                     "icc_profile": metadata.exif_icc_profile,
                 }
 
-                # ===== 新增：文件系统时间映射 =====
+                # ===== 文件系统时间映射 =====
                 # 用于 ContextBuilder 构建 timeline
-                container._filesystem_timestamps = {
+                container.filesystem_timestamps = {
                     "file_modify_date": metadata.file_modify_date,
                     "file_access_date": metadata.file_access_date,
                     "file_create_date": metadata.file_create_date,
                 }
-                # 如果有文件名，也存一份
-                container._file_name = context.file_name if hasattr(context, "file_name") else None
+                # 文件名 + 文件大小（用于 MetadataIdentity）
+                container.file_name = getattr(context, "file_name", None)
+                container.file_size_bytes = getattr(
+                    context, "file_size_bytes", None
+                )
 
             elif metadata:
                 try:

@@ -58,8 +58,8 @@ class ContextBuilder:
             identity = MetadataIdentity(
                 file_type=raw.get("File:FileType") or raw.get("FileType"),
                 mime_type=raw.get("File:MIMEType") or raw.get("MIMEType"),
-                file_size_bytes=container._filesystem_timestamps.get("size") if hasattr(container, "_filesystem_timestamps") else None,
-                file_name=getattr(container, "_file_name", None),
+                file_size_bytes=container.file_size_bytes,
+                file_name=container.file_name,
                 document_id=exiftool.document_id,
                 instance_id=exiftool.instance_id,
                 original_document_id=exiftool.original_document_id,
@@ -403,16 +403,17 @@ class ContextBuilder:
             )
 
         # ---- 4. MakerNotes 完整性 (阶段 1.4) ----
-        # 注意：需要在 ImageMetadata 中补充 makernotes_present 字段（见下方）
-        if image_meta and image_meta.makernotes_present is not None:
-            if not image_meta.makernotes_present:
-                observations.append(
-                    "Camera MakerNotes is missing despite camera Make/Model being present"
-                )
-
-        # 更新 image_meta 中的 makernotes_present
+        # ★ 先同步 makernotes_present，再判断
         if exiftool and image_meta:
             image_meta.makernotes_present = exiftool.makernotes_present
+
+        if image_meta and not image_meta.makernotes_present:
+            # 仅在既无 MakerNotes、又有相机 Make/Model 时才记录
+            if image_meta.make or image_meta.model:
+                observations.append(
+                    "Camera MakerNotes is missing despite camera "
+                    "Make/Model being present"
+                )
 
         # ============================================
         # 组装 ForensicContext

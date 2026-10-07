@@ -52,8 +52,14 @@ class ReconciliationEngine:
 
     # ------------------------------------------------------------------
 
-    def analyze(self, dto_ir: ReconciliationDTOIR, grounding_ir: Optional[GroundingDTOIR] = None,) -> list[Evidence]:
-        evidences, _ = self.analyze_with_context(dto_ir)
+    def analyze(
+        self,
+        dto_ir: ReconciliationDTOIR,
+        grounding_ir: Optional[GroundingDTOIR] = None,
+    ) -> list[Evidence]:
+        evidences, _ = self.analyze_with_context(
+            dto_ir, grounding_dto_ir=grounding_ir
+        )
         return evidences
 
     def analyze_with_context(
@@ -154,6 +160,8 @@ class ReconciliationEngine:
             global_facts_by_role=by_role,
             tables=tables,
             statutory=self._statutory,
+            # ★ 从 dto_ir 取 grounding（可能已被 analyze_with_context 注入）
+            grounding=dto_ir.grounding,
         )
 
     @staticmethod

@@ -406,29 +406,45 @@ class ImageStructuralParser(BaseParser):
 
     def _extract_dqt_fingerprint(self, data: bytes) -> Optional[str]:
         """
-        提取量化表指纹 (前 16 字节作为指纹)
-        不同相机/软件有独特的量化值
-        """
-        if len(data) < 16:
-            return None
-        # 取前 8 个量化值 (64 是 JPEG 标准量化表大小)
-        values = []
-        pos = 0
-        while pos < len(data) and len(values) < 8:
-            # 每个量化值 1 字节 (精确度 0: 8-bit, 1: 16-bit)
-            if pos + 1 >= len(data):
-                break
-            # 跳过表描述符 (1 byte)
-            pos += 1
-            # 读取量化值
-            if pos >= len(data):
-                break
-            values.append(data[pos])
-            pos += 1
+        提取量化表指纹（前 8 个量化值）。
 
-        if not values:
+        JPEG DQT 段格式 (ITU-T T.81 §B.2.4.1):
+          - 1 byte:  (precision << 4) | table_id
+                     precision = 0 → 8-bit  量化值（1 字节/值）
+                     precision = 1 → 16-bit 量化值（2 字节大端/值）
+          - 64 个量化值（按 Zig-Zag 顺序）
+
+        返回前 8 个量化值的十六进制拼接：
+          - 8-bit  每值 2 字符 → 16 字符
+          - 16-bit 每值 4 字符 → 32 字符
+        """
+        if len(data) < 1:
             return None
-        return "".join(f"{v:02x}" for v in values[:8])
+
+        header = data[0]
+        precision = (header >> 4) & 0x0F
+        # table_id = header & 0x0F  # 暂未使用
+
+        if precision == 0:
+            # 8-bit 量化值：每值 1 字节，64 个值
+            if len(data) < 1 + 64:
+                return None
+            values = list(data[1:1 + 8])
+            return "".join(f"{v:02x}" for v in values)
+
+        if precision == 1:
+            # 16-bit 大端量化值：每值 2 字节，64 个值
+            if len(data) < 1 + 128:
+                return None
+            values: list[int] = []
+            for i in range(8):
+                off = 1 + i * 2
+                v = (data[off] << 8) | data[off + 1]
+                values.append(v)
+            return "".join(f"{v:04x}" for v in values)
+
+        # 非法 precision（>1）
+        return None
 
     def _classify_dht_tables(self, dht_tables: List[Dict[str, Any]]) -> Optional[str]:
         """根据 ITU-T Annex K 标准表判定 DHT 类型"""
@@ -478,29 +494,42 @@ class ImageStructuralParser(BaseParser):
 
     def _estimate_quality_from_dqt(self, dqt_fingerprint: str) -> Optional[int]:
         """
-        根据量化表指纹估算 JPEG 质量
-        这是一个简化的启发式估计，用于检测质量标注不一致
+        根据量化表指纹估算 JPEG 质量。
+        这是一个简化的启发式估计，用于检测质量标注不一致。
+
+        兼容 8-bit（16 字符）与 16-bit（32 字符）两种指纹长度。
         """
-        if not dqt_fingerprint or len(dqt_fingerprint) < 16:
+        if not dqt_fingerprint:
+            return None
+
+        if len(dqt_fingerprint) == 16:
+            step = 2      # 8-bit
+        elif len(dqt_fingerprint) == 32:
+            step = 4      # 16-bit
+        else:
             return None
 
         try:
-            # 取前几个量化值，计算平均值
-            avg = sum(int(dqt_fingerprint[i:i+2], 16) for i in range(0, 16, 2)) / 8
-            if avg <= 5:
-                return 95
-            elif avg <= 10:
-                return 85
-            elif avg <= 20:
-                return 70
-            elif avg <= 35:
-                return 55
-            elif avg <= 50:
-                return 40
-            else:
-                return 25
+            values = [
+                int(dqt_fingerprint[i:i + step], 16)
+                for i in range(0, len(dqt_fingerprint), step)
+            ]
+            avg = sum(values) / len(values)
         except ValueError:
             return None
+
+        if avg <= 5:
+            return 95
+        elif avg <= 10:
+            return 85
+        elif avg <= 20:
+            return 70
+        elif avg <= 35:
+            return 55
+        elif avg <= 50:
+            return 40
+        else:
+            return 25
 
     # ============== PNG 解析 ==============
 

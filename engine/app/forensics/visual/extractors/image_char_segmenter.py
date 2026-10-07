@@ -77,17 +77,18 @@ class ImageCharSegmenter:
 
         h, w = image_bgr.shape[:2]
 
-        page_nums = [o.page for o in observations if getattr(o, "page", None)]
-        page_num = max(set(page_nums), key=page_nums.count) if page_nums else 1
-
         if document_ir is None:
             logger.warning("[ImageCharSegmenter] No DocumentIR; returning empty page")
             return [VisualPageIR(page=1, width=float(w), height=float(h))]
 
+        # ★ 先取 observations，再推断 page_num（修复 NameError）
         observations = getattr(document_ir, "observations", None) or []
         if not observations:
             logger.info("[ImageCharSegmenter] No observations in DocumentIR")
             return [VisualPageIR(page=1, width=float(w), height=float(h))]
+
+        page_nums = [o.page for o in observations if getattr(o, "page", None)]
+        page_num = max(set(page_nums), key=page_nums.count) if page_nums else 1
 
         # element_id -> observation_ids
         element_observation_ids: Dict[str, List[int]] = {}
@@ -100,12 +101,13 @@ class ImageCharSegmenter:
         for obs in observations:
             obs_id = obs.observation_id
             try:
-                chars = self._process_observation(image_bgr, obs, obs_id, page_num=obs.page)
+                chars = self._process_observation(
+                    image_bgr, obs, obs_id, page_num=obs.page
+                )
                 all_chars.extend(chars)
             except Exception as e:
                 logger.debug(f"[ImageCharSegmenter] obs#{obs_id} failed: {e}")
                 continue
-
 
         page_ir = VisualPageIR(
             page=page_num,
@@ -114,7 +116,7 @@ class ImageCharSegmenter:
             image_chars=all_chars,
             element_observation_ids=element_observation_ids,
         )
-        self._fill_element_metadata(page_ir, document_ir)
+        self._fill_element_metadata(page_ir, document_ir, page_num=page_num)
 
         logger.info(
             f"[ImageCharSegmenter] extracted {len(all_chars)} chars "

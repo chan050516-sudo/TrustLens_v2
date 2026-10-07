@@ -203,6 +203,10 @@ class MetadataContainer(BaseModel):
         default=None,
         description="内部使用：文件名"
     )
+    file_size_bytes: Optional[int] = Field(
+        default=None,
+        description="内部使用：文件大小（字节）"
+    )
 
     # ---- 颜色分布 (指南 §3.5 扩展) ----
     color_distribution: List[Dict[str, Any]] = Field(

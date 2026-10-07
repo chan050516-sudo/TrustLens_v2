@@ -35,6 +35,14 @@ class PikepdfParser(BaseParser):
                 # 统计对象总数
                 graph.total_objects = len(pdf.objects)
 
+                # ===== Root 级特征检测（新增）=====
+                # AcroForm：可编辑表单字段（伪造者常用）
+                if "/AcroForm" in pdf.Root:
+                    has_acroform = True
+                # OCProperties：可选内容组 / 图层（隐藏/叠加伪造文本）
+                if "/OCProperties" in pdf.Root:
+                    has_layers = True
+
                 embedded_files = []
                 js_refs = []
                 launch_refs = []
