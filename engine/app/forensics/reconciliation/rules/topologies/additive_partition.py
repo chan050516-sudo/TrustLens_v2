@@ -28,7 +28,7 @@ from app.forensics.reconciliation.operators.decimal_ops import (
 )
 from app.forensics.reconciliation.rules.base import (
     RuleContext, TableInstance, collect_obs_ids,
-    extract_money, get_cell, get_first_fact,
+    extract_date, extract_money, get_cell, get_first_fact,
 )
 
 
@@ -346,13 +346,18 @@ def payslip_statutory_rate_check(ctx: RuleContext) -> list[RuleResult]:
       1. 表的 RATE 列（若存在且非空）
       2. AMOUNT / BASIC_SALARY（推导）
 
-    法规版本按 PATMENT_DATETIME / PERIOD_END 选；缺失则用 evaluation_date。
+    法规版本按 PAYMENT_DATETIME / PERIOD_END 选；缺失则用 evaluation_date。
+
+    ★ B4：RATE 列消歧 —— VLM 可能输出百分比形式（"11" = 11%）
+           或小数形式（"0.11" = 11%），schema 层无强约束。
+           采用「就近于法定率」原则选解释。
+    ★ B13：用 extract_date 统一处理 datetime / date / str 的输入。
     """
     if ctx.statutory is None:
         return []
 
-    # 决定法规生效日期
-    effective_date = None
+    # ★ B13：用 extract_date 处理 datetime / date / str
+    effective_date: Optional[date] = None
     for role in (
         GlobalFactRole.PAYMENT_DATETIME,
         GlobalFactRole.PERIOD_END,
@@ -360,9 +365,9 @@ def payslip_statutory_rate_check(ctx: RuleContext) -> list[RuleResult]:
         f = get_first_fact(ctx, role)
         if f is None:
             continue
-        v = getattr(f.value, "value", f.value)
-        if isinstance(v, date):
-            effective_date = v
+        d = extract_date(f.value)
+        if d is not None:
+            effective_date = d
             break
     if effective_date is None:
         effective_date = ctx.evaluation_date
@@ -412,10 +417,20 @@ def payslip_statutory_rate_check(ctx: RuleContext) -> list[RuleResult]:
             # 实际费率
             actual_rate: Optional[Decimal] = None
             rate_cell = to_decimal(get_cell(row, cols, "RATE"))
+            rate_interpretation: Optional[str] = None  # ★ B4: 记录消歧结果
             if rate_cell is not None:
-                actual_rate = (
-                    rate_cell / Decimal("100") if rate_cell > 1 else rate_cell
-                )
+                # ★ B4：两个候选解释 —— 百分比形式 / 小数形式
+                percent_form = rate_cell / Decimal("100")
+                decimal_form = rate_cell
+                # 选离法定率更近的一个
+                if abs(percent_form - statutory_rate) <= abs(
+                    decimal_form - statutory_rate
+                ):
+                    actual_rate = percent_form
+                    rate_interpretation = "percent_form"
+                else:
+                    actual_rate = decimal_form
+                    rate_interpretation = "decimal_form"
             else:
                 amt = to_decimal(get_cell(row, cols, "AMOUNT"))
                 if (
@@ -424,6 +439,7 @@ def payslip_statutory_rate_check(ctx: RuleContext) -> list[RuleResult]:
                     and basic_salary != 0
                 ):
                     actual_rate = amt / basic_salary
+                    rate_interpretation = "derived_from_amount"
 
             if actual_rate is None:
                 continue
@@ -446,6 +462,9 @@ def payslip_statutory_rate_check(ctx: RuleContext) -> list[RuleResult]:
                     "statutory_key": yaml_key,
                     "role": role_name,
                     "effective_date": effective_date.isoformat(),
+                    # ★ B4：消歧记录
+                    "rate_cell_raw": str(rate_cell) if rate_cell is not None else None,
+                    "rate_interpretation": rate_interpretation,
                 },
                 expected=str(statutory_rate),
                 actual=str(actual_rate),

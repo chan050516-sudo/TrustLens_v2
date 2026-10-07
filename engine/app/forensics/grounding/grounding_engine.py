@@ -124,17 +124,41 @@ class GroundingEngine:
 
                 all_fallback_targets.extend(fallback_targets)
 
-        # ★ 一次性跑所有 fallback targets
-        if all_fallback_targets and self._web_grounder:
-            logger.info(
-                f"[Grounding] Collected {len(all_fallback_targets)} "
-                f"fallback target(s) → single web_search call"
-            )
-            try:
-                web_fallback = self._web_grounder.ground(all_fallback_targets)
-                web_results.extend(web_fallback)
-            except Exception as e:
-                logger.exception(f"[Grounding] Web fallback failed: {e}")
+        # ★ B2：一次性跑所有 fallback targets
+        if all_fallback_targets:
+            if self._web_grounder is not None:
+                logger.info(
+                    f"[Grounding] Collected {len(all_fallback_targets)} "
+                    f"fallback target(s) → single web_search call"
+                )
+                try:
+                    web_fallback = self._web_grounder.ground(
+                        all_fallback_targets
+                    )
+                    web_results.extend(web_fallback)
+                except Exception as e:
+                    # ★ web 失败 → 补产 UNVERIFIABLE，避免 target 丢失
+                    logger.exception(f"[Grounding] Web fallback failed: {e}")
+                    det_results.extend(
+                        self._make_unverifiable_deterministic_batch(
+                            all_fallback_targets,
+                            backend_name="web_fallback",
+                            reason="web_fallback_failed",
+                        )
+                    )
+            else:
+                # ★ web grounder 不可用 → 补产 UNVERIFIABLE
+                logger.warning(
+                    f"[Grounding] {len(all_fallback_targets)} fallback "
+                    f"target(s) cannot be verified (web grounder disabled)"
+                )
+                det_results.extend(
+                    self._make_unverifiable_deterministic_batch(
+                        all_fallback_targets,
+                        backend_name="web_disabled",
+                        reason="no_fallback_available",
+                    )
+                )
 
         summary = self._build_summary(
             web_results, ent_results, det_results, len(targets)
@@ -161,47 +185,34 @@ class GroundingEngine:
         targets: list[GroundingTarget],
     ) -> tuple[list[AnyGroundingResult], list[GroundingTarget]]:
         """
-        跑确定性 backend，返回 (deterministic 结果, 需要 fallback 的 targets)。
+        跑确定性 backend，返回 (保留的 det_results, 需要 fallback 的 targets)。
+
+        ★ B2 设计：
+          - EXACT_MATCH / CONFLICT_FOUND → 保留为 det_result
+          - NOT_FOUND / UNVERIFIABLE    → 只加入 fallback_targets，不产 det_result
+          避免同一 target 同时出现在 deterministic_results 和 web_results。
 
         不在这里调 web grounder——由主线程汇总后统一处理。
         """
         backend = self._backends.get(route)
 
-        # backend 未注册或不可用 → 整个 batch 作为 fallback
-        if backend is None:
-            return (
-                self._make_unverifiable_deterministic_batch(
-                    targets, route, f"{route}_backend_not_registered"
-                ),
-                list(targets),
-            )
-        if not backend.is_available():
-            return (
-                self._make_unverifiable_deterministic_batch(
-                    targets, route, f"{route}_backend_unavailable"
-                ),
-                list(targets),
-            )
+        # ★ B2：backend 未注册 / 不可用 / 失败 → 全部走 fallback，不产 det_result
+        if backend is None or not backend.is_available():
+            return [], list(targets)
 
-        # 跑 backend
         try:
             backend_results: list[BackendResult] = backend.search(targets)
         except Exception as e:
             logger.exception(f"[Grounding] Backend {route} failed: {e}")
-            return (
-                self._make_unverifiable_deterministic_batch(
-                    targets, route, f"{route}_error: {e}"
-                ),
-                list(targets),
-            )
+            return [], list(targets)
 
-        # 分流：EXACT_MATCH/CONFLICT_FOUND 保留，NOT_FOUND/UNVERIFIABLE 待 fallback
         det_results: list[AnyGroundingResult] = []
         fallback_targets: list[GroundingTarget] = []
         for br in backend_results:
-            det_results.append(self._to_det_result(br, backend.name))
             if br.outcome in _FALLBACK_OUTCOMES:
                 fallback_targets.append(br.target)
+            else:
+                det_results.append(self._to_det_result(br, backend.name))
 
         return det_results, fallback_targets
 

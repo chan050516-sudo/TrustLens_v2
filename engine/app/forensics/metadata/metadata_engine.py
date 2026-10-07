@@ -566,14 +566,16 @@ class MetadataEngine:
                 logger.warning(f"Analyzer {name} failed: {e}", exc_info=True)
                 self._errors.append({"module": f"analyzer_{name}", "error": str(e)})
         
-        # 去重（基于 Evidence 的 hash）
-        unique_evidences = {}
+        # ★ B8：用 set 去重（保序），避免 hash(ev) 作为 dict key 的 hash 冲突
+        seen: set = set()
+        unique: list[Evidence] = []
         for ev in all_evidences:
-            key = hash(ev)
-            if key not in unique_evidences:
-                unique_evidences[key] = ev
-        
-        return list(unique_evidences.values())
+            if ev in seen:
+                continue
+            seen.add(ev)
+            unique.append(ev)
+
+        return unique
     
     def _extract_header_binary(self, file_path: Path) -> Optional[str]:
         """

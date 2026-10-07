@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from datetime import date
 
 from app.core.dto_ir import (
-    DocumentType, ReconciliationDTOIR, GroundingDTOIR
+    DocumentType, GlobalFactRole, ReconciliationDTOIR, GroundingDTOIR,
 )
 from app.core.evidence import Evidence
 from app.forensics.reconciliation.constants.statutory_rates import (
@@ -130,7 +131,11 @@ class ReconciliationEngine:
 
     # ------------------------------------------------------------------
 
-    def _build_rule_context(self, dto_ir: ReconciliationDTOIR, grounding_ir: Optional[GroundingDTOIR] = None,) -> RuleContext:
+    def _build_rule_context(
+        self,
+        dto_ir: ReconciliationDTOIR,
+        grounding_ir: Optional[GroundingDTOIR] = None,
+    ) -> RuleContext:
         by_role: dict = {}
         for gf in dto_ir.reconciliation.global_facts:
             by_role.setdefault(gf.role, []).append(gf)
@@ -154,15 +159,36 @@ class ReconciliationEngine:
                 table=t,
             ))
 
+        # ★ B9：用 ISSUE_DATE 作为评估日期（可复现），缺失时 fallback 到 today
+        evaluation_date = self._infer_evaluation_date(by_role)
+
         return RuleContext(
             dto_ir=dto_ir,
             document_type=dto_ir.document.document_type,
             global_facts_by_role=by_role,
             tables=tables,
             statutory=self._statutory,
-            # ★ 从 dto_ir 取 grounding（可能已被 analyze_with_context 注入）
             grounding=dto_ir.grounding,
+            evaluation_date=evaluation_date,
         )
+
+    @staticmethod
+    def _infer_evaluation_date(by_role: dict) -> date:
+        """
+        ★ B9：优先用 ISSUE_DATE 作为评估日期，保证可复现。
+
+        缺失 ISSUE_DATE 时 fallback 到 today（保持向后兼容）。
+        """
+        from app.forensics.reconciliation.operators.date_ops import to_date
+
+        issue_facts = by_role.get(GlobalFactRole.ISSUE_DATE) or []
+        if issue_facts:
+            raw = issue_facts[0].value
+            v = getattr(raw, "value", raw)
+            d = to_date(v)
+            if d is not None:
+                return d
+        return date.today()
 
     @staticmethod
     def _run_rule(fn, ctx: RuleContext) -> list[RuleResult]:

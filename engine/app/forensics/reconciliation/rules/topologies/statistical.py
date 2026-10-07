@@ -45,8 +45,9 @@ _BENFORD_EXPECTED: dict[int, float] = {
 }
 
 # MAD 判据阈值（Nigrini 2012）
-_MAD_NONCONFORMITY = 0.015
-_MAD_MARGINAL = 0.012
+_MAD_ACCEPTABLE = 0.006       # < 0.006: close/acceptable conformity
+_MAD_MARGINAL = 0.012         # 0.006~0.012 可接受；0.012~0.015 边缘
+_MAD_NONCONFORMITY = 0.015    # ≥ 0.015: nonconformity → 告警
 
 # 最小样本量
 _MIN_SAMPLES = 30
@@ -156,15 +157,25 @@ def benford_first_digit(
 
             mad, n, observed = _compute_mad(counts)
 
-            if mad <= _MAD_MARGINAL:
+            # ★ B1：区分 close / acceptable / marginal / nonconformity
+            # Nigrini 2012 分档：
+            #   MAD < 0.006        close conformity
+            #   0.006 ≤ MAD < 0.012 acceptable conformity
+            #   0.012 ≤ MAD < 0.015 marginal conformity
+            #   MAD ≥ 0.015        nonconformity → 告警
+            if mad < _MAD_ACCEPTABLE:
+                zone = "close_acceptable"
                 status = RuleStatus.PASSED
                 severity = RuleSeverity.INFO
                 evidence_type = None
-            elif mad <= _MAD_NONCONFORMITY:
-                status = RuleStatus.PASSED    # 边缘，仅记录
-                severity = RuleSeverity.INFO
+            elif mad < _MAD_MARGINAL:
+                # 边缘区间：不算 FAILED，但提高 severity 让 Detective 可见
+                zone = "marginal"
+                status = RuleStatus.PASSED
+                severity = RuleSeverity.WARNING
                 evidence_type = None
             else:
+                zone = "nonconformity"
                 status = RuleStatus.FAILED
                 severity = RuleSeverity.WARNING
                 evidence_type = "RECONCILIATION_BENFORD_ANOMALY"
@@ -176,12 +187,13 @@ def benford_first_digit(
                 severity=severity,
                 description=(
                     f"[{inst.internal_id}] Benford on {col}: "
-                    f"MAD={mad:.4f} (n={n}, threshold={_MAD_NONCONFORMITY})"
+                    f"MAD={mad:.4f} ({zone}, n={n})"
                 ),
                 inputs={
                     "column": col,
                     "sample_size": n,
                     "mad": round(mad, 6),
+                    "zone": zone,   # ★ B1：下游可区分 marginal
                     "observed_distribution": {
                         str(d): round(observed.get(d, 0.0), 4)
                         for d in range(1, 10)
