@@ -12,8 +12,10 @@
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,10 +26,40 @@ from app.forensics.grounding.models.deterministic_result import DeterministicSou
 
 logger = logging.getLogger(__name__)
 
-# JSON 文件中记录列表的字段名
+
+# ============================================================
+# 名称归一化（内联，不依赖 scripts/）
+# ============================================================
+
+_COMPANY_SUFFIX_RE = re.compile(
+    r"\b(?:"
+    r"sendirian\s+berhad"
+    r"|sdn\.?\s*bhd\.?"
+    r"|berhad"
+    r"|bhd\.?"
+    r"|sdn\.?"
+    r"|s/b"
+    r"|enterprise"
+    r"|ent\.?"
+    r")\b\.?",
+    re.IGNORECASE,
+)
+
+
+def normalize_name(name: str) -> str:
+    """归一化公司名。"""
+    if not name:
+        return ""
+    s = html.unescape(name).lower()
+    s = s.replace("\xa0", " ")
+    s = _COMPANY_SUFFIX_RE.sub(" ", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 _RECORD_LIST_KEYS = ["companies", "entities", "licensees", "importers"]
 
-# 数据源标识 → 权威机构名
 _AUTHORITY_MAP = {
     "BURSA_OFFICIAL_ISIN": "Bursa Malaysia",
     "BURSA_OFFICIAL_ISIN+KLSE_SCREENER": "Bursa Malaysia",
@@ -42,7 +74,7 @@ class LocalWhitelistBackend(SearchBackend):
 
     def __init__(self, whitelist_dir: Path):
         self._whitelist_dir = whitelist_dir
-        self._index: dict[str, list[dict]] = {}   # normalized_name → [records]
+        self._index: dict[str, list[dict]] = {}
         self._loaded_sources: list[str] = []
         self._load_all()
 
@@ -71,7 +103,6 @@ class LocalWhitelistBackend(SearchBackend):
 
             records = self._extract_records(data)
             if not records:
-                logger.debug(f"[Whitelist] No records in {f.name}")
                 continue
 
             count = 0
@@ -92,12 +123,10 @@ class LocalWhitelistBackend(SearchBackend):
 
     @staticmethod
     def _extract_records(data: dict) -> list[dict]:
-        """从不同格式的 JSON 中提取记录列表。"""
         for key in _RECORD_LIST_KEYS:
             records = data.get(key)
             if isinstance(records, list):
                 return records
-        # 兜底：如果顶层就是 list
         if isinstance(data, list):
             return data
         return []
@@ -110,8 +139,7 @@ class LocalWhitelistBackend(SearchBackend):
         return [self._lookup_one(t) for t in targets]
 
     def _lookup_one(self, t: GroundingTarget) -> BackendResult:
-        # 用 normalize_name 归一化查询值
-        from scripts.refresh_bursa_whitelist import normalize_name
+        # ★ 使用本地 normalize_name（不再 import scripts）
         norm = normalize_name(t.value)
 
         if not norm:
@@ -122,7 +150,6 @@ class LocalWhitelistBackend(SearchBackend):
 
         candidates = self._index.get(norm)
         if not candidates:
-            # 尝试模糊匹配（前缀）
             candidates = self._fuzzy_lookup(norm)
 
         if not candidates:
@@ -149,7 +176,6 @@ class LocalWhitelistBackend(SearchBackend):
         )
 
     def _fuzzy_lookup(self, norm: str) -> list[dict]:
-        """前缀模糊匹配（处理名称差异）。"""
         if len(norm) < 5:
             return []
         for key, records in self._index.items():

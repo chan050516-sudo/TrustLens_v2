@@ -1,13 +1,17 @@
-"""GroundingEngine — 顶层编排（多 backend 版，三源平级）。
+"""GroundingEngine — 顶层编排（多 backend 版，三源平级 + Web fallback）。
 
 设计原则：
-  - 三种结果类型平级，不做统一基类：
+  - 三种结果类型平级：
       * web_results           —— 公开网络搜索
       * enterprise_results    —— 企业内部 DB
-      * deterministic_results —— 权威外部源（SSM / BNM / WHOIS）
-  - 路由分派保留三分支（web / enterprise / deterministic），
-    不做"统一 backend"的过度抽象——它们的语义不同。
-  - Backend 失败（网络错误）→ UNVERIFIABLE，不降级到 Tavily。
+      * deterministic_results —— 权威外部源（whitelist / bnm / whois / ssm）
+
+  - 确定性 backend 的 fallback 策略：
+      * backend 未注册 / 不可用     → 整个 batch fallback 到 web_search
+      * backend 可用但返回 NOT_FOUND / UNVERIFIABLE
+                                      → 该 target 额外走 web_search
+                                      → 确定性结果与 web 结果都保留
+      * CONFLICT_FOUND / EXACT_MATCH  → 不再 fallback
 """
 from __future__ import annotations
 
@@ -34,6 +38,10 @@ AnyGroundingResult = Union[
     EnterpriseGroundingResult,
     DeterministicGroundingResult,
 ]
+
+
+# 触发 web fallback 的 outcome
+_FALLBACK_OUTCOMES = {GroundingOutcome.UNVERIFIABLE, GroundingOutcome.NOT_FOUND}
 
 
 class GroundingEngine:
@@ -78,29 +86,23 @@ class GroundingEngine:
         ) -> list[AnyGroundingResult]:
             if route == "unverifiable":
                 return self._make_unverifiable_batch(route_targets)
+
             if route == "enterprise":
                 if self._enterprise_grounder:
                     return self._enterprise_grounder.ground(route_targets)
                 return self._make_unverifiable_batch(
                     route_targets, "enterprise_disabled"
                 )
+
             if route == "web_search":
                 if self._web_grounder:
                     return self._web_grounder.ground(route_targets)
                 return self._make_unverifiable_batch(
                     route_targets, "web_disabled"
                 )
-            # 确定性 backend
-            backend = self._backends.get(route)
-            if backend is None:
-                return self._make_unverifiable_deterministic_batch(
-                    route_targets, route, f"{route}_backend_not_registered"
-                )
-            if not backend.is_available():
-                return self._make_unverifiable_deterministic_batch(
-                    route_targets, route, f"{route}_backend_unavailable"
-                )
-            return self._run_deterministic_backend(backend, route_targets)
+
+            # ---- 确定性 backend（含 web fallback）----
+            return self._run_deterministic_route(route, route_targets)
 
         with ThreadPoolExecutor(max_workers=self._max_route_workers) as ex:
             futures = {
@@ -140,13 +142,114 @@ class GroundingEngine:
         return context
 
     # ------------------------------------------------------------------
+    # 确定性 backend + web fallback
+
+    def _run_deterministic_route(
+        self,
+        route: str,
+        route_targets: list[GroundingTarget],
+    ) -> list[AnyGroundingResult]:
+        """
+        跑确定性 backend，对 NOT_FOUND / UNVERIFIABLE 的 target 走 web fallback。
+
+        返回：DeterministicGroundingResult 列表 + WebGroundingResult 列表
+              （可能混合）
+        """
+        backend = self._backends.get(route)
+
+        # Case A: backend 未注册或不可用 → 整个 batch fallback
+        if backend is None or not backend.is_available():
+            reason = (
+                f"{route}_backend_not_registered"
+                if backend is None
+                else f"{route}_backend_unavailable"
+            )
+            if self._web_grounder:
+                logger.info(
+                    f"[Grounding] Backend {route} unavailable "
+                    f"({reason}) → fallback to web_search "
+                    f"for {len(route_targets)} target(s)"
+                )
+                return self._web_grounder.ground(route_targets)
+            return self._make_unverifiable_deterministic_batch(
+                route_targets, route, reason
+            )
+
+        # Case B: backend 可用，跑查询
+        try:
+            backend_results: list[BackendResult] = backend.search(route_targets)
+        except Exception as e:
+            logger.exception(f"[Grounding] Backend {route} failed: {e}")
+            if self._web_grounder:
+                logger.info(
+                    f"[Grounding] Backend {route} raised → fallback to web_search"
+                )
+                return self._web_grounder.ground(route_targets)
+            return self._make_unverifiable_deterministic_batch(
+                route_targets, route, f"{route}_error: {e}"
+            )
+
+        # Case C: 分流
+        det_results: list[DeterministicGroundingResult] = []
+        fallback_targets: list[GroundingTarget] = []
+
+        for br in backend_results:
+            det_results.append(self._to_det_result(br, backend.name))
+            if br.outcome in _FALLBACK_OUTCOMES:
+                fallback_targets.append(br.target)
+
+        # Case D: 有需要 fallback 的 target → 跑 web
+        if fallback_targets and self._web_grounder:
+            logger.info(
+                f"[Grounding] Backend {route} → "
+                f"{len(fallback_targets)}/{len(route_targets)} target(s) "
+                f"fallback to web_search"
+            )
+            web_fallback = self._web_grounder.ground(fallback_targets)
+            return det_results + web_fallback
+
+        return det_results
+
+    @staticmethod
+    def _to_det_result(
+        br: BackendResult,
+        backend_name: str,
+    ) -> DeterministicGroundingResult:
+        """BackendResult → DeterministicGroundingResult。"""
+        sources_norm: list[DeterministicSource] = []
+        for s in br.sources:
+            if isinstance(s, DeterministicSource):
+                sources_norm.append(s)
+            elif isinstance(s, dict):
+                sources_norm.append(DeterministicSource(**s))
+
+        return DeterministicGroundingResult(
+            entity_type=br.target.entity_type.value,
+            query_value=br.target.value,
+            subkey=br.target.subkey,
+            keys_queried=[
+                {"key": k.key.value, "value": k.value}
+                for k in br.target.keys
+            ],
+            backend_name=backend_name,
+            outcome=br.outcome,
+            confidence=br.confidence,
+            matched_record=br.matched_record,
+            sources=sources_norm,
+            notes=br.notes,
+            observation_ids=(
+                list(br.target.source.observation_ids)
+                if br.target.source else []
+            ),
+        )
+
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _make_unverifiable_batch(
         targets: list[GroundingTarget],
         reason: str = "router_marked_unverifiable",
     ) -> list[WebGroundingResult]:
-        """web 路径的 UNVERIFIABLE 占位（不查询）。"""
         out = []
         for t in targets:
             out.append(WebGroundingResult(
@@ -173,7 +276,6 @@ class GroundingEngine:
         backend_name: str,
         reason: str,
     ) -> list[DeterministicGroundingResult]:
-        """确定性 backend 不可用时的 UNVERIFIABLE 占位。"""
         out = []
         for t in targets:
             out.append(DeterministicGroundingResult(
@@ -190,51 +292,6 @@ class GroundingEngine:
                 sources=[],
                 notes=reason,
                 observation_ids=list(t.source.observation_ids) if t.source else [],
-            ))
-        return out
-
-    def _run_deterministic_backend(
-        self,
-        backend,
-        targets: list[GroundingTarget],
-    ) -> list[DeterministicGroundingResult]:
-        """调用确定性 backend，结果转 DeterministicGroundingResult。"""
-        try:
-            backend_results: list[BackendResult] = backend.search(targets)
-        except Exception as e:
-            logger.exception(f"[Grounding] Backend {backend.name} failed: {e}")
-            return self._make_unverifiable_deterministic_batch(
-                targets, backend.name, f"{backend.name}_error: {e}"
-            )
-
-        out: list[DeterministicGroundingResult] = []
-        for br in backend_results:
-            # 归一化 sources
-            sources_norm: list[DeterministicSource] = []
-            for s in br.sources:
-                if isinstance(s, DeterministicSource):
-                    sources_norm.append(s)
-                elif isinstance(s, dict):
-                    sources_norm.append(DeterministicSource(**s))
-
-            out.append(DeterministicGroundingResult(
-                entity_type=br.target.entity_type.value,
-                query_value=br.target.value,
-                subkey=br.target.subkey,
-                keys_queried=[
-                    {"key": k.key.value, "value": k.value}
-                    for k in br.target.keys
-                ],
-                backend_name=backend.name,
-                outcome=br.outcome,
-                confidence=br.confidence,
-                matched_record=br.matched_record,
-                sources=sources_norm,
-                notes=br.notes,
-                observation_ids=(
-                    list(br.target.source.observation_ids)
-                    if br.target.source else []
-                ),
             ))
         return out
 
@@ -271,7 +328,7 @@ class GroundingEngine:
             web_queries=len(web_results),
             enterprise_queries=len(ent_results),
             deterministic_queries=len(det_results),
-            summarizer_calls=0,   # 由 LLMSummarizer 内部统计（暂未回传）
+            summarizer_calls=0,
         )
 
     def get_last_context(self) -> Optional[GroundingContext]:

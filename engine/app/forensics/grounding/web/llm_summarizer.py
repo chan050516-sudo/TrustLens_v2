@@ -1,19 +1,16 @@
-"""Gemini LLM 总结器。
+"""Gemini LLM 总结器（强化版）。
 
 职责：
-  - 接收多个 query + 每个 query 的 Tavily 搜索结果
-  - 一次 LLM call 输出每个 query 的 summary
-  - **不处理 sources**（那由 Tavily 直接提供）
+  - 接收多个 query + 每个 query 的搜索结果
+  - 一次 LLM call 输出每个 query 的独立 summary
+  - **严格要求 query 与 summary 一一对应，禁止合并**
 
 设计决策：
-  - 一次 call 总结所有 query（而非单 query 单 call）
-  - prompt 描述 JSON schema，但 **不用 response_mime_type="application/json"**
-  - **query_index 动态检测 base**：自动识别 LLM 输出是 0-based 还是 1-based，
-    避免 LLM 习惯性地从 1 开始计数导致错位
-  - 返回类型为 `list[SummarizeResult]`，区分三种情况：
-      * 正常：summary 有值
-      * LLM 明确 not_found：summary=None, not_found=True
-      * LLM 调用失败：error 非空
+  - 一次 call 总结所有 query（减少 API 调用）
+  - 关闭 thinking（summary 任务简单，thinking 导致 15-25s 延迟）
+  - prompt 描述 JSON schema，但不用 response_mime_type="application/json"
+  - **query_index 动态检测 base**：自动识别 0-based / 1-based
+  - **强制条数校验**：LLM 返回的结果数必须 == n，否则记 error
 """
 from __future__ import annotations
 
@@ -34,11 +31,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gemini-3.8-flash"
 _SNIPPET_MAX_LEN = 300
+# thinking_budget=0 会显著降低延迟（15-25s → 2-5s），但对复杂推理任务
+# 可能降低输出质量。当前任务（读几条 snippet 输出摘要）简单，用 0。
+# 若实测质量下降，改回 128。
+_THINKING_BUDGET = 0
 
 
 @dataclass
 class SummarizeResult:
-    """单 query 的总结结果。"""
     summary: Optional[str]
     outcome: Optional[GroundingOutcome]
     error: Optional[str]
@@ -84,7 +84,11 @@ class LLMSummarizer:
             return []
 
         prompt = self._build_prompt(queries_with_results)
-        config = types.GenerateContentConfig(temperature=0.0)
+
+        config = types.GenerateContentConfig(
+            temperature=0.0,
+            thinking_config=types.ThinkingConfig(thinking_budget=_THINKING_BUDGET),
+        )
 
         try:
             response = self._client.models.generate_content(
@@ -109,9 +113,7 @@ class LLMSummarizer:
         if parsed is None:
             logger.warning("[Grounding.summarizer] JSON parse failed")
             return [
-                SummarizeResult(
-                    summary=None, outcome=None, error="json_parse_failed"
-                )
+                SummarizeResult(summary=None, outcome=None, error="json_parse_failed")
                 for _ in range(n)
             ]
 
@@ -121,26 +123,47 @@ class LLMSummarizer:
 
     @staticmethod
     def _extract_summaries(parsed: dict, n: int) -> list[SummarizeResult]:
+        """从 LLM 输出提取 summaries，强制条数校验。"""
         results: list[SummarizeResult] = [
-            SummarizeResult(summary=None, outcome=None, error="missing_from_llm_output")
+            SummarizeResult(
+                summary=None, outcome=None, error="missing_from_llm_output"
+            )
             for _ in range(n)
         ]
 
         items = parsed.get("results") or []
         if not isinstance(items, list):
+            logger.warning(
+                f"[Grounding.summarizer] 'results' is not a list: {type(items)}"
+            )
             return results
 
+        # ★ 校验条数：LLM 返回条数必须 == n
+        if len(items) != n:
+            logger.warning(
+                f"[Grounding.summarizer] Count mismatch: "
+                f"LLM returned {len(items)} item(s), expected {n}. "
+                f"Missing entries will be marked as error."
+            )
+
+        # 检测 query_index 的 base
         indices = [
             item.get("query_index")
             for item in items
             if isinstance(item, dict) and isinstance(item.get("query_index"), int)
         ]
         if not indices:
+            logger.warning(
+                f"[Grounding.summarizer] No valid query_index in LLM output. "
+                f"Raw items: {items[:2]}"
+            )
             return results
 
         min_idx, max_idx = min(indices), max(indices)
         offset = -1 if (min_idx == 1 and max_idx == n) else 0
 
+        matched = 0
+        seen_idx: set[int] = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -149,7 +172,18 @@ class LLMSummarizer:
                 continue
             idx = raw_idx + offset
             if idx < 0 or idx >= n:
+                logger.warning(
+                    f"[Grounding.summarizer] query_index {raw_idx} out of range "
+                    f"[0, {n-1}] after offset={offset}"
+                )
                 continue
+            if idx in seen_idx:
+                logger.warning(
+                    f"[Grounding.summarizer] Duplicate query_index {idx}; "
+                    f"keeping first occurrence"
+                )
+                continue
+            seen_idx.add(idx)
 
             outcome_raw = item.get("outcome")
             outcome: Optional[GroundingOutcome] = None
@@ -157,7 +191,9 @@ class LLMSummarizer:
                 try:
                     outcome = GroundingOutcome(outcome_raw)
                 except ValueError:
-                    outcome = None
+                    logger.warning(
+                        f"[Grounding.summarizer] Unknown outcome: {outcome_raw}"
+                    )
 
             summary_raw = item.get("summary")
             summary = None
@@ -169,6 +205,13 @@ class LLMSummarizer:
                 outcome=outcome,
                 error=None,
             )
+            matched += 1
+
+        if matched < n:
+            logger.warning(
+                f"[Grounding.summarizer] Only {matched}/{n} queries received "
+                f"a valid summary"
+            )
 
         return results
 
@@ -176,57 +219,76 @@ class LLMSummarizer:
 
     @staticmethod
     def _build_prompt(queries_with_results: list[dict[str, Any]]) -> str:
+        n = len(queries_with_results)
+
         lines = [
             "You are an OBSERVATION engine for a document forensics system.",
             "",
-            "For each numbered query, you are given a list of external search results.",
-            "Your job is to OBSERVE the relationship between the query value and the",
-            "external world. You are NOT asked to judge whether the document is real",
-            "or fake.",
+            f"You will receive exactly {n} queries. Each query has its own list",
+            "of external search results.",
+            "",
+            "# YOUR TASK",
+            "For EACH query, produce ONE independent observation of the",
+            "relationship between that query's value and the external world.",
+            "",
+            "★ CRITICAL: Each query gets its OWN entry in the output.",
+            "  - Do NOT merge multiple queries into one summary.",
+            "  - Do NOT write summaries like 'all three above' or 'the queries",
+            "    collectively show'.",
+            "  - Do NOT skip a query, even if its results are empty or unclear.",
+            f"  - You MUST output exactly {n} entries in the `results` array.",
             "",
             "# OUTCOME (choose exactly one per query)",
-            "- EXACT_MATCH:      An authoritative external source (official registry,",
-            "                    government site, institutional page) contains the",
-            "                    exact same value.",
-            "- FUZZY_MATCH:      Multiple public web sources mention highly related",
-            "                    values, but no single authoritative source confirms",
-            "                    exactly.",
-            "- CONFLICT_FOUND:   An authoritative external source contains a DIFFERENT",
-            "                    value for the SAME identifier (e.g. the registration",
-            "                    number belongs to a different company).",
-            "- NOT_FOUND:        No relevant results.",
+            "- EXACT_MATCH:      An authoritative external source (official",
+            "                    registry, government site, institutional page)",
+            "                    contains the EXACT same value.",
+            "- FUZZY_MATCH:      Public web sources mention highly related values,",
+            "                    but no single authoritative source confirms the",
+            "                    exact value.",
+            "- CONFLICT_FOUND:   An authoritative external source contains a",
+            "                    DIFFERENT value for the SAME identifier.",
+            "- NOT_FOUND:        No relevant results for this query.",
             "- UNVERIFIABLE:     Should NOT be used by you; decided upstream.",
             "",
             "# OUTPUT SCHEMA (JSON only, no markdown fences)",
             "{",
             '  "results": [',
             '    {',
-            '      "query_index": <int, counting from 0>,',
+            '      "query_index": 0,',
             '      "outcome":     "EXACT_MATCH"|"FUZZY_MATCH"|"CONFLICT_FOUND"|"NOT_FOUND",',
             '      "summary":     "<1-3 sentences or null>"',
+            "    },",
+            "    {",
+            '      "query_index": 1,',
+            '      "outcome":     "...",',
+            '      "summary":     "<this query\'s own summary>"',
             "    },",
             "    ...",
             "  ]",
             "}",
             "",
             "# CRITICAL RULES",
+            f"- The `results` array MUST contain exactly {n} entries.",
             "- `query_index` MUST start from 0 (not 1).",
-            "- `summary` describes what the external world says, NOT what the",
-            "  document is. Do NOT use words like 'fake', 'fraud', 'suspicious',",
+            "- `query_index` MUST be unique across entries.",
+            "- `summary` describes what the external world says ABOUT THIS",
+            "  SPECIFIC query's value. Do NOT reference other queries.",
+            "- Do NOT use words like 'fake', 'fraud', 'suspicious',",
             "  'authentic', 'genuine'.",
             "- For NOT_FOUND, set `summary` to null.",
             "- For CONFLICT_FOUND, include the external value in the summary.",
             "- Do NOT fabricate. Do NOT invent sources. Do NOT output URLs.",
             "- Output valid JSON only. No commentary, no markdown fences.",
             "",
-            "# QUERIES AND SEARCH RESULTS",
+            f"# QUERIES AND SEARCH RESULTS ({n} total)",
         ]
+
         for i, item in enumerate(queries_with_results):
             lines.append("")
             lines.append(f"## Query {i}: {item['query']}")
             results = item.get("results") or []
             if not results:
-                lines.append("   (no search results)")
+                lines.append("   (no search results for this query)")
                 continue
             for j, r in enumerate(results):
                 title = r.get("title", "") or ""
@@ -237,6 +299,13 @@ class LLMSummarizer:
                 lines.append(f"   [{j}] {title}  <{url}>")
                 if snippet:
                     lines.append(f"       {snippet}")
+
+        lines.append("")
+        lines.append(f"# REMINDER")
+        lines.append(
+            f"Output exactly {n} entries in `results`, one per query above."
+        )
+
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

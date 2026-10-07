@@ -87,6 +87,7 @@ class DuckDuckGoClient:
                 "score": None,  # DuckDuckGo 不返回 relevance score
             }
             for r in raw
+            if (r.get("href") or r.get("title"))
         ]
 
         logger.info(f"[DDG] query={query!r} → {len(results)} result(s)")

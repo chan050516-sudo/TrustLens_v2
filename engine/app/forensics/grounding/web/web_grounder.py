@@ -177,6 +177,7 @@ class WebGrounder:
                 score=r.get("score"),
             )
             for r in raw_results
+            if (r.get("url") or r.get("title"))
         ]
 
         keys_queried = [
@@ -193,7 +194,7 @@ class WebGrounder:
 
         if error:
             outcome = GroundingOutcome.NOT_FOUND
-            notes = f"tavily_error: {error}"
+            notes = f"search_error: {error}"
         elif not raw_results:
             outcome = GroundingOutcome.NOT_FOUND
             notes = "no_search_results"
