@@ -139,7 +139,6 @@ class LocalWhitelistBackend(SearchBackend):
         return [self._lookup_one(t) for t in targets]
 
     def _lookup_one(self, t: GroundingTarget) -> BackendResult:
-        # ★ 使用本地 normalize_name（不再 import scripts）
         norm = normalize_name(t.value)
 
         if not norm:
@@ -159,7 +158,8 @@ class LocalWhitelistBackend(SearchBackend):
             )
 
         best = candidates[0]
-        source = best.get("source", "")
+        # ★ 兼容 source / source_file 两种字段名
+        source = best.get("source") or best.get("source_file") or ""
         authority = _AUTHORITY_MAP.get(source, "Local Whitelist")
 
         return BackendResult(
@@ -172,7 +172,7 @@ class LocalWhitelistBackend(SearchBackend):
                 authority=authority,
             )],
             confidence=0.95,
-            notes=f"matched_source: {source}",
+            notes=f"matched_source: {source}" if source else "matched_local_whitelist",
         )
 
     def _fuzzy_lookup(self, norm: str) -> list[dict]:

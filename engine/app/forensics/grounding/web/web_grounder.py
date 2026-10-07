@@ -187,19 +187,21 @@ class WebGrounder:
             list(target.source.observation_ids) if target.source else []
         )
 
-        # 决定 outcome / summary / notes
         outcome = GroundingOutcome.NOT_FOUND
         summary: Optional[str] = None
         notes: Optional[str] = None
 
         if error:
-            outcome = GroundingOutcome.NOT_FOUND
+            # ★ DDG 抛异常 → UNVERIFIABLE（技术失败，非事实判定）
+            outcome = GroundingOutcome.UNVERIFIABLE
             notes = f"search_error: {error}"
         elif not raw_results:
-            outcome = GroundingOutcome.NOT_FOUND
-            notes = "no_search_results"
+            # ★ DDG 返回空 → UNVERIFIABLE
+            #   注：搜索引擎波动、上游限流都可能返回空，不等于"实体不存在"
+            outcome = GroundingOutcome.UNVERIFIABLE
+            notes = "search_returned_no_results"
         elif summ.error:
-            # LLM 失败 → 降级：outcome 保持 NOT_FOUND，summary 用 top-1 snippet
+            # LLM 失败 → 降级为 NOT_FOUND + snippet
             outcome = GroundingOutcome.NOT_FOUND
             top = sources[0] if sources else None
             if top and top.snippet:
@@ -214,20 +216,10 @@ class WebGrounder:
             outcome = summ.outcome
             summary = summ.summary
         else:
-            # LLM 返回了但没有 outcome → 降级
-            outcome = GroundingOutcome.NOT_FOUND
-            top = sources[0] if sources else None
-            if top and top.snippet:
-                snippet = top.snippet.strip()
-                if len(snippet) > _FALLBACK_SNIPPET_MAX_LEN:
-                    snippet = snippet[:_FALLBACK_SNIPPET_MAX_LEN] + "..."
-                summary = snippet
-                notes = "missing_outcome_fallback_snippet"
-            else:
-                notes = "missing_outcome"
+            outcome = GroundingOutcome.UNVERIFIABLE
+            notes = "llm_returned_no_outcome"
 
-        # confidence
-        if outcome == GroundingOutcome.NOT_FOUND:
+        if outcome == GroundingOutcome.UNVERIFIABLE:
             confidence = 0.0
         else:
             scores = [s.score for s in sources if s.score is not None]

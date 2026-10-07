@@ -77,14 +77,20 @@ class DuckDuckGoClient:
             with DDGS() as ddgs:
                 raw = list(ddgs.text(query, max_results=self._max_results))
         except Exception as e:
-            return self._error_result(query, str(e))
+            # ★ ddgs 在无结果时抛异常；归类为"空结果"，不是"搜索失败"
+            err_str = str(e).lower()
+            if "no results" in err_str or "no result" in err_str:
+                logger.info(f"[DDG] query={query!r} → 0 result(s) (no_results)")
+                return {"query": query, "results": [], "error": None}
+            logger.warning(f"[DDG] query={query!r} → error: {e}")
+            return {"query": query, "results": [], "error": str(e)}
 
         results = [
             {
                 "title": r.get("title", "") or "",
                 "url": r.get("href", "") or "",
                 "snippet": r.get("body", "") or "",
-                "score": None,  # DuckDuckGo 不返回 relevance score
+                "score": None,
             }
             for r in raw
             if (r.get("href") or r.get("title"))
@@ -92,11 +98,7 @@ class DuckDuckGoClient:
 
         logger.info(f"[DDG] query={query!r} → {len(results)} result(s)")
 
-        return {
-            "query": query,
-            "results": results,
-            "error": None,
-        }
+        return {"query": query, "results": results, "error": None}
 
     @staticmethod
     def _error_result(query: str, error: str) -> dict[str, Any]:
