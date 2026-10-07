@@ -117,6 +117,12 @@ class EvidenceType(str, Enum):
     SEMANTIC_AMBIGUITY = "SEMANTIC_AMBIGUITY"              # 歧义（模糊语言 / 多种解释）
 
 
+# value 结构的 schema 版本。
+# 当某类 Evidence 的 value 结构变更（增删字段、改类型）时递增。
+# Detective 应基于 (type, value_schema_version) 分派解析逻辑。
+EVIDENCE_VALUE_SCHEMA_VERSION = "v1"
+
+
 class Evidence(BaseModel):
     """证据基类 - 所有 Layer 产出的统一数据格式"""
     type: EvidenceType
@@ -128,8 +134,27 @@ class Evidence(BaseModel):
     raw_data: Optional[Dict[str, Any]] = None  # 用于调试或深层分析
     generated_at: datetime = Field(default_factory=datetime.now)
 
+    # ★ C7：value 结构版本标记，让下游能按版本分派解析
+    value_schema_version: str = Field(
+        default=EVIDENCE_VALUE_SCHEMA_VERSION,
+        description=(
+            "value 结构的 schema 版本。Detective 应基于 "
+            "(type, value_schema_version) 分派解析逻辑。"
+        ),
+    )
+
     def __hash__(self):
         # 基于内容去重（避免多个模块产生相同证据）
         return hash((self.type, str(self.value), self.source, self.description))
 
     model_config = ConfigDict(use_enum_values=True)
+
+
+def get_evidence_value(ev: Evidence) -> Any:
+    """
+    ★ C7 辅助访问器：统一读取 value。
+
+    未来若需要按 type 分派，可在此集中扩展（例如按 type 走不同的校验）。
+    当前仅做透传，保持向后兼容。
+    """
+    return ev.value

@@ -13,6 +13,9 @@ from typing import Any, Optional
 
 from app.core.dto_ir import GroundingTarget
 from app.forensics.grounding.models.grounding_outcome import GroundingOutcome
+from app.forensics.grounding.models.deterministic_result import (
+    DeterministicSource,
+)
 
 
 @dataclass
@@ -21,10 +24,10 @@ class BackendResult:
     target: GroundingTarget
     outcome: GroundingOutcome
     matched_record: Optional[dict[str, Any]] = None
-    sources: list[dict[str, Any]] = field(default_factory=list)
+    sources: list[DeterministicSource] = field(default_factory=list)
     notes: Optional[str] = None
     confidence: float = 0.0
-
+    
 
 class SearchBackend(ABC):
     """

@@ -140,12 +140,6 @@ class ImageStructuralFingerprint(BaseModel):
         default=False,
         description="是否存在 Photoshop 8BIM 资源块"
     )
-    
-    # 阶段 2.1 预留
-    jpeg_encoding_type: Optional[str] = Field(
-        default=None,
-        description="Baseline, Progressive, 或 Extended Sequential"
-    )
 
 
 # ============= 7. PDF Integrity =============

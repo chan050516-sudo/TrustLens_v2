@@ -1,5 +1,5 @@
 from typing import Literal, Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from .bbox import BBox
 
 
@@ -38,6 +38,4 @@ class ObservationIR(BaseModel):
     color: Optional[str] = Field(default=None, description="颜色 (hex, 如 #000000)")
     flags: Optional[int] = Field(default=None, description="PyMuPDF 字体标志 (如隐藏文本标志位)")
 
-    class Config:
-        # 允许任意类型（为了兼容BBox等自定义类型）
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)

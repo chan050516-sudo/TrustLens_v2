@@ -226,7 +226,13 @@ class GroundingEngine:
             if isinstance(s, DeterministicSource):
                 sources_norm.append(s)
             elif isinstance(s, dict):
+                # 兜底：兼容未来 backend 直接塞 dict 的情况
                 sources_norm.append(DeterministicSource(**s))
+            else:
+                logger.warning(
+                    f"[Grounding] Unexpected source type from "
+                    f"{backend_name}: {type(s)}"
+                )
 
         return DeterministicGroundingResult(
             entity_type=br.target.entity_type.value,

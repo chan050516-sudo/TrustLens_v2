@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional, Union
 
 from app.core.dto_ir import (
     DocumentType, GlobalFact, GlobalFactRole,
-    ReconciliationDTOIR, GroundingTargets,
+    ReconciliationDTOIR
 )
 from app.forensics.reconciliation.constants.statutory_rates import StatutoryRates
 from app.forensics.reconciliation.models.rule_result import RuleResult
@@ -36,7 +36,6 @@ class RuleContext:
     global_facts_by_role: dict[GlobalFactRole, list[GlobalFact]]
     tables: list[TableInstance]
     statutory: StatutoryRates
-    grounding: Optional[GroundingTargets] = None   # ★ 新增
     evaluation_date: date = field(default_factory=date.today)
 
 

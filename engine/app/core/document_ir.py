@@ -10,7 +10,7 @@ class DocumentContext(BaseModel):
     file_size_bytes: Optional[int] = None
     mime_type: Optional[str] = None
     document_id: Optional[str] = None
-    raw_bytes: Optional[bytes] = None  # 用于内存处理（未来扩展）
+    # raw_bytes: Optional[bytes] = None  # 用于内存处理（未来扩展）
     custom_metadata: Dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, **data):
