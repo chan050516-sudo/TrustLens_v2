@@ -53,16 +53,20 @@ class PyMuPDFParser(BaseParser):
                 page = doc[page_num]
                 page_rect = page.rect
 
-                # --- 1. 字体与图像 (已有) ---
+                # ---- 1. 字体与图像 ----
                 fonts = page.get_fonts()
-                font_names = [f[0] for f in fonts if f]
+                # ✅ PyMuPDF 元组结构: (xref, ext, type, basefont, name, encoding, referencer)
+                font_names = [f[3] for f in fonts if f and len(f) > 3 and f[3]]
                 fonts_per_page[page_num + 1] = font_names
+
                 images = page.get_images(full=True)
                 images_per_page[page_num + 1] = len(images)
                 for img in images:
-                    # 提取尺寸
-                    width = img.get("width", 0)
-                    height = img.get("height", 0)
+                    # ✅ PyMuPDF 元组结构: (xref, smask, width, height, bpc, colorspace, ...)
+                    if not img or len(img) < 4:
+                        continue
+                    width = img[2]
+                    height = img[3]
                     if width and height:
                         image_dimensions.append(f"{width}x{height}")
 
@@ -318,6 +322,7 @@ class PyMuPDFParser(BaseParser):
             "size_distribution": size_distribution,
             "replacement_chars": replacement_chars,
             "text_overlaps": text_overlaps,
+            "image_dpi": image_dpi, 
         }
 
     @staticmethod

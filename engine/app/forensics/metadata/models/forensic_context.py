@@ -307,9 +307,9 @@ class ObjectGraphSummary(BaseModel):
 
 # ============= 17. Forensic Context (顶层容器) =============
 
-class ForensicContext(BaseModel):
+class MetadataContext(BaseModel):
     """
-    Forensic Context - 清洗后的法证上下文
+    Metadata Context - 清洗后的法证上下文
     
     这是给 LLM Detective 准备的"案件现场"：
     - 所有"绝对不能剪"的 15 类数据完整保留

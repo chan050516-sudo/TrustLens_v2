@@ -43,8 +43,6 @@ class ExifToolMetadata(BaseModel):
 
     # ===== MakerNotes 完整性 (阶段 1.4) =====
     makernotes_present: bool = False
-    
-    raw_json: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PDFStructureReport(BaseModel):

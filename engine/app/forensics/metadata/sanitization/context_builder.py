@@ -2,14 +2,14 @@
 """
 Forensic Context 构建器 (指南 §8)
 
-职责：编排所有清洗模块，将 MetadataContainer 转化为 ForensicContext。
+职责：编排所有清洗模块，将 MetadataContainer 转化为 MetadataContext。
 这是第三轮的核心入口。
 """
 from typing import Optional
 
 from app.forensics.metadata.models.metadata_ir import MetadataContainer, ExifToolMetadata
 from app.forensics.metadata.models.forensic_context import (
-    ForensicContext,
+    MetadataContext,
     MetadataIdentity,
     DocumentLineage,
     ImageMetadata,
@@ -36,11 +36,11 @@ class ContextBuilder:
     Forensic Context 构建器
 
     输入：MetadataContainer (第二轮填充的原始数据)
-    输出：ForensicContext (清洗后的高密度上下文)
+    输出：MetadataContext (清洗后的高密度上下文)
     """
 
     @classmethod
-    def build(cls, container: MetadataContainer) -> Optional[ForensicContext]:
+    def build(cls, container: MetadataContainer) -> Optional[MetadataContext]:
         """构建 Forensic Context"""
         if not container:
             return None
@@ -368,9 +368,9 @@ class ContextBuilder:
                 )
 
         # ============================================
-        # 组装 ForensicContext
+        # 组装 MetadataContext
         # ============================================
-        return ForensicContext(
+        return MetadataContext(
             metadata_identity=identity,
             software_provenance=software_provenance,
             timeline=timeline,

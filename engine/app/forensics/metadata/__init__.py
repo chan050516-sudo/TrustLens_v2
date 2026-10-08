@@ -7,7 +7,7 @@ from .models.metadata_ir import (
     MetadataContainer,
 )
 from .models.forensic_context import (
-    ForensicContext,
+    MetadataContext,
     # 可选：导出子模型方便使用
     MetadataIdentity,
     SoftwareProvenanceItem,
@@ -32,7 +32,7 @@ __all__ = [
     "PDFStructureReport",
     "ObjectGraph",
     "MetadataContainer",
-    "ForensicContext",
+    "MetadataContext",
     # 子模型
     "MetadataIdentity",
     "SoftwareProvenanceItem",

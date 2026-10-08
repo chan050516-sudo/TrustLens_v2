@@ -17,7 +17,7 @@ from app.forensics.metadata.models.metadata_ir import (
     PDFStructureReport,
     ObjectGraph,
 )
-from app.forensics.metadata.models.forensic_context import ForensicContext
+from app.forensics.metadata.models.forensic_context import MetadataContext
 from app.forensics.metadata.sanitization import ContextBuilder
 from app.forensics.metadata.registry.fingerprint_matcher import get_fingerprint_registry
 from app.forensics.metadata.exceptions import CollectorError, ParserError, AnalyzerError
@@ -78,7 +78,7 @@ class MetadataEngine:
         # 用于存储中间数据
         self._container: Optional[MetadataContainer] = None
         self._errors: List[Dict[str, Any]] = []
-        self._last_context: Optional[ForensicContext] = None
+        self._last_context: Optional[MetadataContext] = None
     
     def analyze(self, context: DocumentContext) -> List[Evidence]:
         """
@@ -107,7 +107,7 @@ class MetadataEngine:
 
         # 4. 构建 Forensic Context (存入 _last_context 供后续调用)
         try:
-            self._last_context = self._build_forensic_context()
+            self._last_context = self._build_metadata_context()
         except Exception as e:
             logger.warning(f"Failed to build Forensic Context: {e}")
             self._errors.append({"module": "context_builder", "error": str(e)})
@@ -131,12 +131,12 @@ class MetadataEngine:
         
         return evidences
 
-    def analyze_with_context(self, context: DocumentContext) -> Tuple[List[Evidence], Optional[ForensicContext]]:
+    def analyze_with_context(self, context: DocumentContext) -> Tuple[List[Evidence], Optional[MetadataContext]]:
         """
         执行完整的 L1 元数据分析，同时返回证据和法证上下文 (双轨)
 
         Returns:
-            Tuple[List[Evidence], Optional[ForensicContext]]: 
+            Tuple[List[Evidence], Optional[MetadataContext]]: 
                 - 证据列表 (保证返回)
                 - 法证上下文 (可能为 None，如果构建失败)
         """
@@ -146,7 +146,7 @@ class MetadataEngine:
         # 返回证据和上下文
         return evidences, self._last_context
 
-    def build_forensic_context(self, context: Optional[DocumentContext] = None) -> Optional[ForensicContext]:
+    def build_forensic_context(self, context: Optional[DocumentContext] = None) -> Optional[MetadataContext]:
         """
         单独构建 Forensic Context
 
@@ -156,7 +156,7 @@ class MetadataEngine:
             context: 文档上下文 (可选)
 
         Returns:
-            Optional[ForensicContext]: 清洗后的法证上下文
+            Optional[MetadataContext]: 清洗后的法证上下文
         """
         if context is not None:
             # 重新分析
@@ -166,11 +166,11 @@ class MetadataEngine:
             logger.warning("No container available. Run analyze() first or provide context.")
             return None
         
-        return self._build_forensic_context()
+        return self._build_metadata_context()
 
-    def _build_forensic_context(self) -> Optional[ForensicContext]:
+    def _build_metadata_context(self) -> Optional[MetadataContext]:
         """
-        内部方法：从当前 container 构建 Forensic Context
+        内部方法：从当前 container 构建 Metadata Context
         """
         if self._container is None:
             return None
@@ -617,6 +617,6 @@ class MetadataEngine:
         """返回执行过程中的错误列表"""
         return self._errors
 
-    def get_last_forensic_context(self) -> Optional[ForensicContext]:
+    def get_last_forensic_context(self) -> Optional[MetadataContext]:
         """返回最近一次构建的 Forensic Context"""
         return self._last_context

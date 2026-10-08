@@ -32,7 +32,7 @@ from .forensic_context import (
     OrphanObject,
     ObjectGraphSummary,
     # 顶层容器
-    ForensicContext,
+    MetadataContext,
 )
 
 __all__ = [
@@ -66,5 +66,5 @@ __all__ = [
     "Relationship",
     "OrphanObject",
     "ObjectGraphSummary",
-    "ForensicContext",
+    "MetadataContext",
 ]

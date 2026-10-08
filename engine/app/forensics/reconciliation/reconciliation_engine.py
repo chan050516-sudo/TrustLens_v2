@@ -27,7 +27,7 @@ from app.forensics.reconciliation.constants.statutory_rates import (
     StatutoryRates, get_default_statutory_rates,
 )
 from app.forensics.reconciliation.context.context_builder import ContextBuilder
-from engine.app.forensics.reconciliation.evidence_mapper import rule_result_to_evidence
+from app.forensics.reconciliation.evidence_mapper import rule_result_to_evidence
 from app.forensics.reconciliation.models.reconciliation_context import (
     ReconciliationContext,
 )

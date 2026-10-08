@@ -16,7 +16,7 @@ producers:
           pattern: "(?i)Microsoft\\s*Word"
           weight: 1.0
         - field: "Producer"
-          pattern: "(?i)Microsoft\\s*(:?Print\\s*To\\s*PDF|Word)"
+          pattern: "(?i)Microsoft\\s*(?:Print\\s*To\\s*PDF|Word)"
           weight: 0.9
         - field: "XMP:CreatorTool"
           pattern: "(?i)Microsoft\\s*Word"
