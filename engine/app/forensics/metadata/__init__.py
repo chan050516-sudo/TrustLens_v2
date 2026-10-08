@@ -6,7 +6,7 @@ from .models.metadata_ir import (
     ObjectGraph,
     MetadataContainer,
 )
-from .models.forensic_context import (
+from .models.metadata_context import (
     MetadataContext,
     # 可选：导出子模型方便使用
     MetadataIdentity,

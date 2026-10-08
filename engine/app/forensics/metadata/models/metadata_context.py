@@ -1,12 +1,11 @@
-# engine/app/forensics/metadata/models/forensic_context.py
+# engine/app/forensics/metadata/models/metadata_context.py
 """
-Forensic Context 数据模型 (LLM Context 清洗后结构)
+Metadata Context 数据模型
 
-严格遵循 "四工具 Raw Metadata → LLM Context 清洗规范"
-原则：
+MetadataEngine 的完整输出。所有结构化字段都保留：
 - 删除 representation redundancy，但不删除 potentially useful facts
 - Semantic information loss-sensitive；structural information compression-friendly
-- 保留所有"绝对不能剪"的 15 类数据
+- 供 Detective（经 Projection 层）与 DB（审计 / 调试）使用
 """
 
 from typing import Optional, List, Dict, Any, Union

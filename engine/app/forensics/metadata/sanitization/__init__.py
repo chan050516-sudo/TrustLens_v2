@@ -2,7 +2,7 @@
 """
 L1 清洗与聚合层 (Sanitization + Aggregation)
 
-将第二轮提取的原始事实转化为高信息密度的 Forensic Context。
+将第二轮提取的原始事实转化为高信息密度的 Metadata Context。
 严格遵循 "四工具 Raw Metadata → LLM Context 清洗规范"。
 """
 

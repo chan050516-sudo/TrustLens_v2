@@ -5,7 +5,7 @@ from .metadata_ir import (
     ObjectGraph,
     MetadataContainer,
 )
-from .forensic_context import (
+from .metadata_context import (
     # 子模型
     MetadataIdentity,
     SoftwareProvenanceItem,

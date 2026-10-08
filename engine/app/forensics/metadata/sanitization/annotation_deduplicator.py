@@ -6,7 +6,7 @@
 """
 from typing import List, Dict, Any, Optional
 
-from app.forensics.metadata.models.forensic_context import Annotation
+from app.forensics.metadata.models.metadata_context import Annotation
 
 
 class AnnotationDeduplicator:

@@ -10,7 +10,7 @@ image_summary / page_statistics 已被 VisualEngine / SemanticEngine 覆盖。
 from typing import Dict, Any, List
 from collections import defaultdict
 
-from app.forensics.metadata.models.forensic_context import (
+from app.forensics.metadata.models.metadata_context import (
     LayoutSummary,
     FontDistributionItem,
 )

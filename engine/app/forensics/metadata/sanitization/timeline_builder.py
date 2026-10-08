@@ -9,7 +9,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.forensics.metadata.models.metadata_ir import ExifToolMetadata
-from app.forensics.metadata.models.forensic_context import TimelineItem
+from app.forensics.metadata.models.metadata_context import TimelineItem
 
 
 class TimelineBuilder:

@@ -181,29 +181,41 @@ class PerceptionPipeline:
         if page_num is not None:
             regions = [r for r in regions if r.page == page_num]
 
-        # ★ 触发 DTO IR（复用 observations，不重跑 OCR）
-        # native PDF：渲染图用原 PDF 路径，DTOIRPipeline 内部按 page_num 取页
-        self._try_generate_dto_ir(
-            observations=observations,
-            render_path=context.file_path,
-            mime_type="application/pdf",
-            annotated_stem=context.file_path.stem,
-        )
-
         # 页面信息
         page_count, page_dimensions = self._get_page_info(
             context, observations, is_pdf_file=True, page_num=page_num
         )
 
-        return self.builder.build(
-            observations=observations,
-            semantic_regions=regions,
-            pymupdf_tables=tables,
-            page_count=page_count,
-            page_dimensions=page_dimensions,
-            file_path=str(context.file_path),
-            pymupdf_enabled=True,
-        )
+        # ★ DocumentIR（CPU）与 DTO IR（VLM）并行
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_dto = ex.submit(
+                self._try_generate_dto_ir,
+                observations=observations,
+                render_path=context.file_path,
+                mime_type="application/pdf",
+                annotated_stem=context.file_path.stem,
+            )
+            f_doc = ex.submit(
+                self.builder.build,
+                observations=observations,
+                semantic_regions=regions,
+                pymupdf_tables=tables,
+                page_count=page_count,
+                page_dimensions=page_dimensions,
+                file_path=str(context.file_path),
+                pymupdf_enabled=True,
+            )
+
+            # 等待 DTO IR 完成（它写 self._last_*_ir）
+            try:
+                f_dto.result()
+            except Exception as e:
+                logger.exception(
+                    f"[Pipeline] DTO IR generation failed: {e}"
+                )
+            doc_ir = f_doc.result()
+
+        return doc_ir
 
     # ------------------------------------------------------------------
     # Non-native PDF 路径
@@ -301,27 +313,44 @@ class PerceptionPipeline:
             # image 路径：用 effective_path（可能是 deskew 后临时图），
             # 保证 bbox 与 observation 坐标系一致
             dto_mime = downstream_context.mime_type or context.mime_type or "image/png"
-            self._try_generate_dto_ir(
-                observations=observations,
-                render_path=effective_path,
-                mime_type=dto_mime,
-                annotated_stem=context.file_path.stem,
-            )
-
             # 页面信息（图片总是单页）
             page_count, page_dimensions = self._get_page_info(
                 downstream_context, observations, is_pdf_file=False, page_num=target_page
             )
 
-            return self.builder.build(
-                observations=observations,
-                semantic_regions=regions,
-                pymupdf_tables=[],
-                page_count=page_count,
-                page_dimensions=page_dimensions,
-                file_path=str(context.file_path),
-                pymupdf_enabled=False,
+            # ★ DocumentIR（CPU）与 DTO IR（VLM）并行
+            dto_mime = (
+                downstream_context.mime_type
+                or context.mime_type
+                or "image/png"
             )
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_dto = ex.submit(
+                    self._try_generate_dto_ir,
+                    observations=observations,
+                    render_path=effective_path,
+                    mime_type=dto_mime,
+                    annotated_stem=context.file_path.stem,
+                )
+                f_doc = ex.submit(
+                    self.builder.build,
+                    observations=observations,
+                    semantic_regions=regions,
+                    pymupdf_tables=[],
+                    page_count=page_count,
+                    page_dimensions=page_dimensions,
+                    file_path=str(context.file_path),
+                    pymupdf_enabled=False,
+                )
+                try:
+                    f_dto.result()
+                except Exception as e:
+                    logger.exception(
+                        f"[Pipeline] DTO IR generation failed: {e}"
+                    )
+                doc_ir = f_doc.result()
+
+            return doc_ir
         finally:
             if temp_path is not None:
                 try:

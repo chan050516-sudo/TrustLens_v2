@@ -17,7 +17,7 @@ from app.forensics.metadata.models.metadata_ir import (
     PDFStructureReport,
     ObjectGraph,
 )
-from app.forensics.metadata.models.forensic_context import MetadataContext
+from app.forensics.metadata.models.metadata_context import MetadataContext
 from app.forensics.metadata.sanitization import ContextBuilder
 from app.forensics.metadata.registry.fingerprint_matcher import get_fingerprint_registry
 from app.forensics.metadata.exceptions import CollectorError, ParserError, AnalyzerError
@@ -105,11 +105,11 @@ class MetadataEngine:
         # 3. 运行所有分析器
         evidences = self._run_analyzers(context)
 
-        # 4. 构建 Forensic Context (存入 _last_context 供后续调用)
+        # 4. 构建 Metadata Context (存入 _last_context 供后续调用)
         try:
             self._last_context = self._build_metadata_context()
         except Exception as e:
-            logger.warning(f"Failed to build Forensic Context: {e}")
+            logger.warning(f"Failed to build Metadata Context: {e}")
             self._errors.append({"module": "context_builder", "error": str(e)})
             self._last_context = None
         
@@ -146,9 +146,9 @@ class MetadataEngine:
         # 返回证据和上下文
         return evidences, self._last_context
 
-    def build_forensic_context(self, context: Optional[DocumentContext] = None) -> Optional[MetadataContext]:
+    def build_metadata_context(self, context: Optional[DocumentContext] = None) -> Optional[MetadataContext]:
         """
-        单独构建 Forensic Context
+        单独构建 Metadata Context
 
         如果传入 context，则重新分析；否则使用最近一次分析的结果。
 
@@ -185,13 +185,11 @@ class MetadataEngine:
             container.image_type is not None
         )
         if not has_data:
-            logger.debug("Container has no data, skipping Forensic Context build")
+            logger.debug("Container has no data, skipping Metadata Context build")
             return None
         
         try:
-            # 调用 ContextBuilder
-            forensic_context = ContextBuilder.build(self._container)
-            return forensic_context
+            return ContextBuilder.build(self._container)
         except Exception as e:
             logger.exception(f"ContextBuilder failed: {e}")
             self._errors.append({"module": "context_builder", "error": str(e)})
@@ -617,6 +615,6 @@ class MetadataEngine:
         """返回执行过程中的错误列表"""
         return self._errors
 
-    def get_last_forensic_context(self) -> Optional[MetadataContext]:
-        """返回最近一次构建的 Forensic Context"""
+    def get_last_metadata_context(self) -> Optional[MetadataContext]:
+        """返回最近一次构建的 Metadata Context"""
         return self._last_context

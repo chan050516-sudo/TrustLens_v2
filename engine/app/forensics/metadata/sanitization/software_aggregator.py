@@ -7,7 +7,7 @@
 from typing import List, Optional
 
 from app.forensics.metadata.models.metadata_ir import ExifToolMetadata
-from app.forensics.metadata.models.forensic_context import SoftwareProvenanceItem
+from app.forensics.metadata.models.metadata_context import SoftwareProvenanceItem
 
 
 class SoftwareAggregator:

@@ -8,7 +8,7 @@ Forensic Context 构建器 (指南 §8)
 from typing import Optional
 
 from app.forensics.metadata.models.metadata_ir import MetadataContainer, ExifToolMetadata
-from app.forensics.metadata.models.forensic_context import (
+from app.forensics.metadata.models.metadata_context import (
     MetadataContext,
     MetadataIdentity,
     DocumentLineage,
@@ -164,7 +164,7 @@ class ContextBuilder:
                     jpeg_data.get("encoding_type"),
                     jpeg_data.get("marker_sequence"),
                     jpeg_data.get("dht_type")]):
-                from app.forensics.metadata.models.forensic_context import ImageStructuralFingerprint
+                from engine.app.forensics.metadata.models.metadata_context import ImageStructuralFingerprint
                 image_fingerprint = ImageStructuralFingerprint(
                     jpeg_estimated_quality=jpeg_quality,
                     jpeg_app_segments=jpeg_apps,
