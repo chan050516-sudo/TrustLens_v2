@@ -17,8 +17,6 @@ from app.forensics.metadata.models.forensic_context import (
     PDFIntegrity,
     RevisionHistory,
     RevisionDetail,
-    SemanticText,
-    PageText,
     ActiveContent,
     AnomalousRegion,
     EmbeddedFile,
@@ -109,8 +107,8 @@ class ContextBuilder:
             image_meta = ImageMetadata(
                 make=exiftool.exif_make,
                 model=exiftool.exif_model,
-                software=exiftool.exif_software,
-                date_time_original=exiftool.exif_datetime_original,
+                # software / date_time_original 已删：
+                # 信息在 software_provenance / timeline 里已带 source 标注
                 gps=exiftool.exif_gps,
                 color_space=exiftool.exif_color_space,
                 icc_profile=exiftool.exif_icc_profile,
@@ -215,28 +213,12 @@ class ContextBuilder:
             )
 
         # ============================================
-        # 9. Semantic Text (指南 §3.1)
-        # ============================================
-        semantic_text = SemanticText(
-            pages=[
-                PageText(
-                    page=page_num,
-                    text=text,
-                    order_confidence=container.page_order_confidence.get(page_num, 1.0),
-                )
-                for page_num, text in container.semantic_text_pages.items()
-            ]
-        )
-
-        # ============================================
-        # 10. Layout Summary (指南 §3.5, §3.8, §3.12)
+        # 10. Layout Summary (指南 §3.5)
+        # 只提取"注册但未使用"的字体差异
         # ============================================
         layout_summary = LayoutCompressor.build(
             fonts_per_page=container.fonts_per_page,
-            images_per_page=container.images_per_page,
-            semantic_text_pages=container.semantic_text_pages,
             font_distribution=container.font_distribution,
-            image_summary=container.image_summary,
         )
 
         # ============================================
@@ -330,26 +312,6 @@ class ContextBuilder:
                 orphan_objects=orphan_objects,
             )
 
-        # ===== 新增：低覆盖率颜色作为异常区域 =====
-        for item in container.color_distribution:
-            if item.get("coverage_percent", 100) < 1.0:
-                anomalous_regions.append(AnomalousRegion(
-                    page=0,  # 全页范围
-                    bbox=[],
-                    type="low_coverage_color",
-                    reason=f"Color {item['color']} appears only {item['coverage_percent']}% of text",
-                ))
-
-        # ===== 新增：低覆盖率字号作为异常区域 =====
-        for item in container.size_distribution:
-            if item.get("coverage_percent", 100) < 1.0:
-                anomalous_regions.append(AnomalousRegion(
-                    page=0,
-                    bbox=[],
-                    type="low_coverage_font_size",
-                    reason=f"Font size {item['size']} appears only {item['coverage_percent']}% of text",
-                ))
-
         # ===== 新增：替换字符作为异常区域 =====
         for item in container.replacement_chars:
             anomalous_regions.append(AnomalousRegion(
@@ -358,16 +320,6 @@ class ContextBuilder:
                 type="replacement_character",
                 reason=f"Replacement character found: {item.get('text', '')[:50]}",
                 text=item.get("text", ""),
-            ))
-
-        # ===== 新增：文本重叠作为异常区域 =====
-        for item in container.text_overlaps:
-            anomalous_regions.append(AnomalousRegion(
-                page=item.get("page", 0),
-                bbox=item.get("bbox1", []),
-                type="text_overlap",
-                reason=f"Text overlap detected: '{item.get('text1', '')}' overlaps '{item.get('text2', '')}'",
-                text=item.get("text1", "") + " | " + item.get("text2", ""),
             ))
 
         # ============================================
@@ -427,7 +379,7 @@ class ContextBuilder:
             image_metadata=image_meta,
             pdf_integrity=integrity,
             revision_history=revision_history,
-            semantic_text=semantic_text,
+            # semantic_text 已删（Detective 从 DocumentIR 读全文）
             layout_summary=layout_summary,
             anomalous_regions=anomalous_regions,
             annotations=annotations,
@@ -435,11 +387,9 @@ class ContextBuilder:
             active_content=active_content,
             embedded_files=embedded_files,
             object_graph=object_graph_summary,
-            color_distribution=getattr(container, 'color_distribution', []),
-            size_distribution=getattr(container, 'size_distribution', []),
-            replacement_chars=getattr(container, 'replacement_chars', []),
-            text_overlaps=getattr(container, 'text_overlaps', []),
-            image_dpi=getattr(container, 'image_dpi', {}),
+            # color_distribution / size_distribution / text_overlaps 已删
+            replacement_chars=container.replacement_chars,
+            image_dpi=container.image_dpi,
             image_structural_fingerprint=image_fingerprint,
             image_observations=observations,
         )

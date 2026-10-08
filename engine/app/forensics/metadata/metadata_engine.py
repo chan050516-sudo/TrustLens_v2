@@ -517,17 +517,30 @@ class MetadataEngine:
         """运行所有分析器，汇总证据"""
         all_evidences: List[Evidence] = []
         
-        # 构建分析器所需的 parsed_data
+        c = self._container
         parsed_data = {
-            "exiftool": self._container.exiftool if self._container else None,
-            "structure": self._container.structure if self._container else None,
-            "fonts_per_page": self._container.fonts_per_page if self._container else {},
-            "signatures": self._container.signatures if self._container else [],  # 新增
-            "has_acroform": self._container.has_acroform if self._container else False,
-            "has_layers": self._container.has_layers if self._container else False,
-            "has_annotations": self._container.has_annotations if self._container else False,
-            "object_stream_count": self._container.object_stream_count if self._container else 0,
-            "images_per_page": self._container.images_per_page if self._container else {},
+            "exiftool": c.exiftool if c else None,
+            "structure": c.structure if c else None,
+            "fonts_per_page": c.fonts_per_page if c else {},
+            "signatures": c.signatures if c else [],
+            "has_acroform": c.has_acroform if c else False,
+            "has_layers": c.has_layers if c else False,
+            "has_annotations": c.has_annotations if c else False,
+            "object_stream_count": c.object_stream_count if c else 0,
+            "total_objects": (c.object_graph.total_objects if c and c.object_graph else 0),
+            "images_per_page": c.images_per_page if c else {},
+            "object_graph": c.object_graph if c else None,
+            # ★ 恢复白字检测 / 图片一致性检测所需的字段
+            "color_distribution": c.color_distribution if c else [],
+            "size_distribution": c.size_distribution if c else [],
+            "image_type": c.image_type if c else None,
+            "image_width": c.image_width if c else None,
+            "image_height": c.image_height if c else None,
+            "image_has_thumbnail": c.image_has_thumbnail if c else False,
+            "image_thumbnail_width": c.image_thumbnail_width if c else None,
+            "image_thumbnail_height": c.image_thumbnail_height if c else None,
+            "image_structural_errors": c.image_structural_errors if c else [],
+            "image_structural_details": c.image_structural_details if c else {},
         }
         
         # 额外添加一些上下文（如文档类型，可通过外部设置或自动识别）

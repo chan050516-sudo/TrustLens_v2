@@ -71,8 +71,6 @@ class ImageMetadata(BaseModel):
     """图片元数据 (指南 §1.10)"""
     make: Optional[str] = None          # 相机品牌
     model: Optional[str] = None         # 相机型号
-    software: Optional[str] = None      # 处理软件
-    date_time_original: Optional[str] = None  # ISO-8601
     gps: Optional[Dict[str, Any]] = None
     color_space: Optional[str] = None
     icc_profile: Optional[str] = None   # 简要描述，非原始数据
@@ -208,9 +206,14 @@ class PageStatistics(BaseModel):
 
 class LayoutSummary(BaseModel):
     """布局摘要 (指南 §3.12)"""
-    font_distribution: List[FontDistributionItem] = Field(default_factory=list)
-    image_summary: Optional[ImageSummaryItem] = None
-    page_statistics: List[PageStatistics] = Field(default_factory=list)
+    # 只保留 metadata 层独有的信号：注册但未在 span 中使用的字体
+    registered_unused_fonts: List[FontDistributionItem] = Field(
+        default_factory=list,
+        description=(
+            "在 PDF 字体资源字典中注册、但未在文本 span 中实际使用的字体。"
+            "Visual engine 覆盖的是'实际使用'的字体；本字段只补充差异部分。"
+        ),
+    )
 
 
 # ============= 11. Anomalous Regions =============
@@ -335,11 +338,9 @@ class ForensicContext(BaseModel):
     
     # Revision
     revision_history: Optional[RevisionHistory] = None
-    
-    # Semantic Text (全文)
-    semantic_text: SemanticText = Field(default_factory=SemanticText)
-    
-    # Layout
+
+    # ★ semantic_text 已删除 —— Detective 从 DocumentIR.elements 读全文
+
     layout_summary: Optional[LayoutSummary] = None
     
     # Anomalies
@@ -360,41 +361,24 @@ class ForensicContext(BaseModel):
     # Object Graph
     object_graph: Optional[ObjectGraphSummary] = None
 
-        # ===== 新增：颜色分布 (指南 §3.5 扩展) =====
-    color_distribution: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="颜色分布: color, count, coverage_percent"
-    )
+    # ★ color_distribution / size_distribution / text_overlaps 已删除
+    #   —— 分别被 VisualEngine.TypographyAnalyzer 和 OverlapAnalyzer 覆盖
 
-    # ===== 新增：字号分布 (指南 §3.5 扩展) =====
-    size_distribution: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="字号分布: size, count, coverage_percent"
-    )
-
-    # ===== 新增：替换字符 (指南 §3.1 扩展) =====
+    # ===== 替换字符 =====
     replacement_chars: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="替换字符: page, text, bbox"
+        description="替换字符 (U+FFFD): page, text, bbox",
     )
 
-    # ===== 新增：文本重叠 (指南 §3.4 扩展) =====
-    text_overlaps: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="文本重叠: page, text1, text2, bbox1, bbox2, overlap_ratio"
-    )
-
-    # ===== 新增：图像 DPI (指南 §3.8 扩展) =====
+    # ===== 图像 DPI =====
     image_dpi: Dict[int, float] = Field(
         default_factory=dict,
-        description="页面 -> DPI 值"
+        description="页面 -> 图像 DPI（metadata 层独有信号）",
     )
-
     image_structural_fingerprint: Optional[ImageStructuralFingerprint] = None
-
     image_observations: List[str] = Field(
         default_factory=list,
-        description="根据多个维度生成的中性观察文本（纯事实，无风险判断）"
+        description="根据多个维度生成的中性观察文本（纯事实，无风险判断）",
     )
 
     model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})

@@ -1,9 +1,11 @@
-# engine/app/forensics/metadata/sanitization/layout_compressor.py
 """
-布局压缩器 (指南 §3.5, §3.8, §3.12)
+布局差异提取器 (指南 §3.5)
 
-职责：聚合字体分布、图像摘要、页面统计。
-删除低信息密度数据（如每个 span 的 bbox），保留统计意义。
+职责：只提取 metadata 层独有信号 —— 
+     "在 PDF 字体资源字典中注册、但未在文本 span 中实际使用"的字体。
+
+font_distribution（实际使用）已被 VisualEngine.TypographyAnalyzer 覆盖。
+image_summary / page_statistics 已被 VisualEngine / SemanticEngine 覆盖。
 """
 from typing import Dict, Any, List
 from collections import defaultdict
@@ -11,113 +13,66 @@ from collections import defaultdict
 from app.forensics.metadata.models.forensic_context import (
     LayoutSummary,
     FontDistributionItem,
-    ImageSummaryItem,
-    PageStatistics,
 )
 
 
-class LayoutCompressor:
+def _strip_subset_prefix(name: str) -> str:
     """
-    布局压缩器
+    PyMuPDF 的 span font 名可能带子集前缀（如 "ABCDEF+Arial"）。
+    资源字典的 basefont 通常不带。归一化时统一去掉前缀。
+    """
+    if not name:
+        return ""
+    if "+" in name:
+        return name.split("+", 1)[1]
+    return name
 
-    输入：MetadataContainer 中的字体、图像、页面数据
-    输出：LayoutSummary
-    """
+
+class LayoutCompressor:
+    """只计算 metadata 层独有的布局差异信号。"""
 
     @classmethod
     def build(
         cls,
         fonts_per_page: Dict[int, List[str]],
-        images_per_page: Dict[int, int],
-        semantic_text_pages: Dict[int, str],
-        font_distribution: List[Dict[str, Any]],  # 来自 pymupdf_parser 预计算
-        image_summary: Dict[str, Any],            # 来自 pymupdf_parser 预计算
-        color_distribution=None,
-        size_distribution=None
+        font_distribution: List[Dict[str, Any]],
     ) -> LayoutSummary:
-        """构建布局摘要"""
+        """
+        Args:
+            fonts_per_page:   page -> [注册字体名]（来自 page.get_fonts()）
+            font_distribution: [实际使用字体]（来自 pymupdf_parser 的 span 统计）
 
-        # ---- 1. 字体分布 (指南 §3.5) ----
-        # 使用预计算的 font_distribution，如果没有则从 fonts_per_page 计算
-        font_items = []
-        if font_distribution:
-            for item in font_distribution:
-                font_items.append(FontDistributionItem(
-                    font=item.get("font", "unknown"),
-                    coverage_percent=item.get("coverage_percent", 0.0),
-                    page_distribution=item.get("pages", []),
-                ))
-        else:
-            # 兜底：从 fonts_per_page 计算
-            font_counts = defaultdict(int)
-            font_pages = defaultdict(set)
-            total_pages = len(fonts_per_page)
-            for page, fonts in fonts_per_page.items():
-                for font in fonts:
-                    font_counts[font] += 1
-                    font_pages[font].add(page)
-            for font, count in font_counts.items():
-                font_items.append(FontDistributionItem(
-                    font=font,
-                    coverage_percent=(count / total_pages * 100) if total_pages > 0 else 0,
-                    page_distribution=sorted(font_pages[font]),
-                ))
-        # 按覆盖率降序排序
-        font_items.sort(key=lambda x: x.coverage_percent, reverse=True)
+        Returns:
+            LayoutSummary，其中 registered_unused_fonts 只列注册未使用者。
+        """
+        # 归一化：实际使用的字体名（去子集前缀）
+        used_names: set[str] = set()
+        for item in font_distribution:
+            raw = item.get("font", "")
+            norm = _strip_subset_prefix(raw).lower().strip()
+            if norm:
+                used_names.add(norm)
 
-        # ---- 2. 图像摘要 (指南 §3.8) ----
-        # 使用预计算的 image_summary
-        image_item = None
-        if image_summary:
-            dimensions = image_summary.get("dimensions", [])
-            # 转换 dimensions 格式：从 [{"size": "800x600", "count": 3}] 到 ["800x600"]
-            dim_list = []
-            for d in dimensions:
-                if isinstance(d, dict):
-                    size = d.get("size")
-                    count = d.get("count", 1)
-                    if size:
-                        dim_list.extend([size] * count)
-                else:
-                    dim_list.append(str(d))
-            image_item = ImageSummaryItem(
-                count=image_summary.get("count", 0),
-                dimensions=dim_list[:20],  # 最多20种尺寸
-                page_distribution=image_summary.get("page_distribution", {}),
-            )
+        # 注册字体（去子集前缀），按名称聚合页面分布
+        registered_by_name: Dict[str, set] = defaultdict(set)
+        for page, fonts in fonts_per_page.items():
+            for f in fonts:
+                norm = _strip_subset_prefix(f).lower().strip()
+                if norm:
+                    registered_by_name[norm].add(page)
 
-        # ---- 3. 页面统计 (指南 §3.12) ----
-        page_stats = []
-        for page_num in sorted(semantic_text_pages.keys()):
-            text = semantic_text_pages.get(page_num, "")
-            words = len(text.split())
-            chars = len(text)
-            fonts = fonts_per_page.get(page_num, [])
-            images = images_per_page.get(page_num, 0)
-            page_stats.append(PageStatistics(
-                page=page_num,
-                char_count=chars,
-                word_count=words,
-                font_count=len(fonts),
-                image_count=images,
+        # 差异 = 注册 - 使用
+        unused: List[FontDistributionItem] = []
+        for name, pages in registered_by_name.items():
+            if name in used_names:
+                continue
+            unused.append(FontDistributionItem(
+                font=name,
+                coverage_percent=0.0,
+                page_distribution=sorted(pages),
             ))
 
-        # ===== 新增：检测 <1% 的异常颜色 =====
-        low_coverage_colors = []
-        if color_distribution:
-            for item in color_distribution:
-                if item["coverage_percent"] < 1.0 and item["coverage_percent"] > 0:
-                    low_coverage_colors.append(item)
-        
-        # ===== 新增：检测 <1% 的异常字号 =====
-        low_coverage_sizes = []
-        if size_distribution:
-            for item in size_distribution:
-                if item["coverage_percent"] < 1.0 and item["coverage_percent"] > 0:
-                    low_coverage_sizes.append(item)
+        # 按页码排序（便于 Detective 阅读）
+        unused.sort(key=lambda x: (x.page_distribution[:1] or [0])[0])
 
-        return LayoutSummary(
-            font_distribution=font_items,
-            image_summary=image_item,
-            page_statistics=page_stats,
-        )
+        return LayoutSummary(registered_unused_fonts=unused)

@@ -227,44 +227,33 @@ class PyMuPDFParser(BaseParser):
                                 "overlap_ratio": round(overlap, 2),
                             })
 
-                # --- 图像 DPI 计算 (修复 P4) ---
-                # 获取页面中的图像，计算 DPI
-                # 方法：从 page.get_images() 获取图像引用，然后查找 XObject 获取 bbox
-                images = page.get_images(full=True)
-                for img in images:
-                    img_width = img.get("width", 0)
-                    img_height = img.get("height", 0)
-                    if img_width == 0 or img_height == 0:
+                # --- 图像 DPI 计算（用 page.get_image_info 拿 bbox）---
+                # ★ 修复：原实现依赖 page.get("resources") 和 xobj_ref.xref，
+                #   在 PyMuPDF 中不可靠。改用官方 API get_image_info(xrefs=True)，
+                #   它直接返回每个图像在页面上的 bbox + 像素尺寸。
+                try:
+                    img_infos = page.get_image_info(xrefs=True)
+                except Exception:
+                    img_infos = []
+
+                for info in img_infos:
+                    bbox = info.get("bbox")
+                    px_w = info.get("width", 0) or 0
+                    px_h = info.get("height", 0) or 0
+                    if not bbox or px_w <= 0 or px_h <= 0:
                         continue
-                    
-                    # 尝试获取图像的 bbox（在页面上的位置和大小）
-                    # 通过 XObject 引用获取
-                    xref = img.get("xref", 0)
-                    if xref:
-                        try:
-                            # 获取该 XObject 在页面上的位置信息
-                            # 简单方法：通过 resources 中的 XObject 查找
-                            resources = page.get("resources", {})
-                            xobjects = resources.get("xobject", {})
-                            for xobj_name, xobj_ref in xobjects.items():
-                                if hasattr(xobj_ref, "xref") and xobj_ref.xref == xref:
-                                    # 获取 bbox (通过矩阵或直接获取)
-                                    if hasattr(xobj_ref, "rect"):
-                                        rect = xobj_ref.rect
-                                        if rect and len(rect) >= 4:
-                                            # 计算 DPI = 像素尺寸 / (物理尺寸 / 72)
-                                            width_inch = (rect[2] - rect[0]) / 72
-                                            height_inch = (rect[3] - rect[1]) / 72
-                                            if width_inch > 0 and height_inch > 0:
-                                                dpi_x = img_width / width_inch
-                                                dpi_y = img_height / height_inch
-                                                # 取平均值作为 DPI
-                                                dpi = round((dpi_x + dpi_y) / 2)
-                                                image_dpi[page_num + 1] = dpi
-                                                break
-                        except Exception as e:
-                            logger.debug(f"DPI calculation failed for page {page_num + 1}: {e}")
-                            continue
+                    # bbox 单位是 pt；1 inch = 72 pt
+                    x0, y0, x1, y1 = bbox
+                    w_pt = x1 - x0
+                    h_pt = y1 - y0
+                    if w_pt <= 0 or h_pt <= 0:
+                        continue
+                    dpi_x = px_w / (w_pt / 72.0)
+                    dpi_y = px_h / (h_pt / 72.0)
+                    dpi = round((dpi_x + dpi_y) / 2.0)
+                    # 一页多图时取首个有效值（保守）
+                    if page_num + 1 not in image_dpi:
+                        image_dpi[page_num + 1] = dpi
 
             doc.close()
         except Exception as e:
