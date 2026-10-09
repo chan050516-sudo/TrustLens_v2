@@ -89,6 +89,8 @@ class PerceptionPipeline:
         )
         self._last_reconciliation_ir: Optional[ReconciliationDTOIR] = None
         self._last_grounding_ir: Optional[GroundingDTOIR] = None
+        # ★ 已保存的标注图路径 [(page_num, path), ...]
+        self._last_annotated_images: list[tuple[int, str]] = []
         self.dto_ir_enabled = dto_ir_enabled
 
     # ------------------------------------------------------------------
@@ -475,6 +477,7 @@ class PerceptionPipeline:
         if self._dto_ir_pipeline is None or not observations:
             self._last_reconciliation_ir = None
             self._last_grounding_ir = None
+            self._last_annotated_images = []
             return
 
         try:
@@ -486,11 +489,11 @@ class PerceptionPipeline:
                 file_path=render_path,
                 mime_type=mime_type,
                 observations_by_page=obs_by_page,
-                save_annotated=self._dto_ir_pipeline.output_dir is not None,
                 annotated_stem=annotated_stem,
             )
             self._last_reconciliation_ir = pair.reconciliation
             self._last_grounding_ir = pair.grounding
+            self._last_annotated_images = pair.annotated_images
 
             n_tables = (
                 len(pair.reconciliation.reconciliation.tables)
@@ -508,12 +511,17 @@ class PerceptionPipeline:
             logger.exception(f"[Pipeline] DTO IR generation failed (non-fatal): {e}")
             self._last_reconciliation_ir = None
             self._last_grounding_ir = None
+            self._last_annotated_images = []
 
     def get_last_reconciliation_ir(self) -> Optional[ReconciliationDTOIR]:
         return self._last_reconciliation_ir
 
     def get_last_grounding_ir(self) -> Optional[GroundingDTOIR]:
         return self._last_grounding_ir
+
+    def get_last_annotated_images(self) -> list[tuple[int, str]]:
+        """返回最近一次生成的标注图路径 [(page_num, path), ...]。"""
+        return list(self._last_annotated_images)
 
     # ------------------------------------------------------------------
 

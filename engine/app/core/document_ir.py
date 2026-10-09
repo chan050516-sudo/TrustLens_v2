@@ -10,6 +10,8 @@ class DocumentContext(BaseModel):
     file_size_bytes: Optional[int] = None
     mime_type: Optional[str] = None
     document_id: Optional[str] = None
+    # ★ Orchestration 层从 reconciliation DTO IR 提取后注入
+    document_type: Optional[str] = None
     # raw_bytes: Optional[bytes] = None  # 用于内存处理（未来扩展）
     custom_metadata: Dict[str, Any] = Field(default_factory=dict)
 

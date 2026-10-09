@@ -17,10 +17,11 @@ DTO IR 顶层编排（双 channel）。
 from __future__ import annotations
 
 import logging
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -77,6 +78,8 @@ class DTOIRPair:
     """双 channel 结果对。任一侧可能为 None（该 channel 失败）。"""
     reconciliation: Optional[ReconciliationDTOIR]
     grounding: Optional[GroundingDTOIR]
+    # ★ 已保存到磁盘的标注图路径 [(page_num, path), ...]
+    annotated_images: list[tuple[int, str]] = field(default_factory=list)
 
 
 class DTOIRPipeline:
@@ -109,6 +112,8 @@ class DTOIRPipeline:
         self.output_dir = Path(output_dir) if output_dir else None
         self._vlm_semaphore = vlm_semaphore
         self.max_workers_per_channel = max_workers_per_channel
+        # ★ 标注图输出目录缓存（output_dir 为空时用临时目录，只创建一次）
+        self._temp_output_dir: Optional[Path] = None
 
     # ------------------------------------------------------------------
 
@@ -122,6 +127,9 @@ class DTOIRPipeline:
     ) -> DTOIRPair:
         """
         执行双 channel DTO IR 生成。两个 channel 完全并行。
+
+        `save_annotated` 参数保留以兼容旧调用方，但不再生效：
+        标注图**始终**会保存（Detective 需要），目录由 output_dir 决定。
         """
         file_path = Path(file_path)
         stem = annotated_stem or file_path.stem
@@ -152,9 +160,8 @@ class DTOIRPipeline:
                 grounding=self._empty_grounding("no_pages_rendered"),
             )
 
-        # 1.5 落盘
-        if save_annotated and self.output_dir is not None:
-            self._save_annotated(annotated, stem)
+        # 1.5 落盘（★ 始终保存：Detective 需要这些图片）
+        annotated_images = self._save_annotated(annotated, stem)
 
         # 2. 分块（共享）
         chunks = chunk_annotated_pages(annotated, max_per_chunk=self.max_per_chunk)
@@ -174,7 +181,11 @@ class DTOIRPipeline:
             recon_ir = recon_future.result()
             ground_ir = ground_future.result()
 
-        return DTOIRPair(reconciliation=recon_ir, grounding=ground_ir)
+        return DTOIRPair(
+            reconciliation=recon_ir,
+            grounding=ground_ir,
+            annotated_images=annotated_images,
+        )
 
     # ------------------------------------------------------------------
     # Reconciliation channel
@@ -332,15 +343,40 @@ class DTOIRPipeline:
 
     # ------------------------------------------------------------------
 
-    def _save_annotated(self, annotated: list, stem: str) -> None:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+    def _get_output_dir(self) -> Path:
+        """返回标注图输出目录（output_dir 或缓存的临时目录）。"""
+        if self.output_dir is not None:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            return self.output_dir
+        if self._temp_output_dir is None:
+            self._temp_output_dir = Path(
+                tempfile.mkdtemp(prefix="trustlens_annotated_")
+            )
+            logger.info(
+                f"[DTOIR] Using temp output dir for annotated images: "
+                f"{self._temp_output_dir}"
+            )
+        return self._temp_output_dir
+
+    def _save_annotated(
+        self, annotated: list, stem: str
+    ) -> list[tuple[int, str]]:
+        """保存所有标注图，返回 [(page_num, path), ...]。"""
+        out_dir = self._get_output_dir()
+        out_list: list[tuple[int, str]] = []
         for page_num, img in annotated:
-            out = self.output_dir / f"{stem}_annotated_p{page_num:03d}.jpg"
-            ok = cv2.imwrite(str(out), img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            out = out_dir / f"{stem}_annotated_p{page_num:03d}.jpg"
+            ok = cv2.imwrite(
+                str(out), img, [int(cv2.IMWRITE_JPEG_QUALITY), 92]
+            )
             if ok:
+                out_list.append((page_num, str(out)))
                 logger.info(f"[DTOIR] Saved annotated image: {out}")
             else:
-                logger.warning(f"[DTOIR] Failed to save annotated image: {out}")
+                logger.warning(
+                    f"[DTOIR] Failed to save annotated image: {out}"
+                )
+        return out_list
 
     @staticmethod
     def _dedupe_conflicts(conflicts: list[DTOIRConflict]) -> list[DTOIRConflict]:
