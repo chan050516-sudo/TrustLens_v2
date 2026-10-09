@@ -7,8 +7,14 @@ from ..models.case_file import ElementProjection
 from .obs_id_compressor import compress_obs_ids
 
 
-def project_document(document_ir: Any) -> tuple[list[ElementProjection], dict[str, str]]:
-    """返回 (elements 投影, observation_text_map)。"""
+def project_document(
+    document_ir: Any,
+) -> tuple[list[ElementProjection], dict[str, dict]]:
+    """
+    返回 (elements 投影, observation_text_map)。
+
+    observation_text_map: obs_id (str) -> {"text": str, "bbox": [x0,y0,x1,y1]}
+    """
     if document_ir is None:
         return [], {}
 
@@ -33,12 +39,20 @@ def project_document(document_ir: Any) -> tuple[list[ElementProjection], dict[st
             observation_ids=compress_obs_ids(obs_ids),
         ))
 
-    obs_map: dict[str, str] = {}
+    obs_map: dict[str, dict] = {}
     for obs in (getattr(document_ir, "observations", None) or []):
         oid = getattr(obs, "observation_id", 0)
-        text = getattr(obs, "text", "")
-        if oid:
-            obs_map[str(oid)] = text
+        if not oid:
+            continue
+        text = getattr(obs, "text", "") or ""
+        bbox = getattr(obs, "bbox", None)
+        bbox_list = None
+        if bbox is not None:
+            bbox_list = [
+                float(bbox.x0), float(bbox.y0),
+                float(bbox.x1), float(bbox.y1),
+            ]
+        obs_map[str(oid)] = {"text": text, "bbox": bbox_list}
 
     return elements, obs_map
 

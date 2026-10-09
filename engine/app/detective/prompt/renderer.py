@@ -90,11 +90,23 @@ class CaseFileRenderer:
 
         if referenced:
             lines.append("")
-            lines.append("### Observation Text Map")
-            for oid in sorted(referenced, key=lambda x: int(x) if x.isdigit() else 0):
-                txt = cf.observation_text_map.get(oid)
-                if txt:
-                    lines.append(f"  {oid}: {txt[:200]}")
+            lines.append("### Observation Map (text + bbox)")
+            for oid in sorted(
+                referenced, key=lambda x: int(x) if x.isdigit() else 0
+            ):
+                entry = cf.observation_text_map.get(oid)
+                if not entry:
+                    continue
+                txt = (entry.get("text") or "")[:200]
+                bbox = entry.get("bbox")
+                if bbox:
+                    bbox_str = (
+                        f"[{bbox[0]:.1f},{bbox[1]:.1f},"
+                        f"{bbox[2]:.1f},{bbox[3]:.1f}]"
+                    )
+                else:
+                    bbox_str = "[]"
+                lines.append(f"  {oid} {bbox_str}: {txt}")
 
         return "\n".join(lines)
 

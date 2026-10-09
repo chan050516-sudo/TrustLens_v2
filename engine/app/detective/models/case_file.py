@@ -129,7 +129,10 @@ class CaseFile(BaseModel):
 
     # 文档骨架
     elements: list[ElementProjection] = Field(default_factory=list)
-    observation_text_map: dict[str, str] = Field(default_factory=dict)
+    # observation_id (str) -> {"text": str, "bbox": [x0,y0,x1,y1]}
+    observation_text_map: dict[str, dict[str, Any]] = Field(
+        default_factory=dict
+    )
 
     # 4 个引擎投影
     #   metadata / visual / grounding：完整 dict（用户要求全保留）
